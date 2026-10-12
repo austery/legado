@@ -1,0 +1,4 @@
+/build/
+/harness/build/
+/harness/*.xcodeproj/
+/harness/Info.plist

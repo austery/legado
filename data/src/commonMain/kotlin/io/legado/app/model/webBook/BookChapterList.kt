@@ -77,6 +77,7 @@ object BookChapterList {
                         coroutineContext = currentCoroutineContext()
                     )
                     val res = analyzeUrl.getStrResponseAwait() //控制并发访问
+                    currentCoroutineContext()[WebBookResponsePolicy]?.validate?.invoke(res)
                     res.body?.let { nextBody ->
                         chapterData = analyzeChapterList(
                             book, nextUrl, nextUrl,
@@ -106,6 +107,7 @@ object BookChapterList {
                         coroutineContext = currentCoroutineContext()
                     )
                     val res = analyzeUrl.getStrResponseAwait() //控制并发访问
+                    currentCoroutineContext()[WebBookResponsePolicy]?.validate?.invoke(res)
                     analyzeChapterList(
                         book, urlStr, res.url,
                         res.body!!, tocRule, listRule, bookSource, false

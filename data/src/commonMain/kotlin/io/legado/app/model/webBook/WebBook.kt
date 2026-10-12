@@ -491,7 +491,9 @@ object WebBook {
         }catch (e: Throwable){
             throw tmp ?: e
         }
-        return res ?: throw tmp!!
+        val response = res ?: throw tmp!!
+        currentCoroutineContext()[WebBookResponsePolicy]?.validate?.invoke(response)
+        return response
     }
 
     /**

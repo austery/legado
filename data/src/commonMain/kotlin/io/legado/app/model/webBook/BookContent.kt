@@ -116,6 +116,7 @@ object BookContent {
                     coroutineContext = currentCoroutineContext()
                 )
                 val res = analyzeUrl.getStrResponseAwait() //控制并发访问
+                currentCoroutineContext()[WebBookResponsePolicy]?.validate?.invoke(res)
                 res.body?.let { nextBody ->
                     contentData = analyzeContent(
                         book,
@@ -147,6 +148,7 @@ object BookContent {
                     coroutineContext = currentCoroutineContext()
                 )
                 val res = analyzeUrl.getStrResponseAwait() //控制并发访问
+                currentCoroutineContext()[WebBookResponsePolicy]?.validate?.invoke(res)
                 analyzeContent(
                     book,
                     urlStr,

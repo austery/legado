@@ -83,3 +83,6 @@ if (enableOhosTarget) {
     include(":modules:ksoup-ohos")
     include(":modules:epub4kmp-ohos")
 }
+
+// Independent Swift-callable iOS runtime.
+include(":engine-ios")
