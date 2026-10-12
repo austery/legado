@@ -10,6 +10,8 @@ Each call returns an `EngineRequest`. Cancel the previous request when its resul
 
 Initialization registers real upstream HTTP, cookies, QuickJS, Room, source cache and chapter storage providers once per process. Top-level calls are serialized across sessions because upstream content processors contain mutable caches. This is a correctness-first C1 boundary, not a concurrent search product API. Books and TOCs must be loaded in the current session before requesting a chapter. Imports invalidate that session's affected entities. Avoid concurrent source editing through multiple sessions in this slice.
 
+Repeated searches return fresh search snapshots while retaining existing session books, including detail-derived TOC URLs and rule variables. Reload details explicitly with `loadBook`; a lightweight search result does not replace that state or detach it from its loaded chapters.
+
 Imports parse and validate the whole batch before one DAO insertion. The last object wins for duplicate source IDs; existing IDs are replaced. Malformed input preserves prior valid sources. Only text-book source operations are supported.
 
 `loadChapter(cacheOnly: true)` never fetches. Other chapter calls use existing cached text first and otherwise reuse upstream pagination and formatting. Text is saved through the real upstream provider only after cancellation and interaction checks. A process restart retains imported sources, JS cache and chapter cache; searching/loading the TOC still requires network access in this slice.
@@ -63,6 +65,8 @@ python3 scripts/path-c/run_harness.py --simulator "$PATH_C_SIMULATOR" \
 
 Use new output paths on reruns; the runner refuses to overwrite previous evidence. It requires a terminal suite record and every assertion to pass. The persistence run performs no import and no JS cache write. The harness automatically runs on launch; its list is a diagnostic display.
 
+Every normal run imports a fixture under a new `/runs/<UUID>` URL namespace, including its book, TOC and chapter URLs. This preserves earlier caches while ensuring the initial content read must report `fromCache == false`. The harness saves the fixture identity in its own preferences; `--persistence` reuses it and requires `fromCache == true`. Run normal mode before persistence mode. Both modes repeat the search after loading details and the TOC, then require the same chapter identities without reloading details.
+
 ## Upstream patch inventory and cost review
 
 Seven existing files change, exceeding the proposed target of five by two. This is a reviewed extraction cost, not a claim that the target was met:
@@ -85,4 +89,4 @@ The additional two-file cost is bounded: complete pagination failure reporting a
 
 Local detailed evidence is under the repository's intentionally ignored `docs/evidence/path-c-c0` and `docs/evidence/path-c-c1` directories. C0 proved the original app's controlled flow plus unchanged Aixiashu and Dingdian samples. C1 simulator execution proves real import/search/detail/TOC/multi-page content, empty search, typed failures, JS cache, cookies, cancellation and persistence. Both device and simulator debug frameworks linked; the original UI recompiled. Consult the final acceptance record for exact run counts and framework digests.
 
-Final 2026-10-12 simulator result: 72/72 records passed (32 behavioral assertions, 39 callback-thread checks, one terminal marker); process-restart result: 16/16. Source and JavaScript caches were not reimported/rewritten in the restart run. No verified owner-controlled remote exists: authenticated account `austery` has no accessible `austery/legado` repository, while both configured remotes are upstream owners. The deliverable is retained on the local task branch.
+Initial 2026-10-12 simulator result: 72/72 records passed (32 behavioral assertions, 39 callback-thread checks, one terminal marker); process-restart result: 16/16. PR #1 review follow-up reproduced the repeated-search TOC failure on the original engine (76/77, HTTP 404), then passed 77/77 with the fix, 20/20 after process restart, and 77/77 on another normal run with earlier caches retained. Both normal runs required network content; restart required cached content. Simulator and device debug frameworks and the Swift harness rebuilt successfully. Detailed follow-up evidence is under `docs/evidence/path-c-pr1-review`. These counts include callback observations and are not independent test counts. Source and JavaScript caches were not reimported/rewritten in the restart run. Delivery is tracked in [PR #1](https://github.com/austery/legado/pull/1), on `codex/path-c-engine`; merge and C2 remain separate owner decisions.

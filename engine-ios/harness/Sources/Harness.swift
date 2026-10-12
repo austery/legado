@@ -13,7 +13,7 @@ final class Harness: ObservableObject {
     @Published var checks: [Check] = []
     @Published var finished = false
     private let engine = ReaderEngine()
-    private let sourceID = "http://127.0.0.1:18765"
+    private var sourceID = ""
     private let persistenceRun = ProcessInfo.processInfo.environment["PATH_C_PERSISTENCE"] == "1"
 
     private func record(_ name: String, _ passed: Bool, _ detail: String = "") {
@@ -58,6 +58,18 @@ final class Harness: ObservableObject {
         let ready = await call { engine.initialize(completion: $0) }
         record("initialize", ready is EngineReady, describe(ready))
         guard ready is EngineReady else { finished = true; return }
+        let fixtureKey = "path-c-fixture-source"
+        if persistenceRun {
+            guard let saved = UserDefaults.standard.string(forKey: fixtureKey) else {
+                record("restart-fixture-identity", false, "Run the normal suite first")
+                engine.close()
+                return
+            }
+            sourceID = saved
+        } else {
+            sourceID = "http://127.0.0.1:18765/runs/" + UUID().uuidString
+            UserDefaults.standard.set(sourceID, forKey: fixtureKey)
+        }
         if persistenceRun {
             await chain(sourceID, query: "Path", controlled: true)
             let cachedJS = await call { engine.search(sourceId: "http://127.0.0.1:18767/js-read", query: "Path", page: 1, completion: $0) }
@@ -189,10 +201,15 @@ final class Harness: ObservableObject {
             record("toc", false, describe(toc)); return
         }
         record("toc", !controlled || chapters.count == 3, "\(chapters.count) chapters")
+        let repeated = await call { engine.search(sourceId: id, query: query, page: 1, completion: $0) }
+        record("repeat-search-identity", (repeated as? SearchReply)?.books.first?.id == book.id, describe(repeated))
+        let reloaded = await call { engine.loadToc(sourceId: id, bookId: book.id, completion: $0) }
+        record("repeat-search-preserves-toc", (reloaded as? TocReply)?.chapters.map { $0.id } == chapters.map { $0.id }, describe(reloaded))
         let content = await call { engine.loadChapter(sourceId: id, bookId: book.id, chapterId: chapter.id, cacheOnly: false, completion: $0) }
         guard let content = content as? ContentReply else { record("content", false, describe(content)); return }
         let text = content.text
-        if persistenceRun { record("restart-chapter-cache", content.fromCache) }
+        record(persistenceRun ? "restart-chapter-cache" : "first-chapter-network",
+               content.fromCache == persistenceRun)
         let markers = ["C1-FIRST", "C1-MIDDLE", "C1-LAST"]
         let ranges = markers.compactMap { text.range(of: $0) }
         let complete = ranges.count == 3 && zip(ranges, ranges.dropFirst()).allSatisfy { $0.lowerBound < $1.lowerBound }

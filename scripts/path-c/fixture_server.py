@@ -46,6 +46,13 @@ class Handler(BaseHTTPRequestHandler):
         request = urlsplit(self.path)
         query = parse_qs(request.query)
         base = f"http://127.0.0.1:{self.server.server_port}"
+        # Each full harness run gets new book/chapter URLs without deleting old caches.
+        prefix = ""
+        parts = request.path.split("/")
+        if len(parts) >= 4 and parts[1] == "runs":
+            prefix = "/".join(parts[:3])
+            request = request._replace(path="/" + "/".join(parts[3:]))
+            base += prefix
         status = 200
         content_type = "text/html; charset=utf-8"
         body = ""
@@ -73,6 +80,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             status = 404
             body = "Not found"
+        if content_type.startswith("text/html"):
+            body = body.replace('href="/', f'href="{prefix}/')
         payload = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)

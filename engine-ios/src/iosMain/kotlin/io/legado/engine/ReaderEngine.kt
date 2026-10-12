@@ -81,7 +81,8 @@ class ReaderEngine {
         currentCoroutineContext().ensureActive()
         val snapshots = result.books.map {
             val book = it.toBook()
-            books[sourceId to book.bookUrl] = book
+            // Search snapshots must not replace detail state paired with a loaded TOC.
+            books.getOrPut(sourceId to book.bookUrl) { book }
             snapshot(book)
         }
         SearchReply(snapshots, result.hasNextPage)
