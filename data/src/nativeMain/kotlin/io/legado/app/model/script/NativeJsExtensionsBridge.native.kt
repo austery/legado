@@ -31,6 +31,8 @@ import com.script.jsdispatch.generated.NativeGeneratedDispatch
 import io.legado.app.napi.quickjs.JSContext
 import io.legado.app.napi.quickjs.JSValue
 import io.legado.app.napi.quickjs.qjs_EvalTypeGlobal
+import io.legado.app.napi.quickjs.JS_TAG_INT
+import io.legado.app.napi.quickjs.qjs_ValueGetTag
 import io.legado.app.napi.quickjs.JS_TAG_NULL
 import io.legado.app.napi.quickjs.JS_TAG_UNDEFINED
 import io.legado.app.napi.quickjs.qjs_FreeCString
@@ -261,7 +263,12 @@ object NativeJsExtensionsBridge {
         val ctxNotNull = ctx ?: return jsUndefined()
         if (argc < 3 || argv == null) return jsUndefined()
         try {
-            val handle = qjs_ValueGetFloat64(argv[0L].readValue()).toLong()
+            // Numeric JS literals use the integer tag while small; reading their
+            // union as a double produces zero and silently loses every host call.
+            val handleValue = argv[0L].readValue()
+            val handle = if (qjs_ValueGetTag(handleValue) == JS_TAG_INT)
+                qjs_ValueGetInt(handleValue).toLong()
+            else qjs_ValueGetFloat64(handleValue).toLong()
             val methodId = qjs_ValueGetInt(argv[1L].readValue())
             val argsArray = argv[2L].readValue()
             val obj = getObject(handle) ?: return jsUndefined()
