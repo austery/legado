@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import json
 from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import TypedDict, cast
+from typing import Iterator, TypedDict, cast
 from urllib.request import urlopen
 
 
@@ -32,12 +32,46 @@ def stop(process: subprocess.Popen[bytes]) -> None:
             process.wait()
 
 
+@contextmanager
+def fixtures(output: Path) -> Iterator[None]:
+    with ExitStack() as stack:
+        for script, port, endpoint in [("fixture_server.py", 18765, "/sources.json"),
+                                       ("engine_fixture_server.py", 18767, "/engine-sources.json")]:
+            print(f"Starting fixture {script} with {sys.executable}", flush=True)
+            log = stack.enter_context((output / f"{port}-fixture.log").open("wb"))
+            process = subprocess.Popen([sys.executable, "-u", str(Path(__file__).with_name(script))],
+                                       stdout=log, stderr=subprocess.STDOUT)
+            stack.callback(stop, process)
+            deadline = time.monotonic() + 15
+            while True:
+                if process.poll() is not None:
+                    raise RuntimeError(f"Fixture {script} exited before readiness")
+                try:
+                    with urlopen(f"http://127.0.0.1:{port}{endpoint}", timeout=1) as response:
+                        response.read()
+                    print(f"Fixture {script} ready", flush=True)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        subprocess.run(["sample", str(process.pid), "1", "-file",
+                                        str(output / f"{port}-startup-stack.txt")],
+                                       check=False, timeout=15)
+                        raise RuntimeError(f"Fixture {script} did not become ready")
+                    time.sleep(0.2)
+        yield
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fixtures-only", action="store_true")
     args = parser.parse_args()
     output: Path = args.output
     output.mkdir(parents=True, exist_ok=True)
+    if args.fixtures_only:
+        with fixtures(output):
+            print("Fixture preflight passed", flush=True)
+        return
     runtimes = cast(dict[str, list[Runtime]], json.loads(simctl("list", "runtimes", "--json")))
     available = [item for item in runtimes["runtimes"]
                  if item["isAvailable"] and ".iOS-" in item["identifier"]]
@@ -48,27 +82,7 @@ def main() -> None:
                        runtime["identifier"])
     (output / "simulator.txt").write_text(f"{simulator}\n{runtime['identifier']}\n")
     try:
-        with ExitStack() as stack:
-            for script, port, endpoint in [("fixture_server.py", 18765, "/sources.json"),
-                                           ("engine_fixture_server.py", 18767, "/engine-sources.json")]:
-                print(f"Starting fixture {script}", flush=True)
-                log = stack.enter_context((output / f"{port}-fixture.log").open("wb"))
-                process = subprocess.Popen([sys.executable, str(Path(__file__).with_name(script))],
-                                           stdout=log, stderr=subprocess.STDOUT)
-                stack.callback(stop, process)
-                deadline = time.monotonic() + 15
-                while True:
-                    if process.poll() is not None:
-                        raise RuntimeError(f"Fixture {script} exited before readiness")
-                    try:
-                        with urlopen(f"http://127.0.0.1:{port}{endpoint}", timeout=1) as response:
-                            response.read()
-                        print(f"Fixture {script} ready", flush=True)
-                        break
-                    except OSError:
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError(f"Fixture {script} did not become ready")
-                        time.sleep(0.2)
+        with fixtures(output):
             # Ready fixtures before simulator startup competes for the hosted VM resources.
             simctl("boot", simulator)
             subprocess.run(["xcrun", "simctl", "bootstatus", simulator, "-b"], check=True, timeout=180)
