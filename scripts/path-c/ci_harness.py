@@ -89,9 +89,11 @@ def main() -> None:
             simctl("install", simulator,
                    "engine-ios/harness/build/Build/Products/Debug-iphonesimulator/PathCEngineHarness.app")
             for name, flags in [("full", []), ("restart", ["--persistence"]), ("rerun", [])]:
+                # Hosted simctl startup can exceed a minute. The harness still enforces
+                # its own 60-second report deadline after launch completes.
                 subprocess.run([sys.executable, str(Path(__file__).with_name("run_harness.py")),
                                 "--simulator", simulator, "--output", str(output / f"{name}.json"),
-                                *flags], check=True, timeout=90)
+                                *flags], check=True, timeout=240)
     finally:
         # Only shut down the simulator created by this invocation. The hosted VM is disposable.
         subprocess.run(["xcrun", "simctl", "shutdown", simulator], check=False)
