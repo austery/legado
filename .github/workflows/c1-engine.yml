@@ -1,0 +1,107 @@
+name: C1 Engine
+
+on:
+  pull_request:
+    branches: [native-reader]
+    paths:
+      - 'engine-ios/**'
+      - 'scripts/**'
+      - 'core/**'
+      - 'data/**'
+      - 'foundation/**'
+      - 'modules/**'
+      - 'ui/**'
+      - 'build-logic/**'
+      - 'gradle/**'
+      - '**/*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew*'
+      - '.github/workflows/c1-engine.yml'
+  push:
+    branches: [native-reader, codex/c1-cloud-ci]
+    paths:
+      - 'engine-ios/**'
+      - 'scripts/**'
+      - 'core/**'
+      - 'data/**'
+      - 'foundation/**'
+      - 'modules/**'
+      - 'ui/**'
+      - 'build-logic/**'
+      - 'gradle/**'
+      - '**/*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew*'
+      - '.github/workflows/c1-engine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c1-engine-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: C1 engine regression
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Check environment
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          java -version
+          df -h .
+          mkdir -p ci-results
+          git rev-parse HEAD > ci-results/commit.txt
+      - name: Download XcodeGen locally
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download 2.46.0 --repo yonaskolb/XcodeGen --pattern xcodegen.zip --dir "$RUNNER_TEMP/c1-xcodegen"
+          unzip -q "$RUNNER_TEMP/c1-xcodegen/xcodegen.zip" -d "$RUNNER_TEMP/c1-xcodegen"
+          echo "$RUNNER_TEMP/c1-xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Build native libraries
+        run: bash scripts/build-ios-native.sh ios_simulator_arm64 ios_arm64 > ci-results/native-build.log 2>&1
+      - name: Build engine and compile original UI regression
+        run: |
+          ./gradlew --no-daemon --no-watch-fs --max-workers=2 \
+            '-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
+            :engine-ios:linkDebugFrameworkIosSimulatorArm64 \
+            :engine-ios:linkDebugFrameworkIosArm64 \
+            :ui:compileKotlinIosSimulatorArm64 > ci-results/engine-build.log 2>&1
+      - name: Build Swift harness
+        run: |
+          xcodegen generate --spec engine-ios/harness/project.yml
+          xcodebuild -project engine-ios/harness/PathCEngineHarness.xcodeproj \
+            -scheme PathCEngineHarness -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath engine-ios/harness/build ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
+            build > ci-results/harness-build.log 2>&1
+      - name: Run network, restart cache and fresh network regressions
+        run: python3 scripts/path-c/ci_harness.py --output ci-results
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: c1-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-results/
+          retention-days: 7

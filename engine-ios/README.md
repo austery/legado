@@ -67,6 +67,14 @@ Use new output paths on reruns; the runner refuses to overwrite previous evidenc
 
 Every normal run imports a fixture under a new `/runs/<UUID>` URL namespace, including its book, TOC and chapter URLs. This preserves earlier caches while ensuring the initial content read must report `fromCache == false`. The harness saves the fixture identity in its own preferences; `--persistence` reuses it and requires `fromCache == true`. Run normal mode before persistence mode. Both modes repeat the search after loading details and the TOC, then require the same chapter identities without reloading details.
 
+## C1 continuous integration
+
+The independent `C1 Engine` workflow targets `native-reader` pull requests and pushes that affect the engine, runtime dependencies, UI regression or build configuration. The `codex/c1-cloud-ci` push trigger bootstraps validation before the initial CI PR; it does not trigger other feature branches. Manual dispatch is available once GitHub registers the workflow. The inherited `Test Build` pipeline skips this fork so it cannot invoke upstream packaging or publication from these changes.
+
+The standard ARM64 `macos-26` runner uses Xcode 26.5, JDK 17/21 and a locally downloaded XcodeGen 2.46.0. It builds both debug engine frameworks, compiles the original UI, builds the isolated Swift harness, then runs full network, process-restart cache and fresh network suites against local fixtures. `scripts/path-c/ci_harness.py` creates and shuts down only its own simulator and terminates only its own fixture processes. It can also run locally against an already-built harness with `python3 scripts/path-c/ci_harness.py --output <new-evidence-directory>`.
+
+The job has read-only repository permissions, a 60-minute timeout, redundant-run cancellation and seven-day evidence retention. It does not sign an app, publish a release, use live community sources or implement C2. Standard hosted runner minutes are free for this public repository; no larger runner or expanded cache allowance is configured. A green run proves this bounded C1 contract, not physical-device product acceptance. Required branch checks are a separate repository setting and are not installed by this workflow.
+
 ## Upstream patch inventory and cost review
 
 Seven existing files change, exceeding the proposed target of five by two. This is a reviewed extraction cost, not a claim that the target was met:
