@@ -57,7 +57,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Preflight local fixtures
-        run: python3 scripts/path-c/ci_harness.py --fixtures-only --output ci-results/preflight
+        run: |
+          python3 -m unittest discover -s scripts/path-c -p 'test_*.py'
+          python3 scripts/path-c/ci_harness.py --fixtures-only --output ci-results/preflight
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

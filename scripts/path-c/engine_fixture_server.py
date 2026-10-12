@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import json
 import time
-from http.server import ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from fixture_server import Handler, source
+from fixture_server import FixtureServer, Handler, source
 
 
 class EngineHandler(Handler):
@@ -70,4 +69,4 @@ class EngineHandler(Handler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("127.0.0.1", 18767), EngineHandler).serve_forever()
+    FixtureServer(("127.0.0.1", 18767), EngineHandler).serve_forever()

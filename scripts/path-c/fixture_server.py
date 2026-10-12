@@ -6,7 +6,16 @@ import argparse
 import json
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from urllib.parse import parse_qs, urlsplit
+
+
+class FixtureServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer performs reverse DNS here, which can block on hosted macOS mDNS.
+        # These loopback fixtures only need their numeric address and assigned port.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def source(base: str) -> dict[str, object]:
@@ -97,6 +106,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=18765)
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = FixtureServer(("127.0.0.1", args.port), Handler)
     print(f"Fixture source: http://127.0.0.1:{args.port}/sources.json", flush=True)
     server.serve_forever()
