@@ -48,11 +48,10 @@ def main() -> None:
                        runtime["identifier"])
     (output / "simulator.txt").write_text(f"{simulator}\n{runtime['identifier']}\n")
     try:
-        simctl("boot", simulator)
-        subprocess.run(["xcrun", "simctl", "bootstatus", simulator, "-b"], check=True, timeout=180)
         with ExitStack() as stack:
             for script, port, endpoint in [("fixture_server.py", 18765, "/sources.json"),
                                            ("engine_fixture_server.py", 18767, "/engine-sources.json")]:
+                print(f"Starting fixture {script}", flush=True)
                 log = stack.enter_context((output / f"{port}-fixture.log").open("wb"))
                 process = subprocess.Popen([sys.executable, str(Path(__file__).with_name(script))],
                                            stdout=log, stderr=subprocess.STDOUT)
@@ -64,11 +63,15 @@ def main() -> None:
                     try:
                         with urlopen(f"http://127.0.0.1:{port}{endpoint}", timeout=1) as response:
                             response.read()
+                        print(f"Fixture {script} ready", flush=True)
                         break
                     except OSError:
                         if time.monotonic() >= deadline:
                             raise RuntimeError(f"Fixture {script} did not become ready")
                         time.sleep(0.2)
+            # Ready fixtures before simulator startup competes for the hosted VM resources.
+            simctl("boot", simulator)
+            subprocess.run(["xcrun", "simctl", "bootstatus", simulator, "-b"], check=True, timeout=180)
             simctl("install", simulator,
                    "engine-ios/harness/build/Build/Products/Debug-iphonesimulator/PathCEngineHarness.app")
             for name, flags in [("full", []), ("restart", ["--persistence"]), ("rerun", [])]:

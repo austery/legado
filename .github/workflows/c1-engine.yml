@@ -47,6 +47,9 @@ jobs:
     name: C1 engine regression
     runs-on: macos-26
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
     steps:
@@ -80,14 +83,14 @@ jobs:
           unzip -q "$RUNNER_TEMP/c1-xcodegen/xcodegen.zip" -d "$RUNNER_TEMP/c1-xcodegen"
           echo "$RUNNER_TEMP/c1-xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Build native libraries
-        run: bash scripts/build-ios-native.sh ios_simulator_arm64 ios_arm64 > ci-results/native-build.log 2>&1
+        run: bash scripts/build-ios-native.sh ios_simulator_arm64 ios_arm64 2>&1 | tee ci-results/native-build.log
       - name: Build engine and compile original UI regression
         run: |
-          ./gradlew --no-daemon --no-watch-fs --max-workers=2 \
+          ./gradlew --no-daemon --no-watch-fs --build-cache --max-workers=2 \
             '-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
             :engine-ios:linkDebugFrameworkIosSimulatorArm64 \
             :engine-ios:linkDebugFrameworkIosArm64 \
-            :ui:compileKotlinIosSimulatorArm64 > ci-results/engine-build.log 2>&1
+            :ui:compileKotlinIosSimulatorArm64 2>&1 | tee ci-results/engine-build.log
       - name: Build Swift harness
         run: |
           xcodegen generate --spec engine-ios/harness/project.yml
@@ -95,7 +98,7 @@ jobs:
             -scheme PathCEngineHarness -configuration Debug -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath engine-ios/harness/build ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
-            build > ci-results/harness-build.log 2>&1
+            build 2>&1 | tee ci-results/harness-build.log
       - name: Run network, restart cache and fresh network regressions
         run: python3 scripts/path-c/ci_harness.py --output ci-results
       - name: Upload validation evidence
