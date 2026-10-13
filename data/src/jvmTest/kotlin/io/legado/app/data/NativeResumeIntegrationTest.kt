@@ -10,6 +10,7 @@ import org.junit.Test
 import java.nio.file.Files
 import kotlin.test.*
 import androidx.sqlite.execSQL
+import io.legado.app.data.dao.NativeChapterProjection
 import io.legado.app.data.dao.NativeBodyCoordinates
 import io.legado.app.data.dao.NativeResumeException
 import io.legado.app.data.dao.NativeResumeFailure
@@ -29,7 +30,7 @@ class NativeResumeIntegrationTest {
         try {
             database.nativeShelfDao.addToShelf(Book(bookUrl="book",origin="source",name="Title",author="Author"),
                 listOf(BookChapter(bookUrl="book",url="chapter",title="Chapter",index=3)))
-            val saved = database.nativeResumeDao.save("source","book","chapter",3,"first\r\nsecond 🌿",10,0)
+            val saved = database.nativeResumeDao.save("source","book","chapter",3,"first\r\nsecond 🌿",10,0, NativeChapterProjection.from(assertNotNull(database.bookDao.getBook("book"))))
             assertEquals(7, saved.paragraphUtf16Offset)
             assertEquals(1L, saved.revision)
             assertEquals(saved, database.nativeResumeDao.get("book"))
@@ -50,15 +51,46 @@ class NativeResumeIntegrationTest {
     }
 
     @Test
+    fun sharedProgressCommittedAfterPrecheckCannotBeOverwritten() = runBlocking {
+        val path = path(); val db = open(path); val shared = open(path)
+        try {
+            seed(db)
+            val saved = db.nativeResumeDao.save("source","book","chapter",3,"body",0,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
+            for (field in 0..4) {
+                val observed = assertNotNull(db.bookDao.getBook("book"))
+                // Deterministically schedule a second Room writer after the engine precheck.
+                // Test every projection field independently, plus the catalog-selection writer.
+                if (field == 4) {
+                    shared.bookDao.upDurChapter("book",observed.durChapterIndex + 1,42)
+                } else {
+                    shared.bookDao.updateProgress("book",
+                        observed.durChapterIndex + if (field == 0) 1 else 0,
+                        observed.durChapterPos + if (field == 1) 1 else 0,
+                        observed.durChapterTime + if (field == 2) 1 else 0,
+                        if (field == 3) "Shared chapter" else observed.durChapterTitle)
+                }
+                val sharedState = shared.bookDao.getBook("book")
+                assertEquals(NativeResumeFailure.STALE_REVISION, assertFailsWith<NativeResumeException> {
+                    db.nativeResumeDao.save("source","book","chapter",3,"body",0,saved.revision,
+                        NativeChapterProjection.from(observed))
+                }.failure)
+                assertEquals(saved, db.nativeResumeDao.get("book"))
+                assertEquals(sharedState, db.bookDao.getBook("book"))
+                assertNotEquals(observed, sharedState)
+            }
+        } finally { shared.close(); db.close() }
+    }
+
+    @Test
     fun rejectedWritesAndProjectionFailurePreserveLastCommit() = runBlocking {
         val path = path(); val db = open(path)
         try {
             seed(db)
-            val original = db.nativeResumeDao.save("source","book","chapter",3,"one\ntwo",5,0)
+            val original = db.nativeResumeDao.save("source","book","chapter",3,"one\ntwo",5,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
             val projected = db.bookDao.getBook("book")
             suspend fun reject(reason: NativeResumeFailure, source: String="source", chapter: String="chapter", index: Int=3, offset: Int=0, revision: Long=1) {
                 assertEquals(reason, assertFailsWith<NativeResumeException> {
-                    db.nativeResumeDao.save(source,"book",chapter,index,"one\ntwo",offset,revision)
+                    db.nativeResumeDao.save(source,"book",chapter,index,"one\ntwo",offset,revision, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
                 }.failure)
                 assertEquals(original, db.nativeResumeDao.get("book"))
                 assertEquals(projected, db.bookDao.getBook("book"))
@@ -70,7 +102,7 @@ class NativeResumeIntegrationTest {
             reject(NativeResumeFailure.CHAPTER_MISMATCH, index=4)
             reject(NativeResumeFailure.INVALID_POSITION, offset=99)
             BundledSQLiteDriver().open(path).use { it.execSQL("CREATE TRIGGER fail_projection BEFORE UPDATE OF durChapterIndex ON books BEGIN SELECT RAISE(ABORT, 'synthetic projection failure'); END") }
-            assertFailsWith<Exception> { db.nativeResumeDao.save("source","book","chapter",3,"changed",0,1) }
+            assertFailsWith<Exception> { db.nativeResumeDao.save("source","book","chapter",3,"changed",0,1, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book")))) }
             assertEquals(original, db.nativeResumeDao.get("book"))
             assertEquals(projected, db.bookDao.getBook("book"))
         } finally { db.close() }
@@ -81,11 +113,11 @@ class NativeResumeIntegrationTest {
         val path = path(); var db = open(path)
         try {
             seed(db)
-            val saved = db.nativeResumeDao.save("source","book","chapter",3,"body",2,0)
+            val saved = db.nativeResumeDao.save("source","book","chapter",3,"body",2,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
             db.nativeShelfDao.removeFromShelf("source","book")
             assertEquals(saved, db.nativeResumeDao.get("book"))
             assertEquals(NativeResumeFailure.NOT_ON_SHELF, assertFailsWith<NativeResumeException> {
-                db.nativeResumeDao.save("source","book","chapter",3,"body",0,1)
+                db.nativeResumeDao.save("source","book","chapter",3,"body",0,1, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
             }.failure)
             val removed = assertNotNull(db.bookDao.getBook("book"))
             db.nativeShelfDao.addToShelf(removed, emptyList())
@@ -96,17 +128,17 @@ class NativeResumeIntegrationTest {
             BundledSQLiteDriver().open(path).use { it.execSQL("PRAGMA foreign_keys=ON"); it.execSQL("DELETE FROM chapters WHERE bookUrl='book'") }
             assertEquals(saved, db.nativeResumeDao.get("book"))
             assertEquals(NativeResumeFailure.CHAPTER_MISMATCH, assertFailsWith<NativeResumeException> {
-                db.nativeResumeDao.save("source","book","chapter",3,"body",0,1)
+                db.nativeResumeDao.save("source","book","chapter",3,"body",0,1, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
             }.failure)
             val book = assertNotNull(db.bookDao.getBook("book"))
             db.bookDao.insert(book)
             assertNull(db.nativeResumeDao.get("book"), "Same URL legacy REPLACE invalidates resume")
             db.bookChapterDao.insert(BookChapter(bookUrl="book",url="chapter",title="Chapter",index=3))
-            db.nativeResumeDao.save("source","book","chapter",3,"body",0,0)
+            db.nativeResumeDao.save("source","book","chapter",3,"body",0,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
             db.bookDao.insert(book.copy(bookUrl="replacement"))
             assertNull(db.nativeResumeDao.get("book"), "Known-identity legacy replacement invalidates old resume")
             db.bookChapterDao.insert(BookChapter(bookUrl="replacement",url="chapter",title="Chapter",index=3))
-            db.nativeResumeDao.save("source","replacement","chapter",3,"body",0,0)
+            db.nativeResumeDao.save("source","replacement","chapter",3,"body",0,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("replacement"))))
             db.bookDao.delete(assertNotNull(db.bookDao.getBook("replacement")))
             assertNull(db.nativeResumeDao.get("replacement"))
         } finally { db.close() }
@@ -116,7 +148,7 @@ class NativeResumeIntegrationTest {
     fun unsupportedVersionAndRevisionOverflowAreNeverOverwritten() = runBlocking {
         val path = path(); val db = open(path)
         try {
-            seed(db); db.nativeResumeDao.save("source","book","chapter",3,"body",0,0)
+            seed(db); db.nativeResumeDao.save("source","book","chapter",3,"body",0,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
             for ((sql, reason, revision) in listOf(
                 Triple("UPDATE native_reading_resume SET textVersion='future-v2'", NativeResumeFailure.UNSUPPORTED_VERSION,1L),
                 Triple("UPDATE native_reading_resume SET textVersion='native-body-v1',revision=9223372036854775807",NativeResumeFailure.STALE_REVISION,Long.MAX_VALUE),
@@ -124,7 +156,7 @@ class NativeResumeIntegrationTest {
                 BundledSQLiteDriver().open(path).use { it.execSQL(sql) }
                 val before = db.nativeResumeDao.get("book"); val book = db.bookDao.getBook("book")
                 assertEquals(reason, assertFailsWith<NativeResumeException> {
-                    db.nativeResumeDao.save("source","book","chapter",3,"new",0,revision)
+                    db.nativeResumeDao.save("source","book","chapter",3,"new",0,revision, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
                 }.failure)
                 assertEquals(before, db.nativeResumeDao.get("book")); assertEquals(book, db.bookDao.getBook("book"))
             }
@@ -142,7 +174,7 @@ class NativeResumeIntegrationTest {
                 val results = withTimeout(15000) { coroutineScope {
                     val workers = databases.mapIndexed { index, db -> async(Dispatchers.Default) {
                         start.await()
-                        try { db.nativeResumeDao.save("source","book","chapter",3,"body-$index",2,revision) }
+                        try { db.nativeResumeDao.save("source","book","chapter",3,"body-$index",2,revision, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book")))) }
                         catch (error: NativeResumeException) { assertEquals(NativeResumeFailure.STALE_REVISION,error.failure); null }
                     } }
                     start.complete(Unit); workers.awaitAll()
@@ -172,7 +204,7 @@ class NativeResumeIntegrationTest {
                 assertEquals(37, db.bookDao.getBook("old")?.durChapterPos)
                 assertEquals("Saved",db.bookChapterDao.getChapter("old",4)?.title)
                 assertNull(db.nativeResumeDao.get("old"))
-                val saved = db.nativeResumeDao.save("source","old","chapter",4,"body",0,0)
+                val saved = db.nativeResumeDao.save("source","old","chapter",4,"body",0,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("old"))))
                 db.close(); db = open(path)
                 assertEquals(saved,db.nativeResumeDao.get("old"))
                 driver.open(path).use { connection ->

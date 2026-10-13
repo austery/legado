@@ -1,6 +1,7 @@
 package io.legado.engine
 
 import io.legado.app.data.AppDatabaseProviders
+import io.legado.app.data.dao.NativeChapterProjection
 import io.legado.app.data.dao.NativeBodyCoordinates
 import io.legado.app.data.dao.NativeResumeException
 import io.legado.app.data.dao.NativeResumeFailure
@@ -252,7 +253,7 @@ class ReaderEngine {
             }
             val token = NSUUID().UUIDString
             ReadingSessions.tokens[token] = ReadingSession(sessionId, sourceId, bookId, chapter,
-                content, saved?.revision ?: 0, canSave, ChapterProjection.from(it.book), storageNotice)
+                content, saved?.revision ?: 0, canSave, NativeChapterProjection.from(it.book), storageNotice)
             ReadingSnapshot(token, saved?.revision ?: 0, offset, notice, canSave)
         }
         return ContentReply(snapshot(sourceId, chapter), content, usable != null, reading, storageNotice)
@@ -284,15 +285,15 @@ class ReaderEngine {
             if (reading.storageNotice.isNotEmpty()) throw CacheUnavailable(reading.storageNotice)
             if (!reading.canSave) throw UnsupportedOperationException("Saved format cannot be overwritten")
             val entry = AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(reading.sourceId, reading.bookId)
-            if (ChapterProjection.from(entry.book) != reading.projection)
+            if (NativeChapterProjection.from(entry.book) != reading.projection)
                 throw StaleReading("Shared reading chapter state changed")
             val chapter = entry.chapters.singleOrNull { it.url == reading.chapter.url && it.index == reading.chapter.index }
                 ?: throw StaleReading("Chapter identity changed")
             if (BookStorageProviders.get().getContent(entry.book, chapter) != reading.body)
                 throw CacheUnavailable("Displayed text is not safely available in the chapter cache")
             val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.save(reading.sourceId, reading.bookId,
-                chapter.url, chapter.index, reading.body, utf16Offset, reading.revision)
-            reading.projection = ChapterProjection(chapter.index, chapter.title, saved.savedAt, 0)
+                chapter.url, chapter.index, reading.body, utf16Offset, reading.revision, reading.projection)
+            reading.projection = NativeChapterProjection(chapter.index, chapter.title, saved.savedAt, 0)
             reading.revision = saved.revision
             reading.lastEvent = eventSequence
             if (finish) ReadingSessions.tokens.remove(token)
@@ -417,7 +418,7 @@ private class CacheUnavailable(message: String) : Exception(message)
 private class StaleReading(message: String) : Exception(message)
 private class ReadingSession(val owner: String, val sourceId: String, val bookId: String,
     val chapter: BookChapter, val body: String, var revision: Long, val canSave: Boolean,
-    var projection: ChapterProjection, val storageNotice: String,
+    var projection: NativeChapterProjection, val storageNotice: String,
     var lastEvent: Long = 0)
 
 /** All accesses hold EngineHost.gate, including cross-engine shelf removal. */
@@ -426,12 +427,5 @@ private object ReadingSessions {
     val tokens = mutableMapOf<String, ReadingSession>()
     fun invalidate(sourceId: String, bookId: String) {
         tokens.entries.removeAll { it.value.sourceId == sourceId && it.value.bookId == bookId }
-    }
-}
-
-private data class ChapterProjection(val index: Int, val title: String?, val time: Long, val offset: Int) {
-    companion object {
-        fun from(book: Book) = ChapterProjection(book.durChapterIndex, book.durChapterTitle,
-            book.durChapterTime, book.durChapterPos)
     }
 }

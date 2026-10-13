@@ -43,6 +43,14 @@ object NativeBodyCoordinates {
 enum class NativeResumeFailure { INVALID_POSITION, IDENTITY_CONFLICT, NOT_ON_SHELF, CHAPTER_MISMATCH, STALE_REVISION, UNSUPPORTED_VERSION }
 class NativeResumeException(val failure: NativeResumeFailure, message: String) : IllegalStateException(message)
 
+/** Expected shared chapter state captured when the displayed reading session was issued. */
+data class NativeChapterProjection(val index: Int, val title: String?, val time: Long, val offset: Int) {
+    companion object {
+        fun from(book: Book) = NativeChapterProjection(book.durChapterIndex, book.durChapterTitle,
+            book.durChapterTime, book.durChapterPos)
+    }
+}
+
 @Dao
 abstract class NativeResumeDao {
     /** Raw persisted snapshot; the engine must validate current identity and body before restoring. */
@@ -67,7 +75,8 @@ abstract class NativeResumeDao {
     /** The caller separately proves body persistence and owns reading tokens/event ordering. */
     @Transaction
     open suspend fun save(sourceId: String, bookUrl: String, chapterUrl: String, chapterIndex: Int,
-        body: String, utf16Offset: Int, expectedRevision: Long): NativeReadingResume {
+        body: String, utf16Offset: Int, expectedRevision: Long,
+        expectedProjection: NativeChapterProjection): NativeReadingResume {
         val offset = NativeBodyCoordinates.paragraphStart(body, utf16Offset)
         val book = book(bookUrl) ?: fail(NativeResumeFailure.NOT_ON_SHELF, "Book is not stored")
         if (book.origin != sourceId) fail(NativeResumeFailure.IDENTITY_CONFLICT, "Book source changed")
@@ -85,6 +94,9 @@ abstract class NativeResumeDao {
         if (expectedRevision < 0 || expectedRevision == Long.MAX_VALUE ||
             (previous?.revision ?: 0L) != expectedRevision || (previous != null && previous.revision <= 0)) {
             fail(NativeResumeFailure.STALE_REVISION, "Resume revision changed or is invalid")
+        }
+        if (NativeChapterProjection.from(book) != expectedProjection) {
+            fail(NativeResumeFailure.STALE_REVISION, "Shared reading chapter state changed")
         }
         val saved = NativeReadingResume(bookUrl, sourceId, chapterUrl, chapterIndex,
             NativeBodyCoordinates.VERSION, NativeBodyCoordinates.sha256(body), body.length, offset,
