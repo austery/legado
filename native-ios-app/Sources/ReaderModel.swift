@@ -49,7 +49,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func refreshSources(thenShelf: Bool = false) {
-        perform(retry: { [weak self] in self?.refreshSources() }, start: { engine.listSources(completion: $0) }) { [weak self] reply in
+        perform(retry: { [weak self] in self?.refreshSources(thenShelf: thenShelf) }, start: { engine.listSources(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? SourcesReply else { return }
             self.sources = reply.sources
             if !self.sources.contains(where: { $0.id == self.sourceID }) { self.sourceID = self.sources.first?.id ?? "" }
