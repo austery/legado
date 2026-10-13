@@ -7,6 +7,8 @@ import androidx.room3.Database
 import androidx.room3.RoomDatabase
 import androidx.room3.RoomDatabaseConstructor
 import androidx.room3.TypeConverters
+import io.legado.app.data.dao.NativeResumeDao
+import io.legado.app.data.entities.NativeReadingResume
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.NativeShelfDao
 import io.legado.app.data.dao.BookDao
@@ -55,9 +57,9 @@ import io.legado.app.data.entities.TxtTocRule
  *   (官方 room3 的 migrate 是 suspend, 鸿蒙 CPF fork 不是)
  */
 @Database(
-    version = 89,
+    version = 90,
     exportSchema = true,
-    entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
+    entities = [NativeReadingResume::class, Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchKeyword::class, Cookie::class,
         Bookmark::class, TxtTocRule::class, ReadRecord::class,
         HttpTTS::class, Cache::class,
@@ -85,6 +87,7 @@ import io.legado.app.data.entities.TxtTocRule
 abstract class AppDatabase : RoomDatabase() {
 
     abstract val bookDao: BookDao
+    abstract val nativeResumeDao: NativeResumeDao
     abstract val nativeShelfDao: NativeShelfDao
     abstract val bookGroupDao: BookGroupDao
     abstract val bookSourceDao: BookSourceDao
