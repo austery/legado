@@ -3,6 +3,28 @@ import XCTest
 
 @MainActor
 final class ReadingSaveCoordinatorTests: XCTestCase {
+    func testDiscardRetiresPendingCallbacksAndAllowsAnotherBook() {
+        var completions: [(ReadingSaveOutcome) -> Void] = []
+        var failures = 0
+        let coordinator = ReadingSaveCoordinator { _, _, completion in completions.append(completion) }
+        coordinator.onFailure = { _ in failures += 1 }
+        coordinator.displayed(token: "old", offset: 10)
+        var oldNavigation = false
+        coordinator.finish { oldNavigation = true }
+        coordinator.discard()
+        XCTAssertFalse(coordinator.hasPosition)
+        coordinator.displayed(token: "new", offset: 20)
+        completions[0](.failed("Stale token"))
+        XCTAssertEqual(failures, 0)
+        XCTAssertFalse(oldNavigation)
+        completions[1](.saved)
+        var newNavigation = false
+        coordinator.finish { newNavigation = true }
+        completions[2](.saved)
+        XCTAssertTrue(newNavigation)
+        XCTAssertFalse(coordinator.hasPosition)
+    }
+
     func testNavigationWaitsForAcceptedWriteThenFinishesNewestPosition() {
         var samples: [ReadingPositionSample] = []
         var finishes: [Bool] = []

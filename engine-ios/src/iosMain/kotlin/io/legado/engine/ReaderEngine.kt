@@ -338,6 +338,7 @@ class ReaderEngine {
         action: suspend () -> EngineReply): EngineRequest {
         val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val operationJob = currentCoroutineContext().job
+            var createdReadingToken: String? = null
             val reply = try {
                 withContext(Dispatchers.Default + WebBookResponsePolicy { response ->
                     if (!response.isSuccessful()) throw HttpFailure(response.code())
@@ -347,6 +348,7 @@ class ReaderEngine {
                         try {
                             if (requiresReady && !initialized) throw InvalidInput("Initialize this engine session first")
                             val result = action()
+                            createdReadingToken = (result as? ContentReply)?.reading?.token
                             currentCoroutineContext().ensureActive()
                             EngineHost.interactionFailure() ?: result
                         } catch (e: CancellationException) {
@@ -363,8 +365,13 @@ class ReaderEngine {
                 failure(e)
             }
             withContext(NonCancellable + Dispatchers.Main) {
-                completion(if (operationJob.isCancelled)
-                    EngineFailure(EngineErrorCode.CANCELLED, "Request cancelled") else reply)
+                val delivered = if (operationJob.isCancelled)
+                    EngineFailure(EngineErrorCode.CANCELLED, "Request cancelled") else reply
+                // Retain only tokens transferred to the caller, including cancellation during dispatch.
+                if (createdReadingToken != null && (delivered as? ContentReply)?.reading?.token != createdReadingToken) {
+                    EngineHost.gate.withLock { ReadingSessions.tokens.remove(createdReadingToken) }
+                }
+                completion(delivered)
             }
         }
         return EngineRequest(job)

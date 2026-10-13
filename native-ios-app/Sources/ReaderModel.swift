@@ -286,6 +286,24 @@ final class ReaderModel: ObservableObject {
 
     func flushReadingPosition() { positionSaver.flush() }
 
+    /// Called only after the user confirms losing the unsaved position.
+    func discardPositionAndReturnToShelf() {
+        cancel()
+        let readingToken = activeReadingToken
+        activeReadingToken = nil
+        positionSaver.discard()
+        content = nil
+        saveNotice = nil
+        resumeNotice = nil
+        route = .shelf
+        if let readingToken {
+            engine.abandonReading(token: readingToken) { [weak self] reply in
+                if let failure = reply as? EngineFailure { self?.shelfNotice = failure.message }
+            }
+        }
+        refreshShelf()
+    }
+
     func cancelLoading() {
         let previous = content
         let needsRecovery = previous?.reading?.canSave == true && route == .reading

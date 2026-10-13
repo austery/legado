@@ -108,6 +108,50 @@ final class ReadingJourneyTests: XCTestCase {
         model.importFile(local); try await settle(model); XCTAssertNil(model.message)
     }
 
+    func testStalePositionCanBeDiscardedWithoutOverwritingSharedProgress() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
+        model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+        model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let original = try XCTUnwrap(model.content)
+        let token = try XCTUnwrap(original.reading?.token)
+
+        let other = ReaderEngine()
+        defer { other.close() }
+        func call(_ start: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
+            await withCheckedContinuation { continuation in _ = start { continuation.resume(returning: $0) } }
+        }
+        _ = await call { other.initialize(completion: $0) }
+        _ = await call { other.openShelfBook(sourceId: base, bookId: original.chapter.bookId, completion: $0) }
+        let opened = await call { other.openReading(sourceId: base, bookId: original.chapter.bookId, cacheOnly: true, completion: $0) }
+        let otherToken = try XCTUnwrap((opened as? ContentReply)?.reading?.token)
+        let saved: EngineReply = await withCheckedContinuation { continuation in
+            other.saveReadingPosition(token: otherToken, eventSequence: 1, utf16Offset: 0) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(saved is ReadingSaved)
+        model.readingDisplayed(token, 0)
+        for _ in 0..<100 {
+            if model.saveNotice != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(model.saveNotice)
+        model.showShelf(); try await settle(model)
+        XCTAssertEqual(model.route, .reading, "Stale writes must not silently discard progress")
+        model.discardPositionAndReturnToShelf(); try await settle(model)
+        XCTAssertEqual(model.route, .shelf)
+        XCTAssertFalse(model.canRetryPosition)
+        XCTAssertNil(model.content)
+        let entry = try XCTUnwrap(model.shelf.first { $0.book.id == original.chapter.bookId })
+        model.openShelfBook(entry); try await settle(model)
+        XCTAssertEqual(model.route, .reading)
+        XCTAssertNil(model.message)
+        XCTAssertEqual(model.content?.reading?.revision, (saved as? ReadingSaved)?.revision)
+    }
+
     func testShelfAddReopenAndRemoveThroughRealEngine() async throws {
         let titleSuffix = UUID().uuidString
         let model = ReaderModel()

@@ -12,6 +12,7 @@ struct ReaderScreen: View {
     @StateObject private var model: ReaderModel
     init(model: ReaderModel) { _model = StateObject(wrappedValue: model) }
     @Environment(\.scenePhase) private var scenePhase
+    @State private var confirmingDiscard = false
     @State private var importing = false
     @State private var settings = false
     @State private var menu = true
@@ -33,6 +34,9 @@ struct ReaderScreen: View {
                         Text(notice).font(.callout)
                         Spacer()
                         if model.saveNotice != nil && model.canRetryPosition { Button("Retry save") { model.flushReadingPosition() } }
+                        if model.canRetryPosition {
+                            Button("Return without saving") { confirmingDiscard = true }
+                        }
                         Button("Dismiss") { model.resumeNotice = nil; model.saveNotice = nil }
                     }.padding().background(.regularMaterial)
                 }
@@ -79,6 +83,12 @@ struct ReaderScreen: View {
                 case .success(let url): model.importFile(url)
                 case .failure(let error): model.reportFileError(error.localizedDescription)
                 }
+            }
+            .confirmationDialog("Discard the unsaved reading position?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button("Discard position and return to shelf", role: .destructive) { model.discardPositionAndReturnToShelf() }
+                Button("Keep reading", role: .cancel) {}
+            } message: {
+                Text("The latest unsaved position will be lost. Previously saved progress is kept; reopen the book from the shelf to continue.")
             }
             .sheet(isPresented: $settings) { typography }
             .task { model.start() }

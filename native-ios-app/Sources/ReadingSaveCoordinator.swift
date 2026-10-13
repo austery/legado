@@ -29,6 +29,7 @@ final class ReadingSaveCoordinator {
     var onFailure: ((String) -> Void)?
     private var latest: ReadingPositionSample?
     private var acknowledgedSequence: Int64 = 0
+    private var generation = UUID()
     private var inFlight = false
     private var flushPending = false
     private var finishAction: (() -> Void)?
@@ -70,6 +71,18 @@ final class ReadingSaveCoordinator {
     /// Background flushes retain the token; transitions finish it after an acknowledged write.
     var hasPosition: Bool { latest != nil }
 
+    /// Explicit abandonment cannot cancel an already accepted write, but retires its callbacks.
+    func discard() {
+        generation = UUID()
+        debounce?.cancel(); debounce = nil
+        deadline?.cancel(); deadline = nil
+        latest = nil
+        acknowledgedSequence = 0
+        finishAction = nil
+        flushPending = false
+        inFlight = false
+    }
+
     func flush() { drain() }
 
     func finish(then action: @escaping () -> Void) {
@@ -90,8 +103,9 @@ final class ReadingSaveCoordinator {
         deadline?.cancel(); deadline = nil
         inFlight = true
         flushPending = false
+        let generation = self.generation
         write(sample, finishing) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.generation == generation else { return }
             self.inFlight = false
             switch result {
             case .failed(let message):
