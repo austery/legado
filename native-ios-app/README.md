@@ -40,6 +40,24 @@ The Xcode configuration selects the simulator or device debug framework by SDK.
 Device signing requires an explicitly chosen development team; no identity is
 hard-coded. Building does not authorize replacing or installing an existing app.
 
+Package a device build for owner-side signing with:
+
+```sh
+python3 scripts/path-c/package_native_ipa.py package \
+  native-ios-app/build-device/Build/Products/Debug-iphoneos/NativeReader.app \
+  /absolute/path/to/new-candidate.ipa
+python3 -m unittest discover -s scripts/path-c -p test_package_native_ipa.py
+```
+
+Do not use default `ditto` ZIP packaging: it can add `Payload/._NativeReader.app`.
+AltSign selects the first Payload entry with an `.app` suffix without checking
+whether it is a directory. On the iOS simulator the original package selected
+that AppleDouble file and failed application parsing; the clean package selected
+the real bundle and passed. macOS Foundation hides this entry from its directory
+listing, so a Mac-only bundle check missed the defect. The packaging script omits
+metadata, validates the archive, preserves executable permissions and refuses to
+overwrite an existing delivery. This check does not prove device signing/install.
+
 The app retains the platform's default transport security policy. The C1 harness
 has a broader historical policy; its HTTP success must not be claimed as proof of
 this app's transport compatibility. Validate selected source transports in the app.
