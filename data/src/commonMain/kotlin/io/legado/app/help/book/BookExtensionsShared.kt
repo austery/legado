@@ -264,7 +264,12 @@ suspend fun Book.changeSourceTo(
  */
 fun BaseBook.isSameNameAuthor(other: Any?): Boolean {
     if (other is BaseBook) {
-        return name == other.name && author == other.author
+        return if (name.isNotBlank() && author.isNotBlank() &&
+            other.name.isNotBlank() && other.author.isNotBlank()) {
+            name == other.name && author == other.author
+        } else {
+            bookUrl.isNotBlank() && bookUrl == other.bookUrl && origin == other.origin
+        }
     }
     return false
 }

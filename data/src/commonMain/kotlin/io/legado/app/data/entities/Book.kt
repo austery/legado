@@ -47,7 +47,7 @@ import kotlinx.serialization.json.Json
 @Serializable
 @Entity(
     tableName = "books",
-    indices = [Index(value = ["name", "author"], unique = true)]
+    indices = [Index(value = ["name", "author"])]
 )
 data class Book(
     // 详情页Url(本地书源存储完整文件路径)

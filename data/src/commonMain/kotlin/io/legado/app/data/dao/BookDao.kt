@@ -15,9 +15,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 @Dao
-interface BookDao {
+abstract class BookDao {
 
-    fun flowByGroup(groupId: Long): Flow<List<Book>> {
+    open fun flowByGroup(groupId: Long): Flow<List<Book>> {
         return when (groupId) {
             BookGroup.IdRoot -> flowRoot()
             BookGroup.IdAll -> flowAll()
@@ -38,13 +38,13 @@ interface BookDao {
         and (select show from book_groups where groupId = ${BookGroup.IdUngrouped}) != 1
         """
     )
-    fun flowRoot(): Flow<List<Book>>
+    abstract fun flowRoot(): Flow<List<Book>>
 
     @Query("SELECT * FROM books")
-    fun flowAll(): Flow<List<Book>>
+    abstract fun flowAll(): Flow<List<Book>>
 
     @Query("SELECT * FROM books WHERE type & ${BookType.local} > 0")
-    fun flowLocal(): Flow<List<Book>>
+    abstract fun flowLocal(): Flow<List<Book>>
 
     @Query(
         """
@@ -52,36 +52,42 @@ interface BookDao {
         where ((SELECT sum(groupId) FROM book_groups where groupId > 0) & `group`) = 0
         """
     )
-    fun flowNoGroup(): Flow<List<Book>>
+    abstract fun flowNoGroup(): Flow<List<Book>>
 
     @Query("SELECT * FROM books WHERE (`group` & :group) > 0")
-    fun flowByUserGroup(group: Long): Flow<List<Book>>
+    abstract fun flowByUserGroup(group: Long): Flow<List<Book>>
 
     @Query("SELECT * FROM books WHERE type & ${BookType.updateError} > 0")
-    fun flowUpdateError(): Flow<List<Book>>
+    abstract fun flowUpdateError(): Flow<List<Book>>
 
     @Query("SELECT * FROM books WHERE `name` in (:names)")
-    suspend fun findByName(vararg names: String): List<Book>
+    abstract suspend fun findByName(vararg names: String): List<Book>
 
     @Query("select * from books where originName = :fileName")
-    suspend fun getBookByFileName(fileName: String): Book?
+    abstract suspend fun getBookByFileName(fileName: String): Book?
 
     @Query("SELECT * FROM books WHERE bookUrl = :bookUrl")
-    suspend fun getBook(bookUrl: String): Book?
+    abstract suspend fun getBook(bookUrl: String): Book?
 
     @Query("SELECT * FROM books WHERE name = :name and author = :author")
-    suspend fun getBook(name: String, author: String): Book?
+    protected abstract suspend fun matchingBooks(name: String, author: String): List<Book>
+
+    open suspend fun getBook(name: String, author: String): Book? =
+        if (name.isBlank() || author.isBlank()) null else matchingBooks(name, author).singleOrNull()
 
     @Query("""select distinct bs.* from books, book_sources bs 
         where origin == bookSourceUrl and origin not like '${BookType.localTag}%' 
         and origin not like '${BookType.webDavTag}%'""")
-    suspend fun getAllUseBookSource(): List<BookSource>
+    abstract suspend fun getAllUseBookSource(): List<BookSource>
 
     @Query("SELECT * FROM books WHERE name = :name and origin = :origin")
-    suspend fun getBookByOrigin(name: String, origin: String): Book?
+    protected abstract suspend fun booksByOrigin(name: String, origin: String): List<Book>
+
+    open suspend fun getBookByOrigin(name: String, origin: String): Book? =
+        booksByOrigin(name, origin).singleOrNull()
 
     @Query("SELECT name, author, bookUrl FROM books")
-    fun flowShelfBookKeys(): Flow<List<ShelfBookKey>>
+    abstract fun flowShelfBookKeys(): Flow<List<ShelfBookKey>>
 
     @Query(
         """
@@ -94,46 +100,75 @@ interface BookDao {
         ORDER BY durChapterTime DESC
         """
     )
-    fun searchShelfBooks(key: String): Flow<List<Book>>
+    abstract fun searchShelfBooks(key: String): Flow<List<Book>>
 
     @Query("SELECT * FROM books")
-    suspend fun all(): List<Book>
+    abstract suspend fun all(): List<Book>
 
     @Query("SELECT * FROM books where type & ${BookType.text} > 0 ORDER BY durChapterTime DESC limit 1")
-    suspend fun lastReadBook(): Book?
+    abstract suspend fun lastReadBook(): Book?
 
     @Query("SELECT name, bookUrl FROM books")
-    suspend fun allBookUrlsWithName(): List<BookFolder>
+    abstract suspend fun allBookUrlsWithName(): List<BookFolder>
 
     @Query("SELECT COUNT(*) FROM books")
-    suspend fun allBookCount(): Int
+    abstract suspend fun allBookCount(): Int
 
     @Query("select min(`order`) from books")
-    suspend fun minOrder(): Int
+    abstract suspend fun minOrder(): Int
 
     @Query("select exists(select 1 from books where bookUrl = :bookUrl)")
-    suspend fun has(bookUrl: String): Boolean
+    abstract suspend fun has(bookUrl: String): Boolean
 
-    @Query("select exists(select 1 from books where name = :name and author = :author)")
-    suspend fun has(name: String, author: String): Boolean
+    open suspend fun has(name: String, author: String): Boolean = getBook(name, author) != null
 
     @Query(
         """select exists(select 1 from books where type & ${BookType.local} > 0 
         and (originName = :fileName or (origin != '${BookType.localTag}' and origin like '%' || :fileName)))"""
     )
-    suspend fun hasFile(fileName: String): Boolean
+    abstract suspend fun hasFile(fileName: String): Boolean
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(vararg book: Book)
+    protected abstract suspend fun insertRaw(book: Book)
 
     @Update
-    suspend fun update(vararg book: Book)
+    protected abstract suspend fun updateRaw(book: Book)
+
+    @Query("DELETE FROM books WHERE bookUrl = :bookUrl")
+    protected abstract suspend fun deleteRaw(bookUrl: String)
+
+    /** Preserve legacy known-author REPLACE behavior inside one writer transaction. */
+    @Transaction
+    open suspend fun insert(vararg book: Book) {
+        for (candidate in book) {
+            if (candidate.name.isNotBlank() && candidate.author.isNotBlank()) {
+                val matches = matchingBooks(candidate.name, candidate.author)
+                if (matches.size > 1) throw BookIdentityConflictException("Ambiguous known-author book identity")
+                matches.filter { it.bookUrl != candidate.bookUrl }.forEach { deleteRaw(it.bookUrl) }
+            }
+            insertRaw(candidate)
+        }
+    }
+
+    /** Missing primary keys remain no-ops; colliding known-author edits fail atomically. */
+    @Transaction
+    open suspend fun update(vararg book: Book) {
+        for (candidate in book) {
+            if (getBook(candidate.bookUrl) == null) continue
+            if (candidate.name.isNotBlank() && candidate.author.isNotBlank()) {
+                if (matchingBooks(candidate.name, candidate.author).any { it.bookUrl != candidate.bookUrl }) {
+                    throw BookIdentityConflictException("Known-author book identity conflict")
+                }
+            }
+            updateRaw(candidate)
+        }
+    }
 
     @Delete
-    suspend fun delete(vararg book: Book)
+    abstract suspend fun delete(vararg book: Book)
 
     @Transaction
-    suspend fun replace(oldBook: Book, newBook: Book) {
+    open suspend fun replace(oldBook: Book, newBook: Book) {
         delete(oldBook)
         insert(newBook)
     }
@@ -143,7 +178,7 @@ interface BookDao {
      * 也会与阅读退出时的 [updateProgress] 互相覆盖.
      */
     @Query("update books set durChapterIndex = :index, durChapterPos = :pos where bookUrl = :bookUrl")
-    suspend fun upDurChapter(bookUrl: String, index: Int, pos: Int)
+    abstract suspend fun upDurChapter(bookUrl: String, index: Int, pos: Int)
 
     /**
      * 仅 PATCH 进度字段, 避免阅读/播放界面退出时的整行 update 冲掉后台
@@ -158,7 +193,7 @@ interface BookDao {
             lastCheckCount = 0
             where bookUrl = :bookUrl"""
     )
-    suspend fun updateProgress(
+    abstract suspend fun updateProgress(
         bookUrl: String,
         durChapterIndex: Int,
         durChapterPos: Int,
@@ -170,21 +205,21 @@ interface BookDao {
      * WebDAV 上传进度成功后只落 syncTime
      */
     @Query("update books set syncTime = :syncTime where bookUrl = :bookUrl")
-    suspend fun upSyncTime(bookUrl: String, syncTime: Long)
+    abstract suspend fun upSyncTime(bookUrl: String, syncTime: Long)
 
     /**
      * 仅 PATCH 阅读配置列 (readConfig); 阅读界面菜单改的是整场持有的内存副本 book.config,
      * 整行 update 会冲掉并发 updateToc/refreshBookInfo 写入的其他字段.
      */
     @Query("update books set readConfig = :readConfig where bookUrl = :bookUrl")
-    suspend fun updateReadConfig(bookUrl: String, readConfig: Book.ReadConfig?)
+    abstract suspend fun updateReadConfig(bookUrl: String, readConfig: Book.ReadConfig?)
 
     /**
      * 仅 PATCH 检查记录 (lastCheckTime + totalChapterNum); 缓存/更新流程持有长生命周期
      * 快照且期间跑网络请求, 整行 update 会冲掉期间别处写入的字段.
      */
     @Query("update books set lastCheckTime = :lastCheckTime, totalChapterNum = :totalChapterNum where bookUrl = :bookUrl")
-    suspend fun updateLastCheckTime(bookUrl: String, lastCheckTime: Long, totalChapterNum: Int)
+    abstract suspend fun updateLastCheckTime(bookUrl: String, lastCheckTime: Long, totalChapterNum: Int)
 
     /**
      * 仅 PATCH 目录相关列; 目录刷新 (getChapterListAwait) 改的是内存快照 book,
@@ -200,7 +235,7 @@ interface BookDao {
             durChapterTitle = :durChapterTitle
             where bookUrl = :bookUrl"""
     )
-    suspend fun updateTocInfo(
+    abstract suspend fun updateTocInfo(
         bookUrl: String,
         totalChapterNum: Int,
         lastCheckTime: Long,
@@ -215,13 +250,13 @@ interface BookDao {
      * 整行 update 会把副本里的旧元数据写回去.
      */
     @Query("update books set `order` = :order where bookUrl = :bookUrl")
-    suspend fun upOrder(bookUrl: String, order: Int)
+    abstract suspend fun upOrder(bookUrl: String, order: Int)
 
     @Query("update books set `group` = `group` - :group where `group` & :group > 0")
-    suspend fun removeGroup(group: Long)
+    abstract suspend fun removeGroup(group: Long)
 
     @Query("delete from books where type & ${BookType.notShelf} > 0")
-    suspend fun deleteNotShelfBook()
+    abstract suspend fun deleteNotShelfBook()
 }
 
 data class BookFolder(
@@ -234,3 +269,6 @@ data class ShelfBookKey(
     val author: String,
     val bookUrl: String
 )
+
+/** A shared identity conflict, distinct from storage or parsing failures. */
+class BookIdentityConflictException(message: String) : IllegalStateException(message)
