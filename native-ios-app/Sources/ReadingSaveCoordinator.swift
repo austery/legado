@@ -11,21 +11,40 @@ enum ReadingSaveOutcome {
     case failed(String)
 }
 
+@MainActor
+final class ReadingSaveTimer {
+    private let cancelAction: () -> Void
+    private(set) var isCancelled = false
+    init(cancel: @escaping () -> Void = {}) { cancelAction = cancel }
+    func cancel() { isCancelled = true; cancelAction() }
+}
+
 /// Coalesces positions without tying accepted writes to cancellable navigation requests.
 @MainActor
 final class ReadingSaveCoordinator {
     typealias Writer = (ReadingPositionSample, Bool, @escaping (ReadingSaveOutcome) -> Void) -> Void
+    typealias Schedule = (UInt64, @escaping () -> Void) -> ReadingSaveTimer
     private let write: Writer
+    private let schedule: Schedule
     var onFailure: ((String) -> Void)?
     private var latest: ReadingPositionSample?
     private var acknowledgedSequence: Int64 = 0
     private var inFlight = false
     private var flushPending = false
     private var finishAction: (() -> Void)?
-    private var debounce: Task<Void, Never>?
-    private var deadline: Task<Void, Never>?
+    private var debounce: ReadingSaveTimer?
+    private var deadline: ReadingSaveTimer?
 
-    init(write: @escaping Writer) { self.write = write }
+    init(schedule: Schedule? = nil, write: @escaping Writer) {
+        self.write = write
+        self.schedule = schedule ?? { delay, action in
+            let task = Task {
+                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                action()
+            }
+            return ReadingSaveTimer { task.cancel() }
+        }
+    }
 
     func displayed(token: String, offset: Int) {
         if latest?.token == token { return }
@@ -42,15 +61,9 @@ final class ReadingSaveCoordinator {
         let sequence = (latest?.sequence ?? 0) + 1
         latest = ReadingPositionSample(token: token, sequence: sequence, offset: offset)
         debounce?.cancel()
-        debounce = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
-            self?.flush()
-        }
+        debounce = schedule(1_000_000_000) { [weak self] in self?.flush() }
         if deadline == nil {
-            deadline = Task { [weak self] in
-                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
-                self?.flush()
-            }
+            deadline = schedule(5_000_000_000) { [weak self] in self?.flush() }
         }
     }
 

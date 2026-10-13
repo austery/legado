@@ -96,4 +96,67 @@ final class ReadingSaveCoordinatorTests: XCTestCase {
         completions[1](.saved)
     }
 
+    @MainActor
+    private final class Clock {
+        struct Event {
+            let at: UInt64
+            let timer: ReadingSaveTimer
+            let action: () -> Void
+        }
+        var now: UInt64 = 0
+        var events: [Event] = []
+        func schedule(_ delay: UInt64, _ action: @escaping () -> Void) -> ReadingSaveTimer {
+            let timer = ReadingSaveTimer()
+            events.append(Event(at: now + delay, timer: timer, action: action))
+            return timer
+        }
+        func advance(_ delta: UInt64) {
+            let target = now + delta
+            while let event = events.filter({ $0.at <= target }).min(by: { $0.at < $1.at }) {
+                events.removeAll { $0.timer === event.timer }
+                now = event.at
+                if !event.timer.isCancelled { event.action() }
+            }
+            now = target
+        }
+    }
+
+    func testControlledIdleDeadlineSavesLatestOnlyAfterOneSecond() {
+        let clock = Clock()
+        var offsets: [Int] = []
+        let coordinator = ReadingSaveCoordinator(schedule: clock.schedule) { sample, _, completion in
+            offsets.append(sample.offset); completion(.saved)
+        }
+        coordinator.displayed(token: "book", offset: 0)
+        coordinator.sample(token: "book", offset: 10)
+        clock.advance(900_000_000)
+        coordinator.sample(token: "book", offset: 20)
+        clock.advance(999_999_999)
+        XCTAssertEqual(offsets, [0])
+        clock.advance(1)
+        XCTAssertEqual(offsets, [0, 20])
+        clock.advance(10_000_000_000)
+        XCTAssertEqual(offsets, [0, 20], "Cancelled deadline must not duplicate an acknowledged save")
+    }
+
+    func testControlledContinuousScrollSavesAtFiveSecondBoundary() {
+        let clock = Clock()
+        var times: [UInt64] = []
+        var offsets: [Int] = []
+        let coordinator = ReadingSaveCoordinator(schedule: clock.schedule) { sample, _, completion in
+            times.append(clock.now); offsets.append(sample.offset); completion(.saved)
+        }
+        coordinator.displayed(token: "book", offset: 0)
+        for offset in 1...9 {
+            coordinator.sample(token: "book", offset: offset)
+            clock.advance(500_000_000)
+        }
+        coordinator.sample(token: "book", offset: 10)
+        clock.advance(499_999_999)
+        XCTAssertEqual(offsets, [0])
+        clock.advance(1)
+        XCTAssertEqual(offsets, [0, 10])
+        XCTAssertEqual(times, [0, 5_000_000_000])
+    }
+
 }
