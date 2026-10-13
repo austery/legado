@@ -34,25 +34,36 @@ on:
       - 'gradlew*'
       - '.github/workflows/c1-engine.yml'
   workflow_dispatch:
+    inputs:
+      execution:
+        description: Runner to use for this C1 validation
+        type: choice
+        default: local
+        options: [local, cloud]
 
 permissions:
   contents: read
 
 concurrency:
-  group: c1-engine-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: c1-engine-${{ inputs.execution || 'local' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   engine:
     name: C1 engine regression
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(inputs.execution == 'cloud' && '["macos-26"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+      DEVELOPER_DIR: ${{ inputs.execution == 'cloud' && '/Applications/Xcode_26.5.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
+      - name: Isolate build caches
+        run: |
+          echo "GRADLE_USER_HOME=$RUNNER_TOOL_CACHE/legado/gradle" >> "$GITHUB_ENV"
+          echo "KONAN_DATA_DIR=$RUNNER_TOOL_CACHE/legado/konan" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
@@ -70,6 +81,7 @@ jobs:
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v5
         with:
+          cache-disabled: ${{ runner.environment == 'self-hosted' }}
           cache-read-only: ${{ github.event_name == 'pull_request' }}
       - name: Check environment
         run: |
