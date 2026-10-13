@@ -64,6 +64,10 @@ jobs:
         run: |
           echo "GRADLE_USER_HOME=$RUNNER_TOOL_CACHE/legado/gradle" >> "$GITHUB_ENV"
           echo "KONAN_DATA_DIR=$RUNNER_TOOL_CACHE/legado/konan" >> "$GITHUB_ENV"
+          if [[ "${{ runner.environment }}" == "self-hosted" ]]; then
+            android_sdk="$(cd "$RUNNER_TEMP/../../android-sdk" && pwd)"
+            echo "ANDROID_HOME=$android_sdk" >> "$GITHUB_ENV"
+          fi
       - uses: actions/checkout@v5
         with:
           persist-credentials: false

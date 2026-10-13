@@ -73,7 +73,7 @@ The independent `C1 Engine` workflow runs automatically for relevant `native-rea
 
 Runner installation: `/Users/leipeng/GitHubRunners/legado`; checkout: `_work/legado/legado`. Start `./run.sh` from the installation directory and wait for `Listening for Jobs`. No launch service is installed. If it is offline, jobs queue rather than falling back to cloud. Stop only this runner, after GitHub reports it idle, using Ctrl-C in its owning terminal. Other repository runners are independent and must not be stopped or reconfigured. This is a native process under the logged-in user, not an isolation sandbox.
 
-Manual dispatch accepts `execution=local` (default) or `execution=cloud`. The cloud option uses the standard ARM64 `macos-26` runner and Xcode 26.5; local execution uses `/Applications/Xcode.app` (Xcode 27 at initial validation). Both use JDK 17/21 and a task-local XcodeGen 2.46.0 download. GitHub's manual-dispatch availability depends on workflow registration/default-branch rules; no repository default-branch change is included here.
+Manual dispatch accepts `execution=local` (default) or `execution=cloud`. The cloud option uses the standard ARM64 `macos-26` runner and Xcode 26.5; local execution uses `/Applications/Xcode.app` (Xcode 27 at initial validation). Both use JDK 17/21 and a task-local XcodeGen 2.46.0 download. The local runner has its own `android-sdk/` copy for shared Gradle module configuration; the cloud route uses its preinstalled SDK. No Android build or test is added. GitHub's manual-dispatch availability depends on workflow registration/default-branch rules; no repository default-branch change is included here.
 
 ```sh
 gh workflow run c1-engine.yml --repo austery/legado \
