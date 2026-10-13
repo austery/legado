@@ -93,13 +93,14 @@ final class ReadingJourneyTests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
-    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "") async throws {
+    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false) async throws {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
         var json = try XCTUnwrap(String(data: data, encoding: .utf8))
         if !titleSuffix.isEmpty {
             json = json.replacingOccurrences(of: "class.name@text", with: "class.name@text##$## " + titleSuffix)
                 .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$## " + titleSuffix)
         }
+        if paragraphs { json = json.replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第") }
         if unknown { json = json.replacingOccurrences(of: "class.author@text", with: "class.absent-author@text") }
         if !enabled { json = json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false") }
         let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
@@ -154,12 +155,60 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertNil(reopened.message)
         XCTAssertTrue(reopened.content?.fromCache == true)
         reopened.read(reopened.chapters[1]); try await settle(reopened)
-        XCTAssertTrue(reopened.message?.contains("UNSUPPORTED") == true, "Disabled sources must not fetch uncached chapters")
+        XCTAssertTrue(reopened.message?.contains("CACHE_UNAVAILABLE") == true, "Disabled sources must not fetch uncached chapters")
         XCTAssertEqual(reopened.content?.chapter.id, catalog.first)
         reopened.removeShelfBook(entry)
         try await settle(reopened)
         XCTAssertNil(reopened.message)
         XCTAssertFalse(reopened.shelf.contains { $0.book.id == saved.id })
+    }
+
+    func testDisplayedParagraphSurvivesShelfReopenAndFailedNextChapter() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
+        model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+        model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(model.chapters[1]); try await settle(model)
+        let chapterID = try XCTUnwrap(model.content?.chapter.id)
+        let oldToken = try XCTUnwrap(model.content?.reading?.token)
+        XCTAssertTrue(model.content?.reading?.canSave == true)
+        let host = UIHostingController(rootView: ReaderScreen(model: model))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 768, height: 1024))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        host.view.layoutIfNeeded()
+        let view = try XCTUnwrap(findText(host.view) as? AnchoredTextView)
+        let displayDeadline = Date().addingTimeInterval(2)
+        while !model.canRetryPosition && Date() < displayDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertTrue(model.canRetryPosition, "Visible ReaderScreen must acknowledge its body before scrolling; notice=\(model.resumeNotice ?? "none")")
+        let target = (view.text as NSString).range(of: "第80段")
+        XCTAssertNotEqual(target.location, NSNotFound)
+        let glyph = view.layoutManager.glyphRange(forCharacterRange: target, actualCharacterRange: nil)
+        let rect = view.layoutManager.boundingRect(forGlyphRange: glyph, in: view.textContainer)
+        view.scrollViewWillBeginDragging(view)
+        view.setContentOffset(CGPoint(x: 0, y: rect.minY), animated: false)
+        view.scrollViewDidScroll(view)
+        view.scrollViewDidEndDragging(view, willDecelerate: false)
+        let expected = view.anchor
+        XCTAssertGreaterThan(expected, 0)
+        model.moveChapter(1); try await settle(model)
+        XCTAssertTrue(model.message?.contains("NETWORK") == true)
+        XCTAssertEqual(model.content?.chapter.id, chapterID)
+        XCTAssertNotEqual(model.content?.reading?.token, oldToken)
+        XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, Int32(expected))
+        model.showShelf(); try await settle(model)
+        let saved = try XCTUnwrap(model.book)
+        let reopened = ReaderModel()
+        reopened.start(); try await settle(reopened)
+        let entry = try XCTUnwrap(reopened.shelf.first { $0.book.id == saved.id })
+        reopened.openShelfBook(entry); try await settle(reopened)
+        XCTAssertEqual(reopened.route, .reading)
+        XCTAssertEqual(reopened.content?.chapter.id, chapterID)
+        XCTAssertEqual(reopened.content?.reading?.paragraphUtf16Offset, Int32(expected))
     }
 
     func testUnknownAuthorsRemainSeparateAndRemovedBookCanBeReadded() async throws {

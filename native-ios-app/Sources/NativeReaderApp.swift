@@ -11,6 +11,7 @@ struct NativeReaderApp: App {
 struct ReaderScreen: View {
     @StateObject private var model: ReaderModel
     init(model: ReaderModel) { _model = StateObject(wrappedValue: model) }
+    @Environment(\.scenePhase) private var scenePhase
     @State private var importing = false
     @State private var settings = false
     @State private var menu = true
@@ -27,12 +28,20 @@ struct ReaderScreen: View {
                         Button("Dismiss") { model.message = nil }
                     }.padding().background(.regularMaterial)
                 }
+                if let notice = model.saveNotice ?? model.resumeNotice {
+                    HStack {
+                        Text(notice).font(.callout)
+                        Spacer()
+                        if model.saveNotice != nil && model.canRetryPosition { Button("Retry save") { model.flushReadingPosition() } }
+                        Button("Dismiss") { model.resumeNotice = nil; model.saveNotice = nil }
+                    }.padding().background(.regularMaterial)
+                }
                 if model.busy {
-                    HStack { ProgressView(); Text("Loading…"); Spacer(); Button("Cancel") { model.cancel() } }.padding()
+                    HStack { ProgressView(); Text("Loading…"); Spacer(); Button("Cancel") { model.cancelLoading() } }.padding()
                 }
                 ZStack {
                     if let content = model.content {
-                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style)
+                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled)
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)
@@ -73,6 +82,9 @@ struct ReaderScreen: View {
             }
             .sheet(isPresented: $settings) { typography }
             .task { model.start() }
+            .onChange(of: scenePhase) { phase in
+                if phase != .active { model.flushReadingPosition() }
+            }
             .preferredColorScheme(style.dark ? .dark : .light)
         }
     }
@@ -154,8 +166,7 @@ struct ReaderScreen: View {
                 if model.chapters.isEmpty { Text("No chapters available.") }
                 ForEach(model.chapters, id: \.id) { chapter in
                     Button {
-                        if model.content?.chapter.id == chapter.id { model.navigate(.reading) }
-                        else { model.read(chapter) }
+                        model.read(chapter)
                     } label: {
                         HStack { Text(chapter.title); Spacer(); if model.content?.chapter.id == chapter.id { Image(systemName: "bookmark.fill") } }
                     }.disabled(model.busy)
