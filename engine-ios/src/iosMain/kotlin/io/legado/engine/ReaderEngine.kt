@@ -1,6 +1,10 @@
 package io.legado.engine
 
 import io.legado.app.data.AppDatabaseProviders
+import io.legado.app.data.dao.NativeBodyCoordinates
+import io.legado.app.data.dao.NativeResumeException
+import io.legado.app.data.dao.NativeResumeFailure
+import platform.Foundation.NSUUID
 import io.legado.app.data.dao.NativeShelfEntry
 import io.legado.app.data.dao.NativeShelfException
 import io.legado.app.data.dao.NativeShelfFailure
@@ -26,7 +30,7 @@ import kotlinx.serialization.json.JsonObject
 /** Public results contain immutable values, never Room entities or Kotlin Result. */
 abstract class EngineReply internal constructor()
 class EngineReady internal constructor() : EngineReply()
-enum class EngineErrorCode { INVALID_INPUT, NOT_FOUND, NETWORK, TIMEOUT, RULE, UNSUPPORTED, INTERACTION_REQUIRED, CANCELLED, INTERNAL, IDENTITY_CONFLICT, AMBIGUOUS_IDENTITY, STORAGE }
+enum class EngineErrorCode { INVALID_INPUT, NOT_FOUND, NETWORK, TIMEOUT, RULE, UNSUPPORTED, INTERACTION_REQUIRED, CANCELLED, INTERNAL, IDENTITY_CONFLICT, AMBIGUOUS_IDENTITY, STORAGE, STALE_UPDATE, CACHE_UNAVAILABLE }
 class EngineFailure internal constructor(val code: EngineErrorCode, val message: String) : EngineReply()
 class SourceSnapshot internal constructor(val id: String, val name: String, val enabled: Boolean)
 class SourcesReply internal constructor(val sources: List<SourceSnapshot>) : EngineReply()
@@ -44,7 +48,7 @@ class ChapterSnapshot internal constructor(val sourceId: String, val bookId: Str
     val index: Int, val title: String)
 class TocReply internal constructor(val chapters: List<ChapterSnapshot>) : EngineReply()
 class ContentReply internal constructor(val chapter: ChapterSnapshot, val text: String,
-    val fromCache: Boolean) : EngineReply()
+    val fromCache: Boolean, val reading: ReadingSnapshot? = null) : EngineReply()
 class EngineRequest internal constructor(private val job: Job) {
     fun cancel() { job.cancel() }
 }
@@ -55,6 +59,7 @@ class ReaderEngine {
     private val books = mutableMapOf<Pair<String, String>, Book>()
     private val chapters = mutableMapOf<Pair<String, String>, List<BookChapter>>()
     private var initialized = false
+    private val sessionId = NSUUID().UUIDString
 
     fun initialize(completion: (EngineReply) -> Unit): EngineRequest = request(completion, false) {
         try { EngineHost.initialize() }
@@ -110,6 +115,7 @@ class ReaderEngine {
 
     fun removeFromShelf(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.removeFromShelf(sourceId, bookId) }
+        ReadingSessions.invalidate(sourceId, bookId)
         ShelfRemoved()
     }
 
@@ -159,34 +165,148 @@ class ReaderEngine {
         TocReply(result.map { snapshot(sourceId, it) })
     }
 
-    /** Cache-only never fetches. Network mode reuses upstream pagination and text storage. */
+    fun openReading(sourceId: String, bookId: String, cacheOnly: Boolean,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        val entry = shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
+        acceptShelfEntry(entry)
+        val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.get(bookId)
+        val chapter = if (saved != null) {
+            if (saved.sourceId != sourceId) throw InvalidInput("Saved source differs from the book")
+            entry.chapters.singleOrNull { it.url == saved.chapterUrl && it.index == saved.chapterIndex }
+                ?: throw MissingEntity("Saved chapter is no longer in the catalog; choose a chapter explicitly")
+        } else if (entry.book.durChapterIndex != 0 || entry.book.durChapterPos != 0 || !entry.book.durChapterTitle.isNullOrEmpty()) {
+            entry.chapters.singleOrNull { it.index == entry.book.durChapterIndex && !it.isVolume &&
+                (entry.book.durChapterTitle.isNullOrEmpty() || it.title == entry.book.durChapterTitle) }
+                ?: throw MissingEntity("Legacy chapter cannot be verified; choose a chapter explicitly")
+        } else entry.chapters.firstOrNull { !it.isVolume } ?: throw MissingEntity("No readable chapter is stored")
+        chapterContent(sourceId, bookId, chapter.url, cacheOnly, true)
+    }
+
     fun loadChapter(sourceId: String, bookId: String, chapterId: String, cacheOnly: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        chapterContent(sourceId, bookId, chapterId, cacheOnly, false)
+    }
+
+    private suspend fun chapterContent(sourceId: String, bookId: String, chapterId: String,
+        cacheOnly: Boolean, restore: Boolean): EngineReply {
         val book = book(sourceId, bookId)
         val toc = chapters[sourceId to bookId] ?: throw MissingEntity("Load the table of contents first")
         val position = toc.indexOfFirst { it.url == chapterId }
-        if (position < 0) throw MissingEntity("Chapter is not in this session's table of contents")
+        if (position < 0) throw MissingEntity("Chapter is not in the catalog")
         val chapter = toc[position]
-        val cached = BookStorageProviders.get().getContent(book, chapter)
-        if (cached != null) {
-            ContentReply(snapshot(sourceId, chapter), cached, true)
-        } else {
-            if (cacheOnly) throw MissingEntity("Chapter is not cached")
-            val source = source(sourceId)
-            val content = WebBook.getContentAwait(source, book, chapter,
+        val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.get(bookId)
+        val cached = BookStorageProviders.get().getContent(book, chapter)?.takeIf { it.isNotEmpty() }
+        val expected = saved?.takeIf { it.chapterUrl == chapterId }
+        val usable = cached?.takeIf { expected == null ||
+            (NativeBodyCoordinates.sha256(it) == expected.textSha256 && it.length == expected.textUtf16Length) }
+        val content = usable ?: run {
+            if (cacheOnly) throw CacheUnavailable("Chapter cache is missing or differs from saved progress")
+            val source = try { source(sourceId) } catch (error: Exception) {
+                throw CacheUnavailable("Verified cache unavailable; source cannot fetch: ${error.message}")
+            }
+            val downloaded = WebBook.getContentAwait(source, book, chapter,
                 nextChapterUrl = toc.getOrNull(position + 1)?.url, needSave = false)
             currentCoroutineContext().ensureActive()
-            val interaction = EngineHost.interactionFailure()
-            if (interaction != null) {
-                interaction
-            } else {
-                BookHelpProviders.get().saveContent(source, book, chapter, content)
-                ContentReply(snapshot(sourceId, chapter), content, false)
+            EngineHost.interactionFailure()?.let { return it }
+            if (downloaded.isEmpty()) throw CacheUnavailable("Chapter returned an empty body")
+            BookHelpProviders.get().saveContent(source, book, chapter, downloaded)
+            downloaded
+        }
+        val shelf = try { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
+            catch (error: NativeShelfException) { if (error.failure == NativeShelfFailure.NOT_ON_SHELF) null else throw error }
+        val reading = shelf?.let {
+            var offset = 0
+            var notice = ""
+            var canSave = true
+            if (saved != null && saved.textVersion != NativeBodyCoordinates.VERSION) {
+                notice = "Unsupported reading position version; showing chapter start without overwriting it"
+                canSave = false
+            } else if (saved != null && (saved.revision <= 0 || saved.sourceId != sourceId)) {
+                notice = "Saved identity or revision is invalid; progress will not be overwritten"
+                canSave = false
+            } else if (restore && saved != null) {
+                if (it.book.durChapterIndex != saved.chapterIndex || it.book.durChapterTitle != chapter.title) {
+                    notice = "Shared chapter state changed; showing chapter start"
+                } else if (saved.textSha256 != NativeBodyCoordinates.sha256(content) || saved.textUtf16Length != content.length) {
+                    notice = "Chapter text changed; showing chapter start"
+                } else {
+                    try {
+                        offset = NativeBodyCoordinates.paragraphStart(content, saved.paragraphUtf16Offset)
+                        if (offset != saved.paragraphUtf16Offset) throw InvalidInput("Invalid paragraph boundary")
+                    } catch (error: Exception) {
+                        notice = "Saved position is invalid; showing chapter start"
+                        offset = 0
+                    }
+                }
             }
+            val token = NSUUID().UUIDString
+            ReadingSessions.tokens[token] = ReadingSession(sessionId, sourceId, bookId, chapter,
+                content, saved?.revision ?: 0, canSave, ChapterProjection.from(it.book))
+            ReadingSnapshot(token, saved?.revision ?: 0, offset, notice, canSave)
+        }
+        return ContentReply(snapshot(sourceId, chapter), content, usable != null, reading)
+    }
+
+    /** Accepted saves are independent of cancellable foreground network requests. */
+    fun saveReadingPosition(token: String, eventSequence: Long, utf16Offset: Int,
+        completion: (EngineReply) -> Unit) = persistReading(token, eventSequence, utf16Offset, false, completion)
+
+    fun finishReading(token: String, eventSequence: Long, utf16Offset: Int,
+        completion: (EngineReply) -> Unit) = persistReading(token, eventSequence, utf16Offset, true, completion)
+
+    fun abandonReading(token: String, completion: (EngineReply) -> Unit) {
+        persistence(completion) {
+            val reading = ReadingSessions.tokens[token]
+            if (reading != null && reading.owner != sessionId) throw StaleReading("Token belongs to another session")
+            ReadingSessions.tokens.remove(token)
+            ReadingFinished()
         }
     }
 
-    fun close() { scope.cancel() }
+    private fun persistReading(token: String, eventSequence: Long, utf16Offset: Int, finish: Boolean,
+        completion: (EngineReply) -> Unit) {
+        persistence(completion) {
+            val reading = ReadingSessions.tokens[token] ?: throw StaleReading("Reading token expired")
+            if (reading.owner != sessionId || eventSequence <= reading.lastEvent || eventSequence <= 0)
+                throw StaleReading("Reading event is stale")
+            reading.lastEvent = eventSequence
+            if (!reading.canSave) throw UnsupportedOperationException("Saved format cannot be overwritten")
+            val entry = AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(reading.sourceId, reading.bookId)
+            if (ChapterProjection.from(entry.book) != reading.projection)
+                throw StaleReading("Shared reading chapter state changed")
+            val chapter = entry.chapters.singleOrNull { it.url == reading.chapter.url && it.index == reading.chapter.index }
+                ?: throw StaleReading("Chapter identity changed")
+            if (BookStorageProviders.get().getContent(entry.book, chapter) != reading.body)
+                throw CacheUnavailable("Displayed text is not safely available in the chapter cache")
+            val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.save(reading.sourceId, reading.bookId,
+                chapter.url, chapter.index, reading.body, utf16Offset, reading.revision)
+            reading.projection = ChapterProjection(chapter.index, chapter.title, saved.savedAt, 0)
+            reading.revision = saved.revision
+            reading.lastEvent = eventSequence
+            if (finish) ReadingSessions.tokens.remove(token)
+            ReadingSaved(saved.revision, saved.paragraphUtf16Offset, eventSequence)
+        }
+    }
+
+    private fun persistence(completion: (EngineReply) -> Unit, action: suspend () -> EngineReply) {
+        ReadingSessions.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val result = try { EngineHost.gate.withLock { action() } } catch (error: Exception) {
+                when (error) {
+                    is NativeResumeException, is NativeShelfException, is CacheUnavailable,
+                    is StaleReading, is UnsupportedOperationException -> failure(error)
+                    else -> EngineFailure(EngineErrorCode.STORAGE, error.message ?: "Reading persistence failed")
+                }
+            }
+            withContext(Dispatchers.Main) { completion(result) }
+        }
+    }
+
+    fun close() {
+        scope.cancel()
+        ReadingSessions.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            EngineHost.gate.withLock { ReadingSessions.tokens.entries.removeAll { it.value.owner == sessionId } }
+        }
+    }
 
     private suspend fun source(id: String): BookSource {
         val source = AppDbProviders.get().bookSourceDao.getBookSource(id) ?: throw MissingEntity("Source not found")
@@ -239,6 +359,15 @@ class ReaderEngine {
 
     private fun failure(error: Exception): EngineFailure {
         val code = when (error) {
+            is CacheUnavailable -> EngineErrorCode.CACHE_UNAVAILABLE
+            is StaleReading -> EngineErrorCode.STALE_UPDATE
+            is NativeResumeException -> when (error.failure) {
+                NativeResumeFailure.INVALID_POSITION -> EngineErrorCode.INVALID_INPUT
+                NativeResumeFailure.IDENTITY_CONFLICT -> EngineErrorCode.IDENTITY_CONFLICT
+                NativeResumeFailure.NOT_ON_SHELF, NativeResumeFailure.CHAPTER_MISMATCH -> EngineErrorCode.NOT_FOUND
+                NativeResumeFailure.STALE_REVISION -> EngineErrorCode.STALE_UPDATE
+                NativeResumeFailure.UNSUPPORTED_VERSION -> EngineErrorCode.UNSUPPORTED
+            }
             is ShelfStorageFailure -> EngineErrorCode.STORAGE
             is NativeShelfException -> when (error.failure) {
                 NativeShelfFailure.INVALID_INPUT -> EngineErrorCode.INVALID_INPUT
@@ -266,3 +395,31 @@ private class InvalidInput(message: String) : Exception(message)
 private class HttpFailure(status: Int) : Exception("HTTP $status")
 
 private class ShelfStorageFailure(message: String) : Exception(message)
+
+class ReadingSnapshot internal constructor(val token: String, val revision: Long,
+    val paragraphUtf16Offset: Int, val restoreNotice: String, val canSave: Boolean)
+class ReadingSaved internal constructor(val revision: Long, val paragraphUtf16Offset: Int,
+    val eventSequence: Long) : EngineReply()
+class ReadingFinished internal constructor() : EngineReply()
+private class CacheUnavailable(message: String) : Exception(message)
+private class StaleReading(message: String) : Exception(message)
+private class ReadingSession(val owner: String, val sourceId: String, val bookId: String,
+    val chapter: BookChapter, val body: String, var revision: Long, val canSave: Boolean,
+    var projection: ChapterProjection,
+    var lastEvent: Long = 0)
+
+/** All accesses hold EngineHost.gate, including cross-engine shelf removal. */
+private object ReadingSessions {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val tokens = mutableMapOf<String, ReadingSession>()
+    fun invalidate(sourceId: String, bookId: String) {
+        tokens.entries.removeAll { it.value.sourceId == sourceId && it.value.bookId == bookId }
+    }
+}
+
+private data class ChapterProjection(val index: Int, val title: String?, val time: Long, val offset: Int) {
+    companion object {
+        fun from(book: Book) = ChapterProjection(book.durChapterIndex, book.durChapterTitle,
+            book.durChapterTime, book.durChapterPos)
+    }
+}
