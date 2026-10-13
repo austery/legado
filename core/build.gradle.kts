@@ -5,6 +5,7 @@
 // UI 源集文件 (sharedUiMain/skikoUiMain/nonOhosUiMain/iosAndOhosUiMain 的 help 实现)
 // 与 ui 包留 :shared, 由 :ui 批次吸收。
 import org.jetbrains.kotlin.gradle.plugin.KotlinDependencyHandler
+import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
 
 plugins {
     id("legado.kmp.library")
@@ -39,7 +40,12 @@ kotlin {
 
     if (enableIosTarget) {
         iosArm64()
-        iosSimulatorArm64()
+        iosSimulatorArm64 {
+            binaries.withType<TestExecutable>().configureEach {
+                val nativeLibDir = rootProject.file("data/build/iosNativeLibs/ios_simulator_arm64")
+                linkerOpts("-L${nativeLibDir.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3")
+            }
+        }
     }
 
     if (enableOhosTarget) {
@@ -121,6 +127,7 @@ kotlin {
         }
 
         // 测试 (从 :shared 迁移)
+        commonTest.dependencies { implementation(libs.jetbrains.kotlin.test) }
         val jvmAndAndroidTest = create("jvmAndAndroidTest") {
             dependsOn(commonTest.get())
             dependencies {
