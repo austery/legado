@@ -1,6 +1,7 @@
 import XCTest
 import ReaderEngine
 import CryptoKit
+import SQLite3
 
 @MainActor
 final class ResumeEngineTests: XCTestCase {
@@ -165,6 +166,84 @@ final class ResumeEngineTests: XCTestCase {
         let restored = try XCTUnwrap(restoredReply as? ContentReply)
         XCTAssertEqual(restored.reading?.revision, saved.revision)
         XCTAssertEqual(restored.reading?.paragraphUtf16Offset, saved.paragraphUtf16Offset)
+    }
+
+    func testMissingCacheRefusesOfflineOpenWithoutChangingSavedPosition() async throws {
+        let engine = ReaderEngine()
+        defer { engine.close() }
+        let (base, _, book, content) = try await fixture(engine)
+        let token = try XCTUnwrap(content.reading?.token)
+        let body = content.text as NSString
+        let offset = body.paragraphRange(for: body.range(of: "C1-MIDDLE")).location
+        let savedReply = await write { engine.finishReading(token: token, eventSequence: 1, utf16Offset: Int32(offset), completion: $0) }
+        let saved = try XCTUnwrap(savedReply as? ReadingSaved)
+        let target = cacheURL(book: book, chapter: content.chapter)
+        let backup = target.appendingPathExtension("owned-test-backup-" + UUID().uuidString)
+        try FileManager.default.moveItem(at: target, to: backup)
+        defer {
+            if FileManager.default.fileExists(atPath: backup.path) {
+                try? FileManager.default.moveItem(at: backup, to: target)
+            }
+        }
+        let missing = await call { engine.openReading(sourceId: base, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((missing as? EngineFailure)?.code, .cacheUnavailable)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        try FileManager.default.moveItem(at: backup, to: target)
+        let restoredReply = await call { engine.openReading(sourceId: base, bookId: book.id, cacheOnly: true, completion: $0) }
+        let restored = try XCTUnwrap(restoredReply as? ContentReply)
+        XCTAssertEqual(restored.reading?.revision, saved.revision)
+        XCTAssertEqual(restored.reading?.paragraphUtf16Offset, saved.paragraphUtf16Offset)
+    }
+
+    private func deleteOwnedFixtureSource(_ sourceID: String) throws {
+        let prefix = "http://127.0.0.1:18769/runs/"
+        XCTAssertTrue(sourceID.hasPrefix(prefix))
+        _ = try XCTUnwrap(UUID(uuidString: String(sourceID.dropFirst(prefix.count))))
+        let databaseURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("legado.db")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: databaseURL.path))
+        var database: OpaquePointer?
+        let opened = sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READWRITE, nil)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(opened, SQLITE_OK)
+        let connection = try XCTUnwrap(database)
+        sqlite3_busy_timeout(connection, 5_000)
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection,
+            "DELETE FROM book_sources WHERE bookSourceUrl = ? AND bookSourceName = 'Path C Controlled Source'",
+            -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        let prepared = try XCTUnwrap(statement)
+        sourceID.withCString { pointer in
+            XCTAssertEqual(sqlite3_bind_text(prepared, 1, pointer, -1, nil), SQLITE_OK)
+            XCTAssertEqual(sqlite3_step(prepared), SQLITE_DONE)
+        }
+        XCTAssertEqual(sqlite3_changes(connection), 1, "Only the source created by this test may be deleted")
+    }
+
+    func testDeletedSourceKeepsVerifiedCacheReadableButCannotFetchAnotherChapter() async throws {
+        let engine = ReaderEngine()
+        defer { engine.close() }
+        let (base, _, book, content) = try await fixture(engine)
+        let token = try XCTUnwrap(content.reading?.token)
+        let savedReply = await write { engine.finishReading(token: token, eventSequence: 1, utf16Offset: 0, completion: $0) }
+        let saved = try XCTUnwrap(savedReply as? ReadingSaved)
+        let entryReply = await call { engine.openShelfBook(sourceId: base, bookId: book.id, completion: $0) }
+        let second = try XCTUnwrap((entryReply as? ShelfEntryReply)?.chapters.dropFirst().first)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL(book: book, chapter: second).path))
+        try deleteOwnedFixtureSource(base)
+        let sourceReply = await call { engine.listSources(completion: $0) }
+        XCTAssertFalse(try XCTUnwrap(sourceReply as? SourcesReply).sources.contains { $0.id == base })
+        let reopened = await call { engine.openReading(sourceId: base, bookId: book.id, cacheOnly: false, completion: $0) }
+        let restored = try XCTUnwrap(reopened as? ContentReply)
+        XCTAssertTrue(restored.fromCache)
+        XCTAssertEqual(restored.text, content.text)
+        XCTAssertEqual(restored.reading?.revision, saved.revision)
+        let uncached = await call { engine.loadChapter(sourceId: base, bookId: book.id, chapterId: second.id, cacheOnly: false, completion: $0) }
+        XCTAssertEqual((uncached as? EngineFailure)?.code, .cacheUnavailable)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL(book: book, chapter: second).path))
+        let retainedReply = await call { engine.openReading(sourceId: base, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((retainedReply as? ContentReply)?.reading?.revision, saved.revision)
     }
 
 }
