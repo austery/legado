@@ -180,7 +180,7 @@ final class Harness: ObservableObject {
         let failed = await call { engine.loadChapter(sourceId: id, bookId: book.id, chapterId: chapter.id, cacheOnly: false, completion: $0) }
         expectFailure("pagination-http-error", failed, .network)
         let uncached = await call { engine.loadChapter(sourceId: id, bookId: book.id, chapterId: chapter.id, cacheOnly: true, completion: $0) }
-        expectFailure("failed-content-not-cached", uncached, .notFound)
+        expectFailure("failed-content-not-cached", uncached, .cacheUnavailable)
         for suffix in ["toc-error", "content-interaction", "cookie"] {
             let probeId = base + "/" + suffix
             let search = await call { engine.search(sourceId: probeId, query: "Path", page: 1, completion: $0) }
@@ -196,7 +196,7 @@ final class Harness: ObservableObject {
             let content = await call { engine.loadChapter(sourceId: probeId, bookId: book.id, chapterId: chapter.id, cacheOnly: false, completion: $0) }
             expectFailure("content-interaction", content, .interactionRequired)
             let cache = await call { engine.loadChapter(sourceId: probeId, bookId: book.id, chapterId: chapter.id, cacheOnly: true, completion: $0) }
-            expectFailure("interaction-not-cached", cache, .notFound)
+            expectFailure("interaction-not-cached", cache, .cacheUnavailable)
         }
     }
 
