@@ -143,6 +143,12 @@ that an identical legacy replacement occurred before the first native save; ther
 is no persistent row-incarnation marker. Do not describe that case as proven
 lifecycle invalidation.
 
-Atomic cache replacement and retaining in-session text after cache-write failure
-remain the separate C3 failure-recovery slice. These API changes alone do not prove
-cross-process paragraph restoration or physical-device acceptance.
+Chapter-cache I/O failure after a successful download returns the same body with
+`ContentReply.storageNotice`; it also disables saving for that reading token.
+The notice applies to unshelved reading as well. Network/rule failures and
+cancellation still fail the request. Successful chapter writes are read back before
+a saveable token is issued; the native storage provider performs checked atomic
+replacement at the existing cache path. Native resume saves recheck the cached body
+again before committing their database transaction. These are separate file and
+database commits, not a common transaction or a power-loss durability guarantee.
+Physical-device acceptance remains a separate owner gate.

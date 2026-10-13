@@ -48,7 +48,8 @@ class ChapterSnapshot internal constructor(val sourceId: String, val bookId: Str
     val index: Int, val title: String)
 class TocReply internal constructor(val chapters: List<ChapterSnapshot>) : EngineReply()
 class ContentReply internal constructor(val chapter: ChapterSnapshot, val text: String,
-    val fromCache: Boolean, val reading: ReadingSnapshot? = null) : EngineReply()
+    val fromCache: Boolean, val reading: ReadingSnapshot? = null,
+    val storageNotice: String = "") : EngineReply()
 class EngineRequest internal constructor(private val job: Job) {
     fun cancel() { job.cancel() }
 }
@@ -199,6 +200,7 @@ class ReaderEngine {
         val expected = saved?.takeIf { it.chapterUrl == chapterId }
         val usable = cached?.takeIf { expected == null ||
             (NativeBodyCoordinates.sha256(it) == expected.textSha256 && it.length == expected.textUtf16Length) }
+        var storageNotice = ""
         val content = usable ?: run {
             if (cacheOnly) throw CacheUnavailable("Chapter cache is missing or differs from saved progress")
             val source = try { source(sourceId) } catch (error: Exception) {
@@ -209,7 +211,16 @@ class ReaderEngine {
             currentCoroutineContext().ensureActive()
             EngineHost.interactionFailure()?.let { return it }
             if (downloaded.isEmpty()) throw CacheUnavailable("Chapter returned an empty body")
-            BookHelpProviders.get().saveContent(source, book, chapter, downloaded)
+            try {
+                BookHelpProviders.get().saveContent(source, book, chapter, downloaded)
+                if (BookStorageProviders.get().getContent(book, chapter) != downloaded) {
+                    throw okio.IOException("Saved chapter body could not be verified")
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: okio.IOException) {
+                storageNotice = "Text is available for this session, but offline reading and progress were not saved: ${error.message}"
+            }
             downloaded
         }
         val shelf = try { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
@@ -217,7 +228,7 @@ class ReaderEngine {
         val reading = shelf?.let {
             var offset = 0
             var notice = ""
-            var canSave = true
+            var canSave = storageNotice.isEmpty()
             if (saved != null && saved.textVersion != NativeBodyCoordinates.VERSION) {
                 notice = "Unsupported reading position version; showing chapter start without overwriting it"
                 canSave = false
@@ -241,10 +252,10 @@ class ReaderEngine {
             }
             val token = NSUUID().UUIDString
             ReadingSessions.tokens[token] = ReadingSession(sessionId, sourceId, bookId, chapter,
-                content, saved?.revision ?: 0, canSave, ChapterProjection.from(it.book))
+                content, saved?.revision ?: 0, canSave, ChapterProjection.from(it.book), storageNotice)
             ReadingSnapshot(token, saved?.revision ?: 0, offset, notice, canSave)
         }
-        return ContentReply(snapshot(sourceId, chapter), content, usable != null, reading)
+        return ContentReply(snapshot(sourceId, chapter), content, usable != null, reading, storageNotice)
     }
 
     /** Accepted saves are independent of cancellable foreground network requests. */
@@ -270,6 +281,7 @@ class ReaderEngine {
             if (reading.owner != sessionId || eventSequence <= reading.lastEvent || eventSequence <= 0)
                 throw StaleReading("Reading event is stale")
             reading.lastEvent = eventSequence
+            if (reading.storageNotice.isNotEmpty()) throw CacheUnavailable(reading.storageNotice)
             if (!reading.canSave) throw UnsupportedOperationException("Saved format cannot be overwritten")
             val entry = AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(reading.sourceId, reading.bookId)
             if (ChapterProjection.from(entry.book) != reading.projection)
@@ -405,7 +417,7 @@ private class CacheUnavailable(message: String) : Exception(message)
 private class StaleReading(message: String) : Exception(message)
 private class ReadingSession(val owner: String, val sourceId: String, val bookId: String,
     val chapter: BookChapter, val body: String, var revision: Long, val canSave: Boolean,
-    var projection: ChapterProjection,
+    var projection: ChapterProjection, val storageNotice: String,
     var lastEvent: Long = 0)
 
 /** All accesses hold EngineHost.gate, including cross-engine shelf removal. */
