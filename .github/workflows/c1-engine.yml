@@ -18,7 +18,7 @@ on:
       - 'gradlew*'
       - '.github/workflows/c1-engine.yml'
   push:
-    branches: [native-reader, codex/c1-cloud-ci]
+    branches: [native-reader]
     paths:
       - 'engine-ios/**'
       - 'scripts/**'
