@@ -7,7 +7,7 @@ settings:
     SWIFT_VERSION: '5.9'
     ARCHS: arm64
     MARKETING_VERSION: 0.1.0
-    CURRENT_PROJECT_VERSION: 1
+    CURRENT_PROJECT_VERSION: 2
     TARGETED_DEVICE_FAMILY: '1,2'
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_CFBundleDisplayName: Native Reader C2
@@ -27,6 +27,46 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            www.aixiashu.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.23uswx.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.kk169.net:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.kk169.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.yetianlian.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xyetianlian.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.booksky.cc:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xbotaodz.info:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.biquge.xin:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xianqihaotianmi.org:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.7kbook.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xxtxt.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.zzdushu.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.pinshulou.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.kuuai.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.miaobige.cc:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.ygzww.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xsabc.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.b5200.net:
+              NSExceptionAllowsInsecureHTTPLoads: true
         UIRequiresFullScreen: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

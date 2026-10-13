@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import ReaderEngine
 import SwiftUI
 
@@ -17,6 +18,7 @@ final class ReaderModel: ObservableObject {
     @Published var busy = false
     @Published var message: String?
     @Published var importNotice: String?
+    @Published private(set) var importDetails: String?
     @Published var hasSearched = false
     @Published var hasNextPage = false
     private let engine = ReaderEngine()
@@ -55,14 +57,24 @@ final class ReaderModel: ObservableObject {
     func importFile(_ url: URL) {
         guard initialized else { return }
         cancel()
+        importDetails = nil
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        do { importJSON(try String(contentsOf: url, encoding: .utf8)) }
+        do {
+            let json = try String(contentsOf: url, encoding: .utf8)
+            let bytes = Data(json.utf8)
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+            importDetails = "\(url.lastPathComponent)\nDecoded UTF-8: \(bytes.count) bytes\nSHA-256: \(digest)\nApp: \(version) (\(build))"
+            importJSON(json)
+        }
         catch { reportFileError(error.localizedDescription) }
     }
 
     func reportFileError(_ detail: String) {
         cancel()
+        importDetails = nil
         message = "Unable to import file: \(detail)"
     }
 

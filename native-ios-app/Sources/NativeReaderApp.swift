@@ -88,6 +88,11 @@ struct ReaderScreen: View {
                 if model.initialized { Button("Refresh sources") { model.refreshSources() }.disabled(model.busy) }
                 Button("Import Legado JSON") { importing = true }.disabled(model.busy || !model.initialized)
                 if let notice = model.importNotice { Text(notice).foregroundStyle(.secondary) }
+                if let details = model.importDetails {
+                    DisclosureGroup("Import details") {
+                        Text(details).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                }
                 if model.sources.isEmpty { Text("Import an enabled text source to begin.").foregroundStyle(.secondary) }
                 else {
                     Picker("Source", selection: $model.sourceID) {

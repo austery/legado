@@ -58,9 +58,15 @@ listing, so a Mac-only bundle check missed the defect. The packaging script omit
 metadata, validates the archive, preserves executable permissions and refuses to
 overwrite an existing delivery. This check does not prove device signing/install.
 
-The app retains the platform's default transport security policy. The C1 harness
-has a broader historical policy; its HTTP success must not be claimed as proof of
-this app's transport compatibility. Validate selected source transports in the app.
+After the owner's physical `-1022` failure and explicit HTTP authorization, build
+0.1.0 (2) adds ATS exceptions for the 16 exact HTTP hosts in their 20-source bundle
+and three separately owner-approved observed redirect hosts (`www.kk169.la`,
+`www.xyetianlian.com`, `www.xbotaodz.info`).
+`project.yml` is the authoritative host list. There is no global arbitrary-load
+override, wildcard/subdomain exception, lowered TLS version, or custom certificate
+trust bypass. Other HTTP hosts, including redirects to unlisted hosts, still need
+an explicit policy decision. These transport entries do not rewrite source rules.
+Import remains independent of transport reachability and live source correctness.
 
 ## Validation status
 
@@ -97,5 +103,7 @@ fixture ports and separate runner script.
 
 Physical iPad installation, two live community-source journeys, actual split-view
 interaction, and owner comfort acceptance remain pending. Host-view resizing and
-an unsigned device build do not satisfy those gates. The candidate retains default
-transport security; controlled loopback success is not a whole-source compatibility claim.
+an unsigned device build do not satisfy those gates. Controlled loopback success
+is not a whole-source compatibility claim. Expand `Import details` to compare the
+filename, decoded UTF-8 length and hash when a device import differs from a local
+test; source contents and credentials are not shown in those diagnostics.
