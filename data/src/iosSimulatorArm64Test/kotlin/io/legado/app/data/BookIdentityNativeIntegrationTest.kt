@@ -5,10 +5,20 @@ import androidx.sqlite.driver.NativeSQLiteDriver
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import androidx.sqlite.execSQL
+import androidx.room3.useWriterConnection
+import androidx.room3.immediateTransaction
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
+
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSUUID
 import kotlin.test.Test
@@ -87,6 +97,67 @@ class BookIdentityNativeIntegrationTest {
                 }
             }
         } finally { database.close() }
+    }
+
+    @Test
+    fun independentRoomConnectionsSerializeKnownReplacementAndPreserveUnknownBooks() = runBlocking {
+        val path = NSTemporaryDirectory() + "PROTOTYPE-spec003-concurrency-" + NSUUID().UUIDString + ".db"
+        val databases = List(4) {
+            Room.databaseBuilder<AppDatabase>(path).setDriver(NativeSQLiteDriver())
+                .addMigrations(*DatabaseMigrations.migrations).build()
+        }
+        try {
+            // Open distinct Room pools before contention, so this tests writes rather than schema creation.
+            databases.forEach { assertEquals(0, it.bookDao.allBookCount()) }
+            val start = CompletableDeferred<Unit>()
+            val ready = Channel<Unit>(databases.size)
+            val completedWrites = withTimeout(30_000) {
+                coroutineScope {
+                    val workers = databases.mapIndexed { worker, database ->
+                        async(Dispatchers.Default) {
+                            ready.send(Unit)
+                            start.await()
+                            repeat(8) { sequence ->
+                                val identity = worker * 8 + sequence
+                                // Legacy known-author replacement must also atomically replace child chapters.
+                                database.useWriterConnection { writer -> writer.immediateTransaction {
+                                    database.bookDao.insert(Book(bookUrl = "known-$identity", name = "Known", author = "Author", durChapterPos = identity))
+                                    database.bookChapterDao.insert(BookChapter(bookUrl = "known-$identity", url = "chapter-$identity", title = "Known $identity"))
+                                } }
+                                // Unknown authors have separate source records and independent progress/catalogs.
+                                database.useWriterConnection { writer -> writer.immediateTransaction {
+                                    database.bookDao.insert(Book(bookUrl = "unknown-$identity", origin = "source-$worker", name = "Unknown", author = "", durChapterPos = identity))
+                                    database.bookChapterDao.insert(BookChapter(bookUrl = "unknown-$identity", url = "chapter-$identity", title = "Unknown $identity"))
+                                } }
+                            }
+                            16
+                        }
+                    }
+                    repeat(databases.size) { ready.receive() }
+                    start.complete(Unit)
+                    workers.awaitAll().sum()
+                }
+            }
+            assertEquals(64, completedWrites)
+            for (database in databases) {
+                val books = database.bookDao.all()
+                assertEquals(33, books.size)
+                val known = books.single { it.name == "Known" }
+                val winningIdentity = known.bookUrl.removePrefix("known-").toInt()
+                assertEquals(winningIdentity, known.durChapterPos)
+                assertEquals(listOf("Known $winningIdentity"), database.bookChapterDao.getChapterList(known.bookUrl).map { it.title })
+                for (identity in 0 until 32) {
+                    val unknown = database.bookDao.getBook("unknown-$identity")
+                    assertEquals(identity, unknown?.durChapterPos)
+                    assertEquals(listOf("Unknown $identity"), database.bookChapterDao.getChapterList("unknown-$identity").map { it.title })
+                    if (identity != winningIdentity) assertEquals(0, database.bookChapterDao.getChapterCount("known-$identity"))
+                }
+                assertEquals(null, database.bookDao.getBook("Unknown", ""))
+            }
+        } finally {
+            databases.forEach { it.close() }
+            // Keep uniquely named simulator evidence files; never touch an application database.
+        }
     }
 
 }

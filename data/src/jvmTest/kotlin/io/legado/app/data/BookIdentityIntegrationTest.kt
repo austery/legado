@@ -12,6 +12,16 @@ import androidx.room3.immediateTransaction
 import androidx.sqlite.execSQL
 import io.legado.app.help.book.isSameNameAuthor
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.cancel
+import io.legado.app.model.ReadBookShared
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
+
 import org.junit.Test
 import java.nio.file.Files
 import kotlin.test.assertEquals
@@ -152,6 +162,92 @@ class BookIdentityIntegrationTest {
         val database = Room.databaseBuilder<AppDatabase>(directory.resolve("test.db").absolutePath)
             .setDriver(BundledSQLiteDriver()).addMigrations(*DatabaseMigrations.migrations).build()
         try { block(database) } finally { database.close(); directory.deleteRecursively() }
+    }
+
+    @Test
+    fun independentRoomConnectionsSerializeKnownReplacementAndPreserveUnknownBooks() = runBlocking {
+        val path = Files.createTempDirectory("PROTOTYPE-spec003-concurrency-").resolve("test.db").toFile().absolutePath
+        val databases = List(4) {
+            Room.databaseBuilder<AppDatabase>(path).setDriver(BundledSQLiteDriver())
+                .addMigrations(*DatabaseMigrations.migrations).build()
+        }
+        try {
+            // Open distinct Room pools before contention, so this tests writes rather than schema creation.
+            databases.forEach { assertEquals(0, it.bookDao.allBookCount()) }
+            val start = CompletableDeferred<Unit>()
+            val ready = Channel<Unit>(databases.size)
+            val completedWrites = withTimeout(30_000) {
+                coroutineScope {
+                    val workers = databases.mapIndexed { worker, database ->
+                        async(Dispatchers.Default) {
+                            ready.send(Unit)
+                            start.await()
+                            repeat(8) { sequence ->
+                                val identity = worker * 8 + sequence
+                                // Legacy known-author replacement must also atomically replace child chapters.
+                                database.useWriterConnection { writer -> writer.immediateTransaction {
+                                    database.bookDao.insert(Book(bookUrl = "known-$identity", name = "Known", author = "Author", durChapterPos = identity))
+                                    database.bookChapterDao.insert(BookChapter(bookUrl = "known-$identity", url = "chapter-$identity", title = "Known $identity"))
+                                } }
+                                // Unknown authors have separate source records and independent progress/catalogs.
+                                database.useWriterConnection { writer -> writer.immediateTransaction {
+                                    database.bookDao.insert(Book(bookUrl = "unknown-$identity", origin = "source-$worker", name = "Unknown", author = "", durChapterPos = identity))
+                                    database.bookChapterDao.insert(BookChapter(bookUrl = "unknown-$identity", url = "chapter-$identity", title = "Unknown $identity"))
+                                } }
+                            }
+                            16
+                        }
+                    }
+                    repeat(databases.size) { ready.receive() }
+                    start.complete(Unit)
+                    workers.awaitAll().sum()
+                }
+            }
+            assertEquals(64, completedWrites)
+            for (database in databases) {
+                val books = database.bookDao.all()
+                assertEquals(33, books.size)
+                val known = books.single { it.name == "Known" }
+                val winningIdentity = known.bookUrl.removePrefix("known-").toInt()
+                assertEquals(winningIdentity, known.durChapterPos)
+                assertEquals(listOf("Known $winningIdentity"), database.bookChapterDao.getChapterList(known.bookUrl).map { it.title })
+                for (identity in 0 until 32) {
+                    val unknown = database.bookDao.getBook("unknown-$identity")
+                    assertEquals(identity, unknown?.durChapterPos)
+                    assertEquals(listOf("Unknown $identity"), database.bookChapterDao.getChapterList("unknown-$identity").map { it.title })
+                    if (identity != winningIdentity) assertEquals(0, database.bookChapterDao.getChapterCount("known-$identity"))
+                }
+                assertEquals(null, database.bookDao.getBook("Unknown", ""))
+            }
+        } finally {
+            databases.forEach { it.close() }
+            java.io.File(path).parentFile.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun chapterRefreshCallbackDoesNotReplaceCurrentUnknownAuthorBook() {
+        val reader = ReadBookShared()
+        try {
+            val original = Book(bookUrl = "current", origin = "source", name = "Title", author = "", totalChapterNum = 10)
+            reader.bookValue = original
+            reader.durChapterIndexValue = 8
+            reader.onChapterListUpdated(original.copy(bookUrl = "foreign", totalChapterNum = 2))
+            assertEquals(original, reader.book.value)
+            assertEquals(8, reader.durChapterIndexValue)
+            reader.onChapterListUpdated(original.copy(origin = "foreign-source", totalChapterNum = 2))
+            assertEquals(original, reader.book.value)
+            assertEquals(8, reader.durChapterIndexValue)
+            val exactRecordUpdate = original.copy(totalChapterNum = 4)
+            reader.onChapterListUpdated(exactRecordUpdate)
+            assertEquals(exactRecordUpdate, reader.book.value)
+            assertEquals(3, reader.durChapterIndexValue)
+            val known = original.copy(author = "Author", totalChapterNum = 10)
+            reader.bookValue = known
+            val legacyKnownUpdate = known.copy(bookUrl = "other-record", origin = "other-source", totalChapterNum = 7)
+            reader.onChapterListUpdated(legacyKnownUpdate)
+            assertEquals(legacyKnownUpdate, reader.book.value)
+        } finally { reader.cancel() }
     }
 
 }
