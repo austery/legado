@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -57,6 +58,7 @@ object NativeRegexReplacer : RegexReplacer {
                 Coroutine.async(executeContext = Dispatchers.IO) {
                     val job = launch {
                         try {
+                            checkRegexReplacementProgress(regex, source) { coroutineContext.ensureActive() }
                             val result = if (isJs) {
                                 // isJs 路径: 循环外创建共享 scope + 预编译, 逐匹配注入 result 求值
                                 val bindings = JsBindings().apply { this["result"] = "" }

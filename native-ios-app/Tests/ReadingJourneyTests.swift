@@ -80,6 +80,34 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertFalse(model.busy, "Operation did not finish", file: file, line: line)
     }
 
+    func testNonProgressingRegexFailsAndNextSearchRecovers() async throws {
+        let model = ReaderModel()
+        model.start()
+        try await settle(model)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        for name in ["regex-sources.json", "sources.json"] {
+            let url = try XCTUnwrap(URL(string: "\(base)/\(name)"))
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+            try data.write(to: local)
+            model.importFile(local)
+            try await settle(model)
+            XCTAssertNil(model.message)
+        }
+        model.sourceID = base + "/regex"
+        model.query = "Path"
+        model.search()
+        try await settle(model)
+        XCTAssertTrue(model.message?.contains("UNSUPPORTED") == true)
+        XCTAssertTrue(model.message?.contains("did not advance safely") == true)
+        model.cancel()
+        model.sourceID = base
+        model.search()
+        try await settle(model)
+        XCTAssertNil(model.message)
+        XCTAssertEqual(model.results.first?.title, "Path C Book")
+    }
+
     func testRealImportSearchContentsReadingAndCancellation() async throws {
         let model = ReaderModel()
         model.start()

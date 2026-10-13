@@ -17,6 +17,7 @@ import io.legado.app.model.script.JsEngines
 import io.legado.app.model.script.JsScope
 import io.legado.app.model.script.buildScriptBindings
 import io.legado.app.utils.Closeable
+import io.legado.app.utils.checkRegexReplacementProgress
 import io.legado.app.utils.EscapeUtils
 import io.legado.app.utils.KS_JSON_STRICT
 import io.legado.app.utils.NetworkUtils
@@ -496,6 +497,9 @@ open class AnalyzeRuleCore(
         val replaceRegex = rule.replaceRegex
         val replacement = rule.replacement
         val regex = compileRegexCache(replaceRegex)
+        if (regex != null && !rule.replaceFirst) {
+            checkRegexReplacementProgress(regex, result) { coroutineContext.ensureActive() }
+        }
         if (rule.replaceFirst) {
             /* ##match##replace### 获取第一个匹配到的结果并进行替换 */
             if (regex != null) kotlin.runCatching {

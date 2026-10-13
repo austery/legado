@@ -76,7 +76,7 @@ Import remains independent of transport reachability and live source correctness
 - C1 network / restart / fresh-network suites passed 82/82, 22/22 and 82/82
   observations. These include callback checks, not independent test counts.
 - The independent app built for the simulator and, unsigned, for iOS devices.
-- Two hosted XCTest cases passed using the real engine and controlled HTTP source:
+- Three permanent hosted XCTest cases passed using the real engine and controlled HTTP source:
   import/search/detail/TOC/two-page content, startup cancellation recovery, stale
   search cancellation, chapter cancellation/failure preserving content, successful
   retry, file-provider error isolation, real reader view contents round trip, and
@@ -101,9 +101,28 @@ URL namespace to exercise retry, and the second contains long original Chinese
 text. Never terminate another process to take that port. C1 uses its existing
 fixture ports and separate runner script.
 
-Physical iPad installation, two live community-source journeys, actual split-view
+The owner confirmed physical installation and successful search with a visible book.
+Two complete live community-source journeys on the iPad, actual split-view
 interaction, and owner comfort acceptance remain pending. Host-view resizing and
 an unsigned device build do not satisfy those gates. Controlled loopback success
 is not a whole-source compatibility claim. Expand `Import details` to compare the
 filename, decoded UTF-8 length and hash when a device import differs from a local
 test; source contents and credentials are not shown in those diagnostics.
+
+## Build 3 regex progress guard
+
+Kotlin/Native 2.3.20 can return invalid, regressing match ranges for an unchanged
+community-source replacement pattern. Its replacement loop then stalls later
+engine requests. Native replacement now preflights match progression and returns
+UNSUPPORTED when ranges regress or are invalid; JVM/Android behavior is unchanged.
+Valid empty matches and capture replacements retain their existing semantics.
+This adds a native match traversal, not a replacement backend or source rewrite.
+It does not bound pathological work inside one `find` call or claim full regex
+compatibility. The affected source fails safely rather than becoming usable.
+
+A deterministic hosted regression verifies that the failing search releases the
+engine and the next source search succeeds. An additional temporary live probe
+observed the original source failing safely and Dingdian returning 50 results.
+The existing two reading/typography cases also passed. A standalone native probe
+compiled with the actual guard verified invalid ranges, empty matches, capture
+replacement and cancellation propagation. Gradle nativeTest was not run.
