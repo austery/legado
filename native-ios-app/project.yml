@@ -1,0 +1,106 @@
+name: NativeReader
+options:
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.9'
+    ARCHS: arm64
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 3
+    TARGETED_DEVICE_FAMILY: '1,2'
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_CFBundleDisplayName: Native Reader C2
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+    INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to local reader validation fixtures.
+    READER_ENGINE_PLATFORM: iosSimulatorArm64
+    READER_ENGINE_PLATFORM[sdk=iphoneos*]: iosArm64
+targets:
+  NativeReader:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            www.aixiashu.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.23uswx.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.kk169.net:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.kk169.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.yetianlian.la:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xyetianlian.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.booksky.cc:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xbotaodz.info:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.biquge.xin:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xianqihaotianmi.org:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.7kbook.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xxtxt.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.zzdushu.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.pinshulou.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.kuuai.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.miaobige.cc:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.ygzww.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.xsabc.com:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            www.b5200.net:
+              NSExceptionAllowsInsecureHTTPLoads: true
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.legado.pathc.nativereader
+        FRAMEWORK_SEARCH_PATHS: ['$(inherited)', '$(SRCROOT)/../engine-ios/build/bin/$(READER_ENGINE_PLATFORM)/debugFramework']
+        OTHER_LDFLAGS: ['$(inherited)', '-framework', ReaderEngine]
+        LD_RUNPATH_SEARCH_PATHS: ['$(inherited)', '@executable_path/Frameworks']
+    postBuildScripts:
+      - name: Embed ReaderEngine
+        script: |
+          set -eu
+          destination="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+          mkdir -p "$destination"
+          ditto "$SRCROOT/../engine-ios/build/bin/$READER_ENGINE_PLATFORM/debugFramework/ReaderEngine.framework" "$destination/ReaderEngine.framework"
+          if [ "${CODE_SIGNING_ALLOWED:-NO}" = YES ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$destination/ReaderEngine.framework"
+          fi
+        basedOnDependencyAnalysis: false
+  NativeReaderTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: NativeReader
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.legado.pathc.nativereader.tests
+        FRAMEWORK_SEARCH_PATHS: ['$(inherited)', '$(SRCROOT)/../engine-ios/build/bin/$(READER_ENGINE_PLATFORM)/debugFramework']

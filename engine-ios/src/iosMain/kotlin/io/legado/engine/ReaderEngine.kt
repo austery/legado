@@ -53,6 +53,13 @@ class ReaderEngine {
         EngineReady()
     }
 
+    /** Read persisted, enabled text sources without importing or modifying their rules. */
+    fun listSources(completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        SourcesReply(AppDbProviders.get().bookSourceDao.allTextEnabledPart().map {
+            SourceSnapshot(it.bookSourceUrl, it.bookSourceName, it.enabled)
+        })
+    }
+
     /** Decode everything first. Duplicate IDs use the last object; existing IDs are replaced. */
     fun importSources(json: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         val element = try { KS_JSON.parseToJsonElement(json) }
