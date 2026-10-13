@@ -35,7 +35,7 @@ jobs:
 
   prepare:
     runs-on: ubuntu-latest
-    if: ${{ !startsWith(github.event.head_commit.message, 'Merge pull request') && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') }}
+    if: ${{ github.repository != 'austery/legado' && !startsWith(github.event.head_commit.message, 'Merge pull request') && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') }}
     outputs:
       version: ${{ steps.set-ver.outputs.version }}
       lanzou: ${{ steps.check.outputs.lanzou }}

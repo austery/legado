@@ -1,0 +1,130 @@
+name: C1 Engine
+
+on:
+  pull_request:
+    branches: [native-reader]
+    paths:
+      - 'engine-ios/**'
+      - 'scripts/**'
+      - 'core/**'
+      - 'data/**'
+      - 'foundation/**'
+      - 'modules/**'
+      - 'ui/**'
+      - 'build-logic/**'
+      - 'gradle/**'
+      - '**/*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew*'
+      - '.github/workflows/c1-engine.yml'
+  push:
+    branches: [native-reader]
+    paths:
+      - 'engine-ios/**'
+      - 'scripts/**'
+      - 'core/**'
+      - 'data/**'
+      - 'foundation/**'
+      - 'modules/**'
+      - 'ui/**'
+      - 'build-logic/**'
+      - 'gradle/**'
+      - '**/*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew*'
+      - '.github/workflows/c1-engine.yml'
+  workflow_dispatch:
+    inputs:
+      execution:
+        description: Runner to use for this C1 validation
+        type: choice
+        default: local
+        options: [local, cloud]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c1-engine-${{ inputs.execution || 'local' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  engine:
+    name: C1 engine regression
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(inputs.execution == 'cloud' && '["macos-26"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEVELOPER_DIR: ${{ inputs.execution == 'cloud' && '/Applications/Xcode_26.5.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
+    steps:
+      - name: Isolate build caches
+        run: |
+          echo "GRADLE_USER_HOME=$RUNNER_TOOL_CACHE/legado/gradle" >> "$GITHUB_ENV"
+          echo "KONAN_DATA_DIR=$RUNNER_TOOL_CACHE/legado/konan" >> "$GITHUB_ENV"
+          if [[ "${{ runner.environment }}" == "self-hosted" ]]; then
+            android_sdk="$(cd "$RUNNER_TEMP/../../android-sdk" && pwd)"
+            echo "ANDROID_HOME=$android_sdk" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Preflight local fixtures
+        run: |
+          python3 -m unittest discover -s scripts/path-c -p 'test_*.py'
+          python3 scripts/path-c/ci_harness.py --fixtures-only --output ci-results/preflight
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-disabled: ${{ runner.environment == 'self-hosted' }}
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Check environment
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          java -version
+          df -h .
+          mkdir -p ci-results
+          git rev-parse HEAD > ci-results/commit.txt
+      - name: Download XcodeGen locally
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download 2.46.0 --repo yonaskolb/XcodeGen --pattern xcodegen.zip --dir "$RUNNER_TEMP/c1-xcodegen"
+          unzip -q "$RUNNER_TEMP/c1-xcodegen/xcodegen.zip" -d "$RUNNER_TEMP/c1-xcodegen"
+          echo "$RUNNER_TEMP/c1-xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Build native libraries
+        run: bash scripts/build-ios-native.sh ios_simulator_arm64 ios_arm64 2>&1 | tee ci-results/native-build.log
+      - name: Build engine and compile original UI regression
+        run: |
+          ./gradlew --no-daemon --no-watch-fs --build-cache --max-workers=2 \
+            '-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
+            :engine-ios:linkDebugFrameworkIosSimulatorArm64 \
+            :engine-ios:linkDebugFrameworkIosArm64 \
+            :ui:compileKotlinIosSimulatorArm64 2>&1 | tee ci-results/engine-build.log
+      - name: Build Swift harness
+        run: |
+          xcodegen generate --spec engine-ios/harness/project.yml
+          xcodebuild -project engine-ios/harness/PathCEngineHarness.xcodeproj \
+            -scheme PathCEngineHarness -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath engine-ios/harness/build ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee ci-results/harness-build.log
+      - name: Run network, restart cache and fresh network regressions
+        run: python3 scripts/path-c/ci_harness.py --output ci-results
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: c1-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-results/
+          retention-days: 7

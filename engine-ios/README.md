@@ -67,6 +67,23 @@ Use new output paths on reruns; the runner refuses to overwrite previous evidenc
 
 Every normal run imports a fixture under a new `/runs/<UUID>` URL namespace, including its book, TOC and chapter URLs. This preserves earlier caches while ensuring the initial content read must report `fromCache == false`. The harness saves the fixture identity in its own preferences; `--persistence` reuses it and requires `fromCache == true`. Run normal mode before persistence mode. Both modes repeat the search after loading details and the TOC, then require the same chapter identities without reloading details.
 
+## C1 continuous integration
+
+The independent `C1 Engine` workflow runs automatically for relevant `native-reader` pull requests and pushes on the repository-scoped `legado-macmini-local` runner (`self-hosted`, `macOS`, `ARM64`, `legado-macos-local`). Fork pull requests are excluded from this personal host. Feature-branch pushes are covered by their PR event, avoiding duplicate automatic runs. The inherited `Test Build` workflow skips this fork and cannot start upstream packaging or publication from these changes.
+
+Runner installation: `/Users/leipeng/GitHubRunners/legado`; checkout: `_work/legado/legado`. Start `./run.sh` from the installation directory and wait for `Listening for Jobs`. No launch service is installed. If it is offline, jobs queue rather than falling back to cloud. Stop only this runner, after GitHub reports it idle, using Ctrl-C in its owning terminal. Other repository runners are independent and must not be stopped or reconfigured. This is a native process under the logged-in user, not an isolation sandbox.
+
+Manual dispatch accepts `execution=local` (default) or `execution=cloud`. The cloud option uses the standard ARM64 `macos-26` runner and Xcode 26.5; local execution uses `/Applications/Xcode.app` (Xcode 27 at initial validation). Both use JDK 17/21 and a task-local XcodeGen 2.46.0 download. The local runner has its own `android-sdk/` copy for shared Gradle module configuration; the cloud route uses its preinstalled SDK. No Android build or test is added. Manual cloud dispatch has been accepted for `codex/c1-cloud-ci` in this repository without changing its default branch.
+
+```sh
+gh workflow run c1-engine.yml --repo austery/legado \
+  --ref codex/c1-cloud-ci -f execution=cloud
+```
+
+Both routes build the debug device and simulator engine frameworks, compile the original UI, build the isolated Swift harness, and run full network, process-restart cache and fresh network suites against local fixtures. Gradle and Kotlin/Native caches stay under this runner's tool-cache directory. Local caches persist; GitHub Gradle-cache upload/restore is disabled for self-hosted execution. `scripts/path-c/ci_harness.py` creates and shuts down only its own simulator and terminates only its fixture processes. Shutdown simulators are retained for inspection; no existing simulator or reader app is deleted. The script also runs against an already-built harness with `python3 scripts/path-c/ci_harness.py --output <new-evidence-directory>` and an explicit `DEVELOPER_DIR` when needed.
+
+The job uses read-only repository permissions, a 60-minute timeout and seven-day evidence retention. New commits do not automatically cancel a running local job, allowing its owned fixture/simulator cleanup to finish. The single local runner serializes jobs. It does not sign an app, publish a release, use live community sources or implement C2. Standard hosted minutes remain free for this public repository. Required branch checks are a separate setting. Passing either route proves the bounded C1 contract, not physical-device acceptance or equivalence between the two Xcode versions.
+
 ## Upstream patch inventory and cost review
 
 Seven existing files change, exceeding the proposed target of five by two. This is a reviewed extraction cost, not a claim that the target was met:
