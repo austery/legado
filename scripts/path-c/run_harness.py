@@ -17,7 +17,8 @@ class Check(TypedDict):
 
 
 def simctl(*args: str) -> str:
-    return subprocess.check_output(["xcrun", "simctl", *args], text=True).strip()
+    print(f"simctl {' '.join(args)}", flush=True)
+    return subprocess.check_output(["xcrun", "simctl", *args], text=True, timeout=120).strip()
 
 
 def main() -> int:
@@ -31,8 +32,9 @@ def main() -> int:
     if output.exists():
         raise SystemExit("Output already exists; choose a new evidence path")
     # This tool only terminates its dedicated test application, never a reader app.
+    print("Terminating previous harness process", flush=True)
     subprocess.run(["xcrun", "simctl", "terminate", args.simulator, bundle],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
     container = Path(simctl("get_app_container", args.simulator, bundle, "data"))
     report = container / "Documents" / "results.json"
     started = time.time()
