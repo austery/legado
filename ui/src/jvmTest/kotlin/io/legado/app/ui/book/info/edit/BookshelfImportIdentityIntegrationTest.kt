@@ -62,7 +62,7 @@ class BookshelfImportIdentityIntegrationTest {
             override fun handles(bookSource: BookSource) = bookSource.bookSourceUrl in listOf(source.bookSourceUrl, source.bookSourceUrl + "-other")
             override suspend fun getBookInfoAwait(bookSource: BookSource, book: Book, canReName: Boolean): Book {
                 requests.add(book.bookUrl)
-                book.author = "Discovered author"
+                if (!book.bookUrl.startsWith("blank-")) book.author = "Discovered author"
                 return book
             }
             override suspend fun getBookListAwait(bookSource: BookSource, key: String, page: Int, filters: PluginFilterSession?): BookListPage = error("Unexpected search")
@@ -104,6 +104,30 @@ class BookshelfImportIdentityIntegrationTest {
             assertEquals(listOf(chapter), database.bookChapterDao.getChapterList("saved"))
             assertEquals(listOf("new"), requests.toList())
             assertEquals(listOf("Book URL belongs to a different source: saved"), notifications.toList())
+
+            // Distinct URLs remain separate when details leave the same-title authors missing.
+            requests.clear()
+            notifications.clear()
+            importer.importBookshelf("""[
+                {"name":"Unknown title","author":"","origin":"${source.bookSourceUrl}","bookUrl":"blank-one"},
+                {"name":"Unknown title","author":"","origin":"${source.bookSourceUrl}","bookUrl":"blank-two"}
+            ]""", 0)
+            withTimeout(10_000) { job.children.toList().joinAll() }
+            val blankOne = assertNotNull(database.bookDao.getBook("blank-one"))
+            val blankTwo = assertNotNull(database.bookDao.getBook("blank-two"))
+            assertEquals("Unknown title", blankOne.name)
+            assertEquals("Unknown title", blankTwo.name)
+            assertEquals("", blankOne.author)
+            assertEquals("", blankTwo.author)
+            assertEquals(source.bookSourceUrl, blankOne.origin)
+            assertEquals(source.bookSourceUrl, blankTwo.origin)
+            assertEquals(setOf("blank-one", "blank-two"), requests.toSet())
+            assertEquals(2, requests.size)
+            assertEquals(5, database.bookDao.allBookCount())
+            assertEquals(original, database.bookDao.getBook("saved"))
+            assertEquals(listOf(chapter), database.bookChapterDao.getChapterList("saved"))
+            assertEquals(listOf("成功"), notifications.toList())
+            assertTrue(AppLog.logs.isEmpty(), AppLog.logs.toString())
         } finally {
             job.cancelAndJoin()
             oldDb?.let(AppDbProviders::register)
