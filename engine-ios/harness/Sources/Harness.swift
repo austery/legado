@@ -71,6 +71,8 @@ final class Harness: ObservableObject {
             UserDefaults.standard.set(sourceID, forKey: fixtureKey)
         }
         if persistenceRun {
+            let restoredSources = await call { engine.listSources(completion: $0) }
+            record("restart-source-list", (restoredSources as? SourcesReply)?.sources.contains { $0.id == sourceID } == true, describe(restoredSources))
             await chain(sourceID, query: "Path", controlled: true)
             let cachedJS = await call { engine.search(sourceId: "http://127.0.0.1:18767/js-read", query: "Path", page: 1, completion: $0) }
             record("restart-js-cache", (cachedJS as? SearchReply)?.books.first?.title == "JS-CACHE-OK", describe(cachedJS))
@@ -96,6 +98,16 @@ final class Harness: ObservableObject {
         """
         let invalid = await call { engine.importSources(json: invalidBatch, completion: $0) }
         expectFailure("invalid-batch-import", invalid, .invalidInput)
+        let eligibilityJSON = """
+        [{"bookSourceUrl":"path-c:disabled","bookSourceName":"Disabled","enabled":false},
+         {"bookSourceUrl":"path-c:non-text","bookSourceName":"Non-text","bookSourceType":1}]
+        """
+        let eligibilityImport = await call { engine.importSources(json: eligibilityJSON, completion: $0) }
+        record("source-eligibility-import", eligibilityImport is SourcesReply, describe(eligibilityImport))
+        let listed = await call { engine.listSources(completion: $0) }
+        let listedIDs = (listed as? SourcesReply)?.sources.map { $0.id } ?? []
+        record("source-list-preserves-valid-import", listedIDs.contains(sourceID), describe(listed))
+        record("source-list-excludes-ineligible", listed is SourcesReply && !listedIDs.contains("path-c:disabled") && !listedIDs.contains("path-c:non-text"), describe(listed))
         let duplicates = """
         [{"bookSourceUrl":"path-c:duplicate","bookSourceName":"First"},{"bookSourceUrl":"path-c:duplicate","bookSourceName":"Last"}]
         """
