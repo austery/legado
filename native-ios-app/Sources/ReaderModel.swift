@@ -262,6 +262,7 @@ final class ReaderModel: ObservableObject {
 
     private func acceptContent(_ reply: ContentReply) {
         content = reply; route = .reading
+        saveNotice = reply.storageNotice.isEmpty ? nil : reply.storageNotice
         activeReadingToken = reply.reading?.token
         resumeNotice = reply.reading?.restoreNotice.isEmpty == false ? reply.reading?.restoreNotice : nil
     }
