@@ -1,5 +1,9 @@
 package io.legado.engine
 
+import io.legado.app.data.AppDatabaseProviders
+import io.legado.app.data.dao.NativeShelfEntry
+import io.legado.app.data.dao.NativeShelfException
+import io.legado.app.data.dao.NativeShelfFailure
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -22,12 +26,18 @@ import kotlinx.serialization.json.JsonObject
 /** Public results contain immutable values, never Room entities or Kotlin Result. */
 abstract class EngineReply internal constructor()
 class EngineReady internal constructor() : EngineReply()
-enum class EngineErrorCode { INVALID_INPUT, NOT_FOUND, NETWORK, TIMEOUT, RULE, UNSUPPORTED, INTERACTION_REQUIRED, CANCELLED, INTERNAL }
+enum class EngineErrorCode { INVALID_INPUT, NOT_FOUND, NETWORK, TIMEOUT, RULE, UNSUPPORTED, INTERACTION_REQUIRED, CANCELLED, INTERNAL, IDENTITY_CONFLICT, AMBIGUOUS_IDENTITY, STORAGE }
 class EngineFailure internal constructor(val code: EngineErrorCode, val message: String) : EngineReply()
 class SourceSnapshot internal constructor(val id: String, val name: String, val enabled: Boolean)
 class SourcesReply internal constructor(val sources: List<SourceSnapshot>) : EngineReply()
 class BookSnapshot internal constructor(val sourceId: String, val id: String, val title: String,
     val author: String, val intro: String)
+class ShelfBookSnapshot internal constructor(val book: BookSnapshot, val sourceName: String,
+    val lastChapter: String)
+class ShelfReply internal constructor(val books: List<ShelfBookSnapshot>) : EngineReply()
+class ShelfEntryReply internal constructor(val entry: ShelfBookSnapshot,
+    val chapters: List<ChapterSnapshot>) : EngineReply()
+class ShelfRemoved internal constructor() : EngineReply()
 class SearchReply internal constructor(val books: List<BookSnapshot>, val hasNextPage: Boolean) : EngineReply()
 class BookReply internal constructor(val book: BookSnapshot) : EngineReply()
 class ChapterSnapshot internal constructor(val sourceId: String, val bookId: String, val id: String,
@@ -81,6 +91,44 @@ class ReaderEngine {
         SourcesReply(unique.map { SourceSnapshot(it.bookSourceUrl, it.bookSourceName, it.enabled) })
     }
 
+    fun listShelf(completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        ShelfReply(shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.listBooks() }.map { shelfSnapshot(it) })
+    }
+
+    /** Only a loaded catalog may be added; the returned identity can be an existing source. */
+    fun addToShelf(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        val candidate = book(sourceId, bookId)
+        val catalog = chapters[sourceId to bookId] ?: throw InvalidInput("Load the table of contents before adding")
+        val entry = shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.addToShelf(candidate, catalog) }
+        acceptShelfEntry(entry)
+    }
+
+    /** Opens only persisted metadata and catalog. It performs no source fetch. */
+    fun openShelfBook(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        acceptShelfEntry(shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) })
+    }
+
+    fun removeFromShelf(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.removeFromShelf(sourceId, bookId) }
+        ShelfRemoved()
+    }
+
+    private suspend fun acceptShelfEntry(entry: NativeShelfEntry): ShelfEntryReply {
+        val key = entry.book.origin to entry.book.bookUrl
+        books[key] = entry.book
+        chapters[key] = entry.chapters
+        return ShelfEntryReply(shelfSnapshot(entry.book), entry.chapters.map { snapshot(entry.book.origin, it) })
+    }
+
+    private suspend fun shelfSnapshot(book: Book) = ShelfBookSnapshot(snapshot(book),
+        AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: book.origin,
+        book.durChapterTitle.orEmpty())
+
+    private suspend fun <T> shelfOperation(action: suspend () -> T): T = try { action() }
+        catch (error: CancellationException) { throw error }
+        catch (error: NativeShelfException) { throw error }
+        catch (error: Exception) { throw ShelfStorageFailure(error.message ?: "Shelf storage failed") }
+
     fun search(sourceId: String, query: String, page: Int, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         if (page <= 0 || query.isBlank()) throw InvalidInput("Search requires a query and positive page")
         val source = source(sourceId)
@@ -114,7 +162,6 @@ class ReaderEngine {
     /** Cache-only never fetches. Network mode reuses upstream pagination and text storage. */
     fun loadChapter(sourceId: String, bookId: String, chapterId: String, cacheOnly: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
-        val source = source(sourceId)
         val book = book(sourceId, bookId)
         val toc = chapters[sourceId to bookId] ?: throw MissingEntity("Load the table of contents first")
         val position = toc.indexOfFirst { it.url == chapterId }
@@ -125,6 +172,7 @@ class ReaderEngine {
             ContentReply(snapshot(sourceId, chapter), cached, true)
         } else {
             if (cacheOnly) throw MissingEntity("Chapter is not cached")
+            val source = source(sourceId)
             val content = WebBook.getContentAwait(source, book, chapter,
                 nextChapterUrl = toc.getOrNull(position + 1)?.url, needSave = false)
             currentCoroutineContext().ensureActive()
@@ -142,6 +190,7 @@ class ReaderEngine {
 
     private suspend fun source(id: String): BookSource {
         val source = AppDbProviders.get().bookSourceDao.getBookSource(id) ?: throw MissingEntity("Source not found")
+        if (!source.enabled) throw UnsupportedOperationException("Source is disabled; only cached chapters are available")
         if (source.bookSourceType != 0) throw UnsupportedOperationException("Only text book sources are supported")
         return source
     }
@@ -190,6 +239,14 @@ class ReaderEngine {
 
     private fun failure(error: Exception): EngineFailure {
         val code = when (error) {
+            is ShelfStorageFailure -> EngineErrorCode.STORAGE
+            is NativeShelfException -> when (error.failure) {
+                NativeShelfFailure.INVALID_INPUT -> EngineErrorCode.INVALID_INPUT
+                NativeShelfFailure.IDENTITY_CONFLICT -> EngineErrorCode.IDENTITY_CONFLICT
+                NativeShelfFailure.AMBIGUOUS_IDENTITY -> EngineErrorCode.AMBIGUOUS_IDENTITY
+                NativeShelfFailure.UNSUPPORTED_BOOK -> EngineErrorCode.UNSUPPORTED
+                NativeShelfFailure.NOT_ON_SHELF -> EngineErrorCode.NOT_FOUND
+            }
             is MissingEntity -> EngineErrorCode.NOT_FOUND
             is InvalidInput -> EngineErrorCode.INVALID_INPUT
             is HttpFailure -> EngineErrorCode.NETWORK
@@ -207,3 +264,5 @@ class ReaderEngine {
 private class MissingEntity(message: String) : Exception(message)
 private class InvalidInput(message: String) : Exception(message)
 private class HttpFailure(status: Int) : Exception("HTTP $status")
+
+private class ShelfStorageFailure(message: String) : Exception(message)

@@ -37,6 +37,7 @@ struct ReaderScreen: View {
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)
                     }
+                    if model.route == .shelf { shelf }
                     if model.route == .search { search }
                     if model.route == .contents { contents }
                 }
@@ -57,6 +58,9 @@ struct ReaderScreen: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if model.route != .shelf {
+                    ToolbarItem(placement: .navigationBarTrailing) { Button("Shelf") { model.showShelf() } }
+                }
                 if model.route != .search {
                     ToolbarItem(placement: .navigationBarLeading) { Button("Search") { model.navigate(.search) } }
                 }
@@ -75,10 +79,31 @@ struct ReaderScreen: View {
 
     private var title: String {
         switch model.route {
+        case .shelf: return "Shelf"
         case .search: return "Native Reader"
         case .contents: return model.book?.title ?? "Contents"
         case .reading: return model.content?.chapter.title ?? "Reader"
         }
+    }
+
+    private var shelf: some View {
+        List {
+            if model.shelf.isEmpty {
+                Text("Your shelf is empty. Search for a book and add it from Contents.").foregroundStyle(.secondary)
+            }
+            Button("Search and import sources") { model.navigate(.search) }
+            ForEach(model.shelf, id: \.book.id) { entry in
+                Button { model.openShelfBook(entry) } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(entry.book.title)
+                        Text(ReaderModel.authorLabel(entry.book.author)).font(.caption)
+                        Text(entry.sourceName).font(.caption).foregroundStyle(.secondary)
+                        if !entry.lastChapter.isEmpty { Text(entry.lastChapter).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }.buttonStyle(.plain).disabled(model.busy)
+                    .swipeActions { Button("Remove", role: .destructive) { model.removeShelfBook(entry) } }
+            }
+        }.refreshable { model.refreshShelf() }
     }
 
     private var search: some View {
@@ -108,7 +133,7 @@ struct ReaderScreen: View {
                 if model.hasSearched && model.results.isEmpty { Text("No books found.").foregroundStyle(.secondary) }
                 ForEach(model.results, id: \.id) { book in
                     Button { model.select(book) } label: {
-                        VStack(alignment: .leading, spacing: 6) { Text(book.title); Text(book.author).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 6) { Text(book.title); Text(ReaderModel.authorLabel(book.author)).font(.caption).foregroundStyle(.secondary) }
                     }.disabled(model.busy)
                 }
                 if model.hasNextPage { Button("More results") { model.search(more: true) }.disabled(model.busy) }
@@ -119,7 +144,11 @@ struct ReaderScreen: View {
     private var contents: some View {
         List {
             if let book = model.book {
-                Section { Text(book.author); Text(book.intro).font(.callout).foregroundStyle(.secondary) }
+                Section { Text(ReaderModel.authorLabel(book.author)); Text(book.intro).font(.callout).foregroundStyle(.secondary) }
+            }
+            Section {
+                Button("Add to shelf") { model.addCurrentBook() }.disabled(model.busy || model.chapters.isEmpty)
+                if let notice = model.shelfNotice { Text(notice).foregroundStyle(.secondary) }
             }
             Section("Chapters") {
                 if model.chapters.isEmpty { Text("No chapters available.") }

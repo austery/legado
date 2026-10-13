@@ -3,10 +3,12 @@ import CryptoKit
 import ReaderEngine
 import SwiftUI
 
-enum ReaderRoute { case search, contents, reading }
+enum ReaderRoute { case shelf, search, contents, reading }
 
 @MainActor
 final class ReaderModel: ObservableObject {
+    @Published var shelf: [ShelfBookSnapshot] = []
+    @Published var shelfNotice: String?
     @Published var sources: [SourceSnapshot] = []
     @Published var sourceID = ""
     @Published var query = ""
@@ -14,7 +16,7 @@ final class ReaderModel: ObservableObject {
     @Published var book: BookSnapshot?
     @Published var chapters: [ChapterSnapshot] = []
     @Published var content: ContentReply?
-    @Published var route: ReaderRoute = .search
+    @Published var route: ReaderRoute = .shelf
     @Published var busy = false
     @Published var message: String?
     @Published var importNotice: String?
@@ -42,16 +44,68 @@ final class ReaderModel: ObservableObject {
         perform(retry: { [weak self] in self?.start() }, start: { engine.initialize(completion: $0) }) { [weak self] reply in
             guard let self, reply is EngineReady else { return }
             self.initialized = true
-            self.refreshSources()
+            self.refreshSources(thenShelf: true)
         }
     }
 
-    func refreshSources() {
+    func refreshSources(thenShelf: Bool = false) {
         perform(retry: { [weak self] in self?.refreshSources() }, start: { engine.listSources(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? SourcesReply else { return }
             self.sources = reply.sources
             if !self.sources.contains(where: { $0.id == self.sourceID }) { self.sourceID = self.sources.first?.id ?? "" }
+            if thenShelf { self.refreshShelf() }
         }
+    }
+
+    func refreshShelf() {
+        perform(retry: { [weak self] in self?.refreshShelf() }, start: { engine.listShelf(completion: $0) }) { [weak self] reply in
+            guard let self, let reply = reply as? ShelfReply else { return }
+            self.shelf = reply.books
+        }
+    }
+
+    func showShelf() { navigate(.shelf); refreshShelf() }
+
+    func addCurrentBook() {
+        guard let book, !chapters.isEmpty else { return }
+        let selected = book
+        perform(retry: { [weak self] in self?.addCurrentBook() }, start: {
+            engine.addToShelf(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let reply = reply as? ShelfEntryReply else { return }
+            self.acceptShelfEntry(reply)
+            self.shelfNotice = reply.entry.book.id == selected.id && reply.entry.book.sourceId == selected.sourceId
+                ? "Added to shelf." : "Already on shelf. Kept the original source and saved chapters."
+        }
+    }
+
+    func openShelfBook(_ entry: ShelfBookSnapshot) {
+        perform(retry: { [weak self] in self?.openShelfBook(entry) }, start: {
+            engine.openShelfBook(sourceId: entry.book.sourceId, bookId: entry.book.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let reply = reply as? ShelfEntryReply else { return }
+            self.acceptShelfEntry(reply)
+            self.shelfNotice = nil
+        }
+    }
+
+    func removeShelfBook(_ entry: ShelfBookSnapshot) {
+        perform(retry: { [weak self] in self?.removeShelfBook(entry) }, start: {
+            engine.removeFromShelf(sourceId: entry.book.sourceId, bookId: entry.book.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, reply is ShelfRemoved else { return }
+            self.refreshShelf()
+        }
+    }
+
+    private func acceptShelfEntry(_ reply: ShelfEntryReply) {
+        book = reply.entry.book; chapters = reply.chapters
+        // Never carry a candidate source's text into a reused shelf identity.
+        content = nil; route = .contents
+    }
+
+    static func authorLabel(_ author: String) -> String {
+        author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown author" : author
     }
 
     func importFile(_ url: URL) {
@@ -122,6 +176,7 @@ final class ReaderModel: ObservableObject {
             engine.loadToc(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? TocReply else { return }
+            self.shelfNotice = nil
             self.book = selected; self.chapters = reply.chapters
             self.content = nil; self.route = .contents
         }
