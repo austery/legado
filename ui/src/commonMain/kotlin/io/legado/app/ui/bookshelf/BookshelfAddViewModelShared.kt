@@ -192,6 +192,14 @@ class BookshelfAddViewModelShared(private val scope: CoroutineScope) {
             val origin = bookInfo["origin"]
             val bookUrl = bookInfo["bookUrl"]
             if (name.isEmpty() || appDb.bookDao.has(name, author)) return@forEach
+            // Missing-author identity is the original source and URL, before details can change it.
+            if (author.isBlank() && origin != null && !bookUrl.isNullOrBlank()) {
+                val existing = appDb.bookDao.getBook(bookUrl)
+                if (existing != null) {
+                    if (existing.origin == origin) return@forEach
+                    throw NoStackTraceException("Book URL belongs to a different source: $bookUrl")
+                }
+            }
             (if (origin != null && bookUrl != null) {
                 val book = Book(bookUrl)
                 bookInfo.forEach { (key, value) ->
