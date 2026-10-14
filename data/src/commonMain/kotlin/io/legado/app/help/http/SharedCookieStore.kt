@@ -10,6 +10,8 @@ import io.legado.app.help.http.SharedCookieStore.getSessionCookie
 import io.legado.app.help.http.SharedCookieStore.removeCookie
 import io.legado.app.help.http.SharedCookieStore.updateSessionCookie
 import io.legado.app.utils.NetworkUtils
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
@@ -31,6 +33,26 @@ import kotlin.coroutines.EmptyCoroutineContext
 @Suppress("unused")
 object SharedCookieStore : CookieStoreBase(), CookieStoreProvider {
 
+    // Protect complete read/merge/write operations, including inherited callbacks.
+    // Reentrant locking permits getCookie -> removeCookie -> setCookie and hot reads.
+    private val cookieMutationLock = SynchronizedObject()
+
+    override fun setCookie(url: String, cookie: String?): Unit = synchronized(cookieMutationLock) {
+        super.setCookie(url, cookie)
+    }
+
+    override fun replaceCookie(url: String, cookie: String): Unit = synchronized(cookieMutationLock) {
+        super.replaceCookie(url, cookie)
+    }
+
+    override fun getCookie(url: String): String = synchronized(cookieMutationLock) {
+        super.getCookie(url)
+    }
+
+    override fun removeCookie(url: String): Unit = synchronized(cookieMutationLock) {
+        super.removeCookie(url)
+    }
+
     // ===== 数据库持久化钩子 (对照 app 端 CookieStore override, appDb → AppDbProviders) =====
 
     override fun onInsertCookieToDb(domain: String, cookieStr: String) {
@@ -45,7 +67,7 @@ object SharedCookieStore : CookieStoreBase(), CookieStoreProvider {
         }
     }
 
-    override fun onClearOkHttpCookie() {
+    override fun onClearOkHttpCookie(): Unit = synchronized(cookieMutationLock) {
         runBlockingInScope(EmptyCoroutineContext) {
             AppDbProviders.get().cookieDao.deleteOkHttp()
         }
@@ -54,21 +76,21 @@ object SharedCookieStore : CookieStoreBase(), CookieStoreProvider {
     // ===== CookieManager 语义 (对照 app 端 CookieManager 同名方法) =====
 
     /** 对照 app 端 CookieManager.getCookieNoSession: 内存热层 → Room cookieDao 兜底。 */
-    public override fun getCookieNoSession(url: String): String {
+    public override fun getCookieNoSession(url: String): String = synchronized(cookieMutationLock) {
         val domain = NetworkUtils.getSubDomain(url)
         val cacheCookie = CacheManager.getFromMemory("${domain}_cookie") as? String
-        return cacheCookie
+        cacheCookie
             ?: runBlockingInScope(EmptyCoroutineContext) { AppDbProviders.get().cookieDao.get(domain) }?.cookie
             ?: ""
     }
 
     /** 对照 app 端 CookieManager.getSessionCookie。 */
-    public override fun getSessionCookie(domain: String): String? {
-        return CacheManager.getFromMemory("${domain}_session_cookie") as? String
+    public override fun getSessionCookie(domain: String): String? = synchronized(cookieMutationLock) {
+        CacheManager.getFromMemory("${domain}_session_cookie") as? String
     }
 
     /** 对照 app 端 CookieManager.removeCookie(url, key)。 */
-    public override fun removeCookie(url: String, key: String) {
+    public override fun removeCookie(url: String, key: String): Unit = synchronized(cookieMutationLock) {
         val domain = NetworkUtils.getSubDomain(url)
 
         getSessionCookie(domain)?.let { cookieToMap(it) }?.let { map ->
@@ -89,7 +111,7 @@ object SharedCookieStore : CookieStoreBase(), CookieStoreProvider {
     }
 
     /** 对照 app 端 CookieManager.updateSessionCookie (CookieJar saveResponse 会话分支用)。 */
-    override fun updateSessionCookie(domain: String, cookies: String) {
+    override fun updateSessionCookie(domain: String, cookies: String): Unit = synchronized(cookieMutationLock) {
         val cacheKey = "${domain}_session_cookie"
         val sessionCookie = CacheManager.getFromMemory(cacheKey) as? String
         val ck =
