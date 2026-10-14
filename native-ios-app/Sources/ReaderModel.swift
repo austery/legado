@@ -4,6 +4,7 @@ import ReaderEngine
 import SwiftUI
 
 enum ReaderRoute { case shelf, search, contents, reading }
+enum ReaderSearchScope: String, CaseIterable { case all, selected }
 
 @MainActor
 final class ReaderModel: ObservableObject {
@@ -38,9 +39,22 @@ final class ReaderModel: ObservableObject {
         return saver
     }()
     @Published var sources: [SourceSnapshot] = []
-    @Published var sourceID = ""
-    @Published var query = ""
-    @Published var results: [BookSnapshot] = []
+    @Published var searchScope: ReaderSearchScope = .all {
+        didSet { if searchScope != oldValue { sourceChanged() } }
+    }
+    @Published var selectedSourceIDs: Set<String> = [] {
+        didSet { if selectedSourceIDs != oldValue { sourceChanged() } }
+    }
+    @Published var query = "" {
+        didSet { if query != oldValue { retireSearch() } }
+    }
+    @Published private(set) var searchWorks: [SearchWorkSnapshot] = []
+    @Published private(set) var searchSources: [SearchSourceSnapshot] = []
+    @Published private(set) var searchRunning = false
+    @Published private(set) var searchIncomplete = false
+    @Published private(set) var searchCommandPending = false
+    @Published private(set) var searchSessionID: String?
+    var results: [BookSnapshot] { searchWorks.flatMap { $0.candidates.map(\.book) } }
     @Published var book: BookSnapshot?
     @Published var chapters: [ChapterSnapshot] = []
     @Published var content: ContentReply?
@@ -50,21 +64,35 @@ final class ReaderModel: ObservableObject {
     @Published var importNotice: String?
     @Published private(set) var importDetails: String?
     @Published var hasSearched = false
-    @Published var hasNextPage = false
+    var hasNextPage: Bool {
+        searchSessionID != nil && !searchRunning && !searchCommandPending &&
+            searchSources.contains { $0.hasNextPage && ($0.status == .success || $0.status == .empty) }
+    }
+    var canSearch: Bool {
+        initialized && !busy && !sources.isEmpty && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            (searchScope == .all || !selectedSourceIDs.isEmpty)
+    }
+    var searchIsEmpty: Bool { hasSearched && !searchRunning && !searchIncomplete && searchWorks.isEmpty }
+    var searchProgress: String {
+        let finished = searchSources.filter { $0.status != .pending && $0.status != .running }.count
+        let failed = searchSources.filter { $0.status == .failed }.count
+        let state = searchRunning ? "Searching" : searchIncomplete ? "Incomplete search" : "Search complete"
+        return "\(state) · \(finished)/\(searchSources.count) sources" + (failed > 0 ? " · \(failed) failed" : "")
+    }
+    private var searchRequest: EngineRequest?
+    private var searchCommandRequest: EngineRequest?
+    private var searchGeneration = UUID()
     private let engine = ReaderEngine()
     private var request: EngineRequest?
     private var generation = UUID()
     @Published private(set) var initialized = false
-    private var loadedQuery = ""
-    private var loadedSourceID = ""
-    private var page: Int32 = 0
     private var retryAction: (() -> Void)?
     var canRetry: Bool { retryAction != nil }
 
     deinit { engine.close() }
 
     func sourceChanged() {
-        cancel(); results = []; hasSearched = false; hasNextPage = false
+        cancel(); clearSearch()
     }
 
     func start() {
@@ -80,7 +108,7 @@ final class ReaderModel: ObservableObject {
         perform(retry: { [weak self] in self?.refreshSources(thenShelf: thenShelf) }, start: { self.engine.listSources(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? SourcesReply else { return }
             self.sources = reply.sources
-            if !self.sources.contains(where: { $0.id == self.sourceID }) { self.sourceID = self.sources.first?.id ?? "" }
+            self.selectedSourceIDs.formIntersection(self.sources.map(\.id))
             if thenShelf { self.refreshShelf() }
         }
     }
@@ -168,28 +196,90 @@ final class ReaderModel: ObservableObject {
         perform(retry: { [weak self] in self?.importJSON(json) }, start: { self.engine.importSources(json: json, completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? SourcesReply else { return }
             self.importNotice = "Imported \(reply.sources.count) sources."
-            self.results = []; self.chapters = []; self.book = nil; self.content = nil
-            self.hasSearched = false; self.hasNextPage = false; self.route = .search
+            self.clearSearch(); self.chapters = []; self.book = nil; self.content = nil
+            self.route = .search
             self.refreshSources()
         }
     }
 
-    func search(more: Bool = false) {
-        let text = more ? loadedQuery : query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = more ? loadedSourceID : sourceID
-        guard !text.isEmpty, !source.isEmpty else { return }
-        let nextPage: Int32 = more ? page + 1 : 1
-        if !more { results = []; hasNextPage = false; hasSearched = false }
-        route = .search
-        perform(retry: { [weak self] in self?.search(more: more) }, start: {
-            self.engine.search(sourceId: source, query: text, page: nextPage, completion: $0)
-        }) { [weak self] reply in
-            guard let self, let reply = reply as? SearchReply else { return }
-            let existing = more ? self.results : []
-            var identities = Set(existing.map { $0.sourceId + "\u{0}" + $0.id })
-            self.results = existing + reply.books.filter { identities.insert($0.sourceId + "\u{0}" + $0.id).inserted }
-            self.page = nextPage; self.loadedQuery = text; self.loadedSourceID = source
-            self.hasNextPage = reply.hasNextPage; self.hasSearched = true
+    private func clearSearch() {
+        searchWorks = []; searchSources = []; hasSearched = false; searchIncomplete = false
+    }
+
+    private func retireSearch() {
+        searchGeneration = UUID()
+        searchRequest?.cancel(); searchRequest = nil
+        searchCommandRequest?.cancel(); searchCommandRequest = nil
+        if searchRunning { searchIncomplete = true }
+        searchRunning = false; searchCommandPending = false; searchSessionID = nil
+    }
+
+    func search() {
+        guard canSearch else { return }
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceIDs = searchScope == .all ? [] : selectedSourceIDs.sorted()
+        cancel(); clearSearch()
+        let token = generation
+        let searchToken = searchGeneration
+        busy = true
+        finishReading { [weak self] in
+            guard let self, self.generation == token, self.searchGeneration == searchToken else { return }
+            self.route = .search; self.busy = false; self.searchRunning = true; self.hasSearched = true
+            self.searchRequest = self.engine.startSearch(query: text, sourceIds: sourceIDs) { [weak self] reply in
+                guard let self, self.searchGeneration == searchToken else { return }
+                if let error = reply as? EngineFailure {
+                    self.searchRunning = false; self.searchIncomplete = true; self.searchRequest = nil
+                    if error.code != .cancelled { self.message = "\(error.code.name): \(error.message)" }
+                    return
+                }
+                guard let update = reply as? SearchUpdate,
+                      self.searchSessionID == nil || self.searchSessionID == update.sessionId else { return }
+                self.searchSessionID = update.sessionId
+                self.searchWorks = update.works; self.searchSources = update.sources
+                self.searchRunning = update.phase == .searching
+                self.searchIncomplete = update.phase == .cancelled || update.sources.contains { $0.status == .failed || $0.status == .cancelled }
+                let failures = update.sources.compactMap { source -> String? in
+                    guard let failure = source.failure else { return nil }
+                    return "\(source.name): \(failure.code.name): \(failure.message)"
+                }
+                self.message = failures.isEmpty ? nil : failures.joined(separator: "\n")
+                if update.phase == .cancelled { self.retireSearch() }
+                // IDLE retains the subscription for pagination, retry and restart updates.
+            }
+        }
+    }
+
+    func loadMoreSearch() {
+        guard hasNextPage else { return }
+        searchCommand { self.engine.loadMoreSearch(searchSessionId: $0, completion: $1) }
+    }
+
+    func retrySearchSource(_ sourceID: String) {
+        searchCommand { self.engine.retrySearchSource(searchSessionId: $0, sourceId: sourceID, completion: $1) }
+    }
+
+    func restartSearchSource(_ sourceID: String) {
+        searchCommand { self.engine.restartSearchSource(searchSessionId: $0, sourceId: sourceID, completion: $1) }
+    }
+
+    func stopSearch() {
+        guard searchRunning else { return }
+        searchIncomplete = true
+        guard searchSessionID != nil else { retireSearch(); return }
+        searchCommand(stopping: true) { self.engine.cancelSearch(searchSessionId: $0, completion: $1) }
+    }
+
+    private func searchCommand(stopping: Bool = false, start: (String, @escaping (EngineReply) -> Void) -> EngineRequest) {
+        guard let sessionID = searchSessionID, !searchCommandPending, !busy else { return }
+        let token = searchGeneration
+        searchCommandPending = true
+        searchCommandRequest = start(sessionID) { [weak self] reply in
+            guard let self, self.searchGeneration == token, self.searchSessionID == sessionID else { return }
+            self.searchCommandPending = false; self.searchCommandRequest = nil
+            if let failure = reply as? EngineFailure, failure.code != .cancelled {
+                self.message = "\(failure.code.name): \(failure.message)"
+            }
+            if stopping { self.retireSearch(); self.searchIncomplete = true }
         }
     }
 
@@ -342,6 +432,7 @@ final class ReaderModel: ObservableObject {
     }
     func retry() { retryAction?() }
     func cancel() {
+        retireSearch()
         generation = UUID(); request?.cancel(); request = nil
         busy = false; message = nil; retryAction = nil
     }

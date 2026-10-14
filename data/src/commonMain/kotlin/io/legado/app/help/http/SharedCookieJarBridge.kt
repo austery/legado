@@ -91,7 +91,8 @@ class SharedCookieJarBridge : CookieJarBridge {
         }
 
         if (persistent.isNotEmpty()) {
-            store.replaceCookie(domain, persistent.toCookieString())
+            // The store accepts a full URL and canonicalizes its own domain.
+            store.replaceCookie(url.toString(), persistent.toCookieString())
         }
     }
 }

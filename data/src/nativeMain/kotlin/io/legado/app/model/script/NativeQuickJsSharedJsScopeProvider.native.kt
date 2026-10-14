@@ -181,7 +181,7 @@ private class LruScopeCache(private val maxSize: Int) {
     }
 
     /**
-     * 栈外清扫: threadLocalScope 为空 ⇔ 所有线程均无 eval 在执行 (全局 atomic 单值),
+     * Stack-external cleanup: an empty current scope means this thread is not evaluating JS,
      * 此时本线程淘汰的 scope 必然无人使用, 统一 JS_FreeContext + JS_FreeRuntime 释放。
      * 每次 provider 调用入口执行一次, 保证被淘汰 ctx 最终必被释放 (不再累积泄漏)。
      */

@@ -274,6 +274,11 @@ object NativeJsExtensionsBridge {
             val obj = getObject(handle) ?: return jsUndefined()
             return dispatch(ctxNotNull, obj, methodId, argsArray)
         } catch (t: Throwable) {
+            try {
+                NativeJsEngine.currentScope()?.coroutineContext?.get(JsHostFailureObserver)?.onFailure?.invoke(t)
+            } catch (_: Throwable) {
+                // A host observer must never unwind through the native C callback.
+            }
             // 桥接异常返回 undefined, 避免 JS 引擎崩溃 (与 Android 端 exotic trap 行为一致)
             return jsUndefined()
         }

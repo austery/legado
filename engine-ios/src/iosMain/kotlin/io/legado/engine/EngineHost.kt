@@ -2,6 +2,8 @@
 
 package io.legado.engine
 
+import io.legado.app.constant.AppConst
+import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.constant.registerNativeAndroidId
 import io.legado.app.data.registerIosAppDbAccessor
 import io.legado.app.data.registerIosDatabaseDriver
@@ -22,27 +24,63 @@ import io.legado.app.help.storage.registerNativeDataStorage
 import io.legado.app.help.toast.Toaster
 import io.legado.app.help.toast.Toasters
 import io.legado.app.model.script.registerNativeJsEngines
+import io.legado.app.model.script.JsHostFailureObserver
 import io.legado.app.model.webBook.registerNativeWebBookProviders
-import kotlinx.atomicfu.atomic
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import platform.Foundation.NSLog
 import platform.UIKit.UIDevice
 
-/** Owns the process-wide upstream providers; all engine operations hold gate. */
+/** Owns upstream providers; gate protects serialized product and registry operations. */
 internal object EngineHost {
     val gate = Mutex()
     private var ready = false
     private var failed = false
-    private val interaction = atomic<EngineFailure?>(null)
+    private val networkRegistryMutex = Mutex()
+    private val sourceLeases = mutableMapOf<String, Mutex>()
+    private var networkPermits: Semaphore? = null
 
-    fun beginOperation() { interaction.value = null }
-    fun interactionFailure(): EngineFailure? = interaction.value
+    /** Process-wide leases include legacy requests and independent engine sessions. */
+    suspend fun <T> withSourceRequest(sourceId: String, action: suspend () -> T): T {
+        val (permits, lease) = networkRegistryMutex.withLock {
+            val permits = networkPermits ?: Semaphore(
+                AppConfigProviders.get().threadCount.coerceIn(1, AppConst.MAX_THREAD)
+            ).also { networkPermits = it }
+            permits to sourceLeases.getOrPut(sourceId) { Mutex() }
+        }
+        return lease.withLock { permits.withPermit { action() } }
+    }
+
+    suspend fun <T> withOperation(action: suspend () -> T): T {
+        val operation = EngineOperation()
+        val observer = JsHostFailureObserver { error ->
+            generateSequence(error) { it.cause }.take(16)
+                .filterIsInstance<EngineHostRejection>().firstOrNull()?.failure?.let {
+                    operation.reject(it.code, it.message)
+                }
+        }
+        return withContext(operation + observer) {
+            try {
+                action()
+            } finally {
+                currentCoroutineContext().ensureActive()
+            }
+        }
+    }
+
+    suspend fun interactionFailure(): EngineFailure? =
+        currentCoroutineContext()[EngineOperation]?.interactionFailure()
 
     private fun reject(code: EngineErrorCode, message: String): Nothing {
         // The upstream C bridge catches Throwable and returns JS undefined. Preserve
         // the failure separately so a later successful JS value cannot hide it.
-        interaction.compareAndSet(null, EngineFailure(code, message))
-        throw IllegalStateException(message)
+        EngineOperation.currentScript()?.reject(code, message)
+        throw EngineHostRejection(EngineFailure(code, message))
     }
 
     fun initialize() {
@@ -73,6 +111,12 @@ internal object EngineHost {
         registerNativeSourceProviders()
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()
+        registerInteractionProviders()
+        ready = true
+        failed = false
+    }
+
+    internal fun registerInteractionProviders() {
         VerificationUiProviders.register(object : VerificationUiProvider {
             override fun showVerificationCodeDialog(url: String, source: BaseSource) {
                 reject(EngineErrorCode.INTERACTION_REQUIRED, "Source requires verification")
@@ -88,7 +132,6 @@ internal object EngineHost {
                 javaScript: String?, delayTime: Long): BackstageWebViewHandle =
                 reject(EngineErrorCode.UNSUPPORTED, "Background WebView is outside this engine slice")
         })
-        ready = true
-        failed = false
     }
+
 }
