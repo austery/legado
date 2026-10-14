@@ -21,8 +21,16 @@ package-lock.json
 .proxyai
 /.mimocode/.cron-lock
 
-# 文档目录仅本地保留，不入库（调研/计划类文档，非源码）
-docs/
+# Publish only reviewed architecture documents; keep evidence local.
+/docs/*
+!/docs/architecture/
+/docs/architecture/*
+!/docs/architecture/decisions/
+!/docs/architecture/specs/
+/docs/architecture/decisions/*
+!/docs/architecture/decisions/ADR-001-native-experience-and-upstream-ownership.md
+/docs/architecture/specs/*
+!/docs/architecture/specs/SPEC-004-multi-source-search-and-candidates.md
 
 # OHOS 原生共享库与 K/N 生成头文件（根 build.gradle.kts stageOhosNativeLibraries 拷入,
 # hvigor 构建时经 CMake 前置的 gradle 任务自动重新生成, 不进版本库）
