@@ -1,5 +1,8 @@
 package io.legado.app.data
 
+import androidx.room3.immediateTransaction
+import androidx.room3.useWriterConnection
+
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.dao.BookGroupDao
@@ -31,14 +34,8 @@ import io.legado.app.data.dao.TxtTocRuleDao
  * 仅类名 (IosAppDbAccessor / OhosAppDbAccessor)
  * 与注册函数不同, 故下沉到 nativeMain 共用, 平台源集用 typealias 别名 + 各自 register 函数。
  *
- * # 事务行为 (Native 端仍是降级实现)
- *
- * [runInTransactionSuspending] 直接执行 block 不做事务包裹, 每个 DAO 操作本身原子,
- * 最坏情况部分失败 (调用方 SourceHelp.deleteBookSourcesByKeys 有 chunked 兜底, 影响可控)。
- * TODO: Room 3 的 useWriterConnection + immediateTransaction 在 Native 端可用, 待验证后接真事务
- * (jvm/android 两端已走该路径, 见 DesktopAppDbAccessor / WebBookProvidersImpl)。
- *
- * 模式参考 desktop `DesktopAppDbAccessor` 实现。
+ * Transactions use the Room writer connection. Nested suspend DAO calls participate
+ * in the same immediate transaction and exceptions roll back the entire operation.
  */
 class NativeAppDbAccessor : AppDbAccessor {
 
@@ -79,11 +76,10 @@ class NativeAppDbAccessor : AppDbAccessor {
     // KeyboardToolbar / 备份恢复用 (键盘助手)
     override val keyboardAssistsDao: KeyboardAssistsDao get() = appDb.keyboardAssistsDao
 
-    // ---- AppDbAccessor 事务 ----
-    // suspend 版本: Native 端无 room-ktx, 降级为直接执行 block (与非 suspend 版本行为一致)
-    // 供 UpdateBookShared 等 suspend 调用方使用, block 内可直接调 suspend DAO, 无需 runBlocking
-    // (Native 端 runBlocking 有死锁风险, 用 suspend 版本规避)
+    /** Keep the writer connection in coroutine context across nested DAO calls. */
     override suspend fun <R> runInTransactionSuspending(block: suspend () -> R): R {
-        return block()
+        return appDb.useWriterConnection { writer ->
+            writer.immediateTransaction { block() }
+        }
     }
 }

@@ -2,6 +2,7 @@ package io.legado.app.ui.book.info.edit
 
 import io.legado.app.constant.AppLog
 import io.legado.app.data.AppDbProviders
+import io.legado.app.data.dao.BookIdentityConflictException
 import io.legado.app.data.entities.Book
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.coroutine.mainDispatcher
@@ -127,7 +128,7 @@ class BookInfoEditViewModelShared(
                 throw e
             } catch (e: Throwable) {
                 // 5. 异常日志: 按 SQLiteConstraintException 区分文案 (类名匹配, 不直接引用 android.database.sqlite)
-                if (isSQLiteConstraintException(e)) {
+                if (e is BookIdentityConflictException || isSQLiteConstraintException(e)) {
                     AppLog.put("书籍信息保存失败，存在相同书名作者书籍\n$e", e, true)
                 } else {
                     AppLog.put("书籍信息保存失败\n$e", e, true)

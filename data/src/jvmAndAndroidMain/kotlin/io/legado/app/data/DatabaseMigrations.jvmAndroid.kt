@@ -25,3 +25,15 @@ internal actual fun migration82To83(): Migration = object : Migration(82, 83) {
         DatabaseMigrationsData.migrate82To83(connection)
     }
 }
+
+internal actual fun migration88To89(): Migration = object : Migration(88, 89) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        DatabaseMigrationsData.migrate88To89(connection)
+    }
+}
+
+internal actual fun migration89To90(): Migration = object : Migration(89, 90) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        DatabaseMigrationsData.migrate89To90(connection)
+    }
+}

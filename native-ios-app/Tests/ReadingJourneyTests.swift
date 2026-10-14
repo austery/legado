@@ -80,6 +80,218 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertFalse(model.busy, "Operation did not finish", file: file, line: line)
     }
 
+    private func captureShelfView(_ model: ReaderModel, name: String) async throws {
+        let host = UIHostingController(rootView: ReaderScreen(model: model))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 834, height: 1194))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        host.view.layoutIfNeeded()
+        let attachment = XCTAttachment(image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        })
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false) async throws {
+        let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
+        var json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        if !titleSuffix.isEmpty {
+            json = json.replacingOccurrences(of: "class.name@text", with: "class.name@text##$## " + titleSuffix)
+                .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$## " + titleSuffix)
+        }
+        if paragraphs { json = json.replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第") }
+        if unknown { json = json.replacingOccurrences(of: "class.author@text", with: "class.absent-author@text") }
+        if !enabled { json = json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false") }
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        try Data(json.utf8).write(to: local)
+        model.importFile(local); try await settle(model); XCTAssertNil(model.message)
+    }
+
+    func testStalePositionCanBeDiscardedWithoutOverwritingSharedProgress() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
+        model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+        model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let original = try XCTUnwrap(model.content)
+        let token = try XCTUnwrap(original.reading?.token)
+
+        let other = ReaderEngine()
+        defer { other.close() }
+        func call(_ start: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
+            await withCheckedContinuation { continuation in _ = start { continuation.resume(returning: $0) } }
+        }
+        _ = await call { other.initialize(completion: $0) }
+        _ = await call { other.openShelfBook(sourceId: base, bookId: original.chapter.bookId, completion: $0) }
+        let opened = await call { other.openReading(sourceId: base, bookId: original.chapter.bookId, cacheOnly: true, completion: $0) }
+        let otherToken = try XCTUnwrap((opened as? ContentReply)?.reading?.token)
+        let saved: EngineReply = await withCheckedContinuation { continuation in
+            other.saveReadingPosition(token: otherToken, eventSequence: 1, utf16Offset: 0) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(saved is ReadingSaved)
+        model.readingDisplayed(token, 0)
+        for _ in 0..<100 {
+            if model.saveNotice != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(model.saveNotice)
+        model.showShelf(); try await settle(model)
+        XCTAssertEqual(model.route, .reading, "Stale writes must not silently discard progress")
+        model.discardPositionAndReturnToShelf(); try await settle(model)
+        XCTAssertEqual(model.route, .shelf)
+        XCTAssertFalse(model.canRetryPosition)
+        XCTAssertNil(model.content)
+        let entry = try XCTUnwrap(model.shelf.first { $0.book.id == original.chapter.bookId })
+        model.openShelfBook(entry); try await settle(model)
+        XCTAssertEqual(model.route, .reading)
+        XCTAssertNil(model.message)
+        XCTAssertEqual(model.content?.reading?.revision, (saved as? ReadingSaved)?.revision)
+    }
+
+    func testShelfAddReopenAndRemoveThroughRealEngine() async throws {
+        let titleSuffix = UUID().uuidString
+        let model = ReaderModel()
+        model.start()
+        try await settle(model)
+        XCTAssertEqual(model.route, .shelf)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: base, titleSuffix: titleSuffix)
+        model.sourceID = base; model.query = "Path"; model.search()
+        try await settle(model)
+        model.select(try XCTUnwrap(model.results.first))
+        try await settle(model)
+        model.addCurrentBook()
+        try await settle(model)
+        XCTAssertNil(model.message)
+        let saved = try XCTUnwrap(model.book)
+        let catalog = model.chapters.map(\.id)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        XCTAssertNil(model.message)
+        let candidateBase = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: candidateBase, titleSuffix: titleSuffix)
+        model.sourceID = candidateBase; model.query = "Path"; model.search(); try await settle(model)
+        model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.sourceId, candidateBase)
+        model.addCurrentBook(); try await settle(model)
+        XCTAssertNil(model.message)
+        XCTAssertEqual(model.book?.id, saved.id)
+        XCTAssertEqual(model.book?.sourceId, saved.sourceId)
+        XCTAssertEqual(model.chapters.map(\.id), catalog)
+        XCTAssertNil(model.content, "Candidate text must not attach to the preserved shelf record")
+        try await captureShelfView(model, name: "C3 preserved original contents after duplicate add")
+        try await importFixture(model, base: base, enabled: false, titleSuffix: titleSuffix)
+        let reopened = ReaderModel()
+        reopened.start()
+        try await settle(reopened)
+        let entry = try XCTUnwrap(reopened.shelf.first { $0.book.id == saved.id })
+        try await captureShelfView(reopened, name: "C3 persisted shelf")
+        reopened.openShelfBook(entry)
+        try await settle(reopened)
+        XCTAssertNil(reopened.message)
+        XCTAssertEqual(reopened.book?.sourceId, saved.sourceId)
+        XCTAssertEqual(reopened.chapters.map(\.id), catalog)
+        reopened.read(try XCTUnwrap(reopened.chapters.first)); try await settle(reopened)
+        XCTAssertNil(reopened.message)
+        XCTAssertTrue(reopened.content?.fromCache == true)
+        reopened.read(reopened.chapters[1]); try await settle(reopened)
+        XCTAssertTrue(reopened.message?.contains("CACHE_UNAVAILABLE") == true, "Disabled sources must not fetch uncached chapters")
+        XCTAssertEqual(reopened.content?.chapter.id, catalog.first)
+        reopened.removeShelfBook(entry)
+        try await settle(reopened)
+        XCTAssertNil(reopened.message)
+        XCTAssertFalse(reopened.shelf.contains { $0.book.id == saved.id })
+    }
+
+    func testDisplayedParagraphSurvivesShelfReopenAndFailedNextChapter() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
+        model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+        model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(model.chapters[1]); try await settle(model)
+        let chapterID = try XCTUnwrap(model.content?.chapter.id)
+        let oldToken = try XCTUnwrap(model.content?.reading?.token)
+        XCTAssertTrue(model.content?.reading?.canSave == true)
+        let host = UIHostingController(rootView: ReaderScreen(model: model))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 768, height: 1024))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        host.view.layoutIfNeeded()
+        let view = try XCTUnwrap(findText(host.view) as? AnchoredTextView)
+        let displayDeadline = Date().addingTimeInterval(2)
+        while !model.canRetryPosition && Date() < displayDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertTrue(model.canRetryPosition, "Visible ReaderScreen must acknowledge its body before scrolling; notice=\(model.resumeNotice ?? "none")")
+        let target = (view.text as NSString).range(of: "第80段")
+        XCTAssertNotEqual(target.location, NSNotFound)
+        let glyph = view.layoutManager.glyphRange(forCharacterRange: target, actualCharacterRange: nil)
+        let rect = view.layoutManager.boundingRect(forGlyphRange: glyph, in: view.textContainer)
+        view.scrollViewWillBeginDragging(view)
+        view.setContentOffset(CGPoint(x: 0, y: rect.minY), animated: false)
+        view.scrollViewDidScroll(view)
+        view.scrollViewDidEndDragging(view, willDecelerate: false)
+        let expected = view.anchor
+        XCTAssertGreaterThan(expected, 0)
+        model.moveChapter(1); try await settle(model)
+        XCTAssertTrue(model.message?.contains("NETWORK") == true)
+        XCTAssertEqual(model.content?.chapter.id, chapterID)
+        XCTAssertNotEqual(model.content?.reading?.token, oldToken)
+        XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, Int32(expected))
+        model.showShelf(); try await settle(model)
+        let saved = try XCTUnwrap(model.book)
+        let reopened = ReaderModel()
+        reopened.start(); try await settle(reopened)
+        let entry = try XCTUnwrap(reopened.shelf.first { $0.book.id == saved.id })
+        reopened.openShelfBook(entry); try await settle(reopened)
+        XCTAssertEqual(reopened.route, .reading)
+        XCTAssertEqual(reopened.content?.chapter.id, chapterID)
+        XCTAssertEqual(reopened.content?.reading?.paragraphUtf16Offset, Int32(expected))
+    }
+
+    func testUnknownAuthorsRemainSeparateAndRemovedBookCanBeReadded() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let titleSuffix = UUID().uuidString
+        var identities: [String] = []
+        for _ in 0..<2 {
+            let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+            try await importFixture(model, base: base, unknown: true, titleSuffix: titleSuffix)
+            model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+            model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+            model.addCurrentBook(); try await settle(model)
+            XCTAssertNil(model.message)
+            let book = try XCTUnwrap(model.book)
+            XCTAssertEqual(book.author, "")
+            XCTAssertEqual(ReaderModel.authorLabel(book.author), "Unknown author")
+            XCTAssertEqual(book.sourceId, base)
+            identities.append(book.id)
+        }
+        XCTAssertNotEqual(identities[0], identities[1])
+        model.showShelf(); try await settle(model)
+        let entries = model.shelf.filter { identities.contains($0.book.id) }
+        XCTAssertEqual(entries.count, 2)
+        try await captureShelfView(model, name: "C3 unknown authors coexist")
+        let entry = try XCTUnwrap(entries.first)
+        model.openShelfBook(entry); try await settle(model)
+        let catalog = model.chapters.map(\.id)
+        model.removeShelfBook(entry); try await settle(model)
+        XCTAssertFalse(model.shelf.contains { $0.book.id == entry.book.id })
+        model.addCurrentBook(); try await settle(model)
+        XCTAssertNil(model.message)
+        XCTAssertEqual(model.book?.id, entry.book.id)
+        XCTAssertEqual(model.chapters.map(\.id), catalog)
+        model.showShelf(); try await settle(model)
+        XCTAssertEqual(model.shelf.filter { identities.contains($0.book.id) }.count, 2)
+        for item in entries { model.removeShelfBook(item); try await settle(model) }
+    }
+
     func testNonProgressingRegexFailsAndNextSearchRecovers() async throws {
         let model = ReaderModel()
         model.start()

@@ -3,10 +3,40 @@ import CryptoKit
 import ReaderEngine
 import SwiftUI
 
-enum ReaderRoute { case search, contents, reading }
+enum ReaderRoute { case shelf, search, contents, reading }
 
 @MainActor
 final class ReaderModel: ObservableObject {
+    @Published var shelf: [ShelfBookSnapshot] = []
+    @Published var shelfNotice: String?
+    @Published var resumeNotice: String?
+    @Published var saveNotice: String?
+    private var activeReadingToken: String?
+    private lazy var positionSaver: ReadingSaveCoordinator = {
+        let saver = ReadingSaveCoordinator { [weak self] sample, finishing, completion in
+            guard let self, let offset = Int32(exactly: sample.offset) else {
+                completion(.failed("Reading position is outside the supported range.")); return
+            }
+            let received: (EngineReply) -> Void = { reply in
+                if let failure = reply as? EngineFailure { completion(.failed(failure.message)) }
+                else if reply is ReadingSaved {
+                    self.saveNotice = nil
+                    completion(.saved)
+                }
+                else { completion(.failed("Reading position was not acknowledged.")) }
+            }
+            if finishing {
+                self.engine.finishReading(token: sample.token, eventSequence: sample.sequence, utf16Offset: offset, completion: received)
+            } else {
+                self.engine.saveReadingPosition(token: sample.token, eventSequence: sample.sequence, utf16Offset: offset, completion: received)
+            }
+        }
+        saver.onFailure = { [weak self] message in
+            self?.saveNotice = "Position not saved: \(message)"
+            self?.busy = false
+        }
+        return saver
+    }()
     @Published var sources: [SourceSnapshot] = []
     @Published var sourceID = ""
     @Published var query = ""
@@ -14,7 +44,7 @@ final class ReaderModel: ObservableObject {
     @Published var book: BookSnapshot?
     @Published var chapters: [ChapterSnapshot] = []
     @Published var content: ContentReply?
-    @Published var route: ReaderRoute = .search
+    @Published var route: ReaderRoute = .shelf
     @Published var busy = false
     @Published var message: String?
     @Published var importNotice: String?
@@ -39,19 +69,74 @@ final class ReaderModel: ObservableObject {
 
     func start() {
         guard !initialized else { return }
-        perform(retry: { [weak self] in self?.start() }, start: { engine.initialize(completion: $0) }) { [weak self] reply in
+        perform(retry: { [weak self] in self?.start() }, start: { self.engine.initialize(completion: $0) }) { [weak self] reply in
             guard let self, reply is EngineReady else { return }
             self.initialized = true
-            self.refreshSources()
+            self.refreshSources(thenShelf: true)
         }
     }
 
-    func refreshSources() {
-        perform(retry: { [weak self] in self?.refreshSources() }, start: { engine.listSources(completion: $0) }) { [weak self] reply in
+    func refreshSources(thenShelf: Bool = false) {
+        perform(retry: { [weak self] in self?.refreshSources(thenShelf: thenShelf) }, start: { self.engine.listSources(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? SourcesReply else { return }
             self.sources = reply.sources
             if !self.sources.contains(where: { $0.id == self.sourceID }) { self.sourceID = self.sources.first?.id ?? "" }
+            if thenShelf { self.refreshShelf() }
         }
+    }
+
+    func refreshShelf() {
+        perform(retry: { [weak self] in self?.refreshShelf() }, start: { self.engine.listShelf(completion: $0) }) { [weak self] reply in
+            guard let self, let reply = reply as? ShelfReply else { return }
+            self.shelf = reply.books
+        }
+    }
+
+    func showShelf() {
+        navigate(.shelf) { [weak self] in self?.refreshShelf() }
+    }
+
+    func addCurrentBook() {
+        guard let book, !chapters.isEmpty else { return }
+        let selected = book
+        perform(retry: { [weak self] in self?.addCurrentBook() }, start: {
+            self.engine.addToShelf(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let reply = reply as? ShelfEntryReply else { return }
+            self.acceptShelfEntry(reply)
+            self.shelfNotice = reply.entry.book.id == selected.id && reply.entry.book.sourceId == selected.sourceId
+                ? "Added to shelf." : "Already on shelf. Kept the original source and saved chapters."
+        }
+    }
+
+    func openShelfBook(_ entry: ShelfBookSnapshot) {
+        perform(retry: { [weak self] in self?.openShelfBook(entry) }, start: {
+            self.engine.openShelfBook(sourceId: entry.book.sourceId, bookId: entry.book.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let reply = reply as? ShelfEntryReply else { return }
+            self.acceptShelfEntry(reply)
+            self.shelfNotice = nil
+            self.resumeCurrentBook()
+        }
+    }
+
+    func removeShelfBook(_ entry: ShelfBookSnapshot) {
+        perform(retry: { [weak self] in self?.removeShelfBook(entry) }, start: {
+            self.engine.removeFromShelf(sourceId: entry.book.sourceId, bookId: entry.book.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, reply is ShelfRemoved else { return }
+            self.refreshShelf()
+        }
+    }
+
+    private func acceptShelfEntry(_ reply: ShelfEntryReply) {
+        book = reply.entry.book; chapters = reply.chapters
+        // Never carry a candidate source's text into a reused shelf identity.
+        content = nil; route = .contents
+    }
+
+    static func authorLabel(_ author: String) -> String {
+        author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown author" : author
     }
 
     func importFile(_ url: URL) {
@@ -80,7 +165,7 @@ final class ReaderModel: ObservableObject {
 
     private func importJSON(_ json: String) {
         importNotice = nil
-        perform(retry: { [weak self] in self?.importJSON(json) }, start: { engine.importSources(json: json, completion: $0) }) { [weak self] reply in
+        perform(retry: { [weak self] in self?.importJSON(json) }, start: { self.engine.importSources(json: json, completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? SourcesReply else { return }
             self.importNotice = "Imported \(reply.sources.count) sources."
             self.results = []; self.chapters = []; self.book = nil; self.content = nil
@@ -97,7 +182,7 @@ final class ReaderModel: ObservableObject {
         if !more { results = []; hasNextPage = false; hasSearched = false }
         route = .search
         perform(retry: { [weak self] in self?.search(more: more) }, start: {
-            engine.search(sourceId: source, query: text, page: nextPage, completion: $0)
+            self.engine.search(sourceId: source, query: text, page: nextPage, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? SearchReply else { return }
             let existing = more ? self.results : []
@@ -110,7 +195,7 @@ final class ReaderModel: ObservableObject {
 
     func select(_ selected: BookSnapshot) {
         perform(retry: { [weak self] in self?.select(selected) }, start: {
-            engine.loadBook(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
+            self.engine.loadBook(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? BookReply else { return }
             self.loadContents(reply.book)
@@ -119,20 +204,39 @@ final class ReaderModel: ObservableObject {
 
     private func loadContents(_ selected: BookSnapshot) {
         perform(retry: { [weak self] in self?.loadContents(selected) }, start: {
-            engine.loadToc(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
+            self.engine.loadToc(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? TocReply else { return }
+            self.shelfNotice = nil
             self.book = selected; self.chapters = reply.chapters
             self.content = nil; self.route = .contents
         }
     }
 
     func read(_ chapter: ChapterSnapshot) {
-        perform(retry: { [weak self] in self?.read(chapter) }, start: {
-            engine.loadChapter(sourceId: chapter.sourceId, bookId: chapter.bookId, chapterId: chapter.id, cacheOnly: false, completion: $0)
+        let previous = content
+        perform(retry: { [weak self] in self?.read(chapter) }, failure: { [weak self] _ in
+            guard let previous, previous.reading?.canSave == true else { return }
+            self?.recoverDisplayedReading(previous)
+        }, start: {
+            self.engine.loadChapter(sourceId: chapter.sourceId, bookId: chapter.bookId, chapterId: chapter.id, cacheOnly: false, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? ContentReply else { return }
-            self.content = reply; self.route = .reading
+            self.acceptContent(reply)
+        }
+    }
+
+    private func recoverDisplayedReading(_ previous: ContentReply) {
+        let token = generation
+        busy = true
+        request = engine.openReading(sourceId: previous.chapter.sourceId, bookId: previous.chapter.bookId, cacheOnly: true) { [weak self] reply in
+            guard let self, self.generation == token else { return }
+            self.busy = false; self.request = nil
+            if let restored = reply as? ContentReply {
+                self.acceptContent(restored)
+            } else {
+                self.resumeNotice = "Previous text remains visible, but its saved position could not be reopened. Retry before continuing."
+            }
         }
     }
 
@@ -146,26 +250,121 @@ final class ReaderModel: ObservableObject {
         read(chapters[index + delta])
     }
 
-    func navigate(_ target: ReaderRoute) { cancel(); route = target }
+    func resumeCurrentBook() {
+        guard let book else { return }
+        perform(retry: { [weak self] in self?.resumeCurrentBook() }, start: {
+            self.engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: false, completion: $0)
+        }) { [weak self] reply in
+            guard let reply = reply as? ContentReply else { return }
+            self?.acceptContent(reply)
+        }
+    }
+
+    private func acceptContent(_ reply: ContentReply) {
+        content = reply; route = .reading
+        saveNotice = reply.storageNotice.isEmpty ? nil : reply.storageNotice
+        activeReadingToken = reply.reading?.token
+        resumeNotice = reply.reading?.restoreNotice.isEmpty == false ? reply.reading?.restoreNotice : nil
+    }
+
+    var readingRestoration: ReadingRestoration? {
+        guard let reading = content?.reading else { return nil }
+        return ReadingRestoration(identity: reading.token, utf16Offset: Int(reading.paragraphUtf16Offset))
+    }
+
+    func readingDisplayed(_ token: String, _ offset: Int) {
+        guard route == .reading, activeReadingToken == token, content?.reading?.canSave == true else { return }
+        positionSaver.displayed(token: token, offset: offset)
+    }
+
+    func readingScrolled(_ token: String, _ offset: Int) {
+        guard route == .reading, activeReadingToken == token, content?.reading?.canSave == true else { return }
+        positionSaver.sample(token: token, offset: offset)
+    }
+
+    var canRetryPosition: Bool { positionSaver.hasPosition && content?.reading?.canSave == true }
+
+    func flushReadingPosition() { positionSaver.flush() }
+
+    /// Called only after the user confirms losing the unsaved position.
+    func discardPositionAndReturnToShelf() {
+        cancel()
+        let readingToken = activeReadingToken
+        activeReadingToken = nil
+        positionSaver.discard()
+        content = nil
+        saveNotice = nil
+        resumeNotice = nil
+        route = .shelf
+        if let readingToken {
+            engine.abandonReading(token: readingToken) { [weak self] reply in
+                if let failure = reply as? EngineFailure { self?.shelfNotice = failure.message }
+            }
+        }
+        refreshShelf()
+    }
+
+    func cancelLoading() {
+        let previous = content
+        let needsRecovery = previous?.reading?.canSave == true && route == .reading
+        cancel()
+        if needsRecovery, let previous {
+            finishReading { [weak self] in self?.recoverDisplayedReading(previous) }
+        }
+    }
+
+    private func finishReading(then action: @escaping () -> Void) {
+        guard let token = activeReadingToken else { action(); return }
+        let finished = { [weak self] in
+            self?.activeReadingToken = nil
+            action()
+        }
+        if positionSaver.hasPosition {
+            positionSaver.finish(then: finished)
+        } else {
+            self.engine.abandonReading(token: token) { [weak self] reply in
+                if let failure = reply as? EngineFailure {
+                    self?.resumeNotice = failure.message; self?.busy = false
+                } else { finished() }
+            }
+        }
+    }
+
+    func navigate(_ target: ReaderRoute, then action: (() -> Void)? = nil) {
+        cancel()
+        let token = generation
+        busy = true
+        finishReading { [weak self] in
+            guard let self, self.generation == token else { return }
+            self.route = target; self.busy = false
+            action?()
+        }
+    }
     func retry() { retryAction?() }
     func cancel() {
         generation = UUID(); request?.cancel(); request = nil
         busy = false; message = nil; retryAction = nil
     }
 
-    private func perform(retry: @escaping () -> Void, start: (@escaping (EngineReply) -> Void) -> EngineRequest, success: @escaping (EngineReply) -> Void) {
+    private func perform(retry: @escaping () -> Void, failure: ((EngineFailure) -> Void)? = nil, start: @escaping (@escaping (EngineReply) -> Void) -> EngineRequest, success: @escaping (EngineReply) -> Void) {
         cancel()
         let token = generation
         busy = true; retryAction = retry
-        request = start { [weak self] reply in
+        finishReading { [weak self] in
+            guard let self, self.generation == token else { return }
+            self.request = start { [weak self] reply in
             guard let self, self.generation == token else { return }
             self.busy = false; self.request = nil
-            if let failure = reply as? EngineFailure {
-                if failure.code != .cancelled { self.message = "\(failure.code.name): \(failure.message)" }
+            if let error = reply as? EngineFailure {
+                if error.code != .cancelled {
+                    self.message = "\(error.code.name): \(error.message)"
+                    failure?(error)
+                }
                 return
             }
             self.retryAction = nil
             success(reply)
+            }
         }
     }
 }

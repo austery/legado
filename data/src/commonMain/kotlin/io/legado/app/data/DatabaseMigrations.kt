@@ -17,7 +17,7 @@ object DatabaseMigrations {
 
     val migrations: Array<Migration> by lazy {
         arrayOf(
-            migration80To81(), migration81To82(), migration82To83()
+            migration80To81(), migration81To82(), migration82To83(), migration88To89(), migration89To90()
         )
     }
 
@@ -30,6 +30,24 @@ object DatabaseMigrations {
  * (JVM 半区 actual 就是原来的 java.util.Calendar 代码), 各平台 Migration 子类只做一行委托。
  */
 object DatabaseMigrationsData {
+    /** Add native resume metadata without rewriting existing books or catalogs. */
+    fun migrate89To90(connection: SQLiteConnection) {
+        connection.execSQL("""CREATE TABLE IF NOT EXISTS native_reading_resume (
+            bookUrl TEXT NOT NULL, sourceId TEXT NOT NULL, chapterUrl TEXT NOT NULL,
+            chapterIndex INTEGER NOT NULL, textVersion TEXT NOT NULL, textSha256 TEXT NOT NULL,
+            textUtf16Length INTEGER NOT NULL, paragraphUtf16Offset INTEGER NOT NULL,
+            revision INTEGER NOT NULL, savedAt INTEGER NOT NULL, PRIMARY KEY(bookUrl),
+            FOREIGN KEY(bookUrl) REFERENCES books(bookUrl) ON UPDATE NO ACTION ON DELETE CASCADE
+        )""")
+    }
+
+
+    /** Isolated SPEC-003 prototype: preserve rows and foreign keys; rebuild only the index. */
+    fun migrate88To89(connection: SQLiteConnection) {
+        connection.execSQL("DROP INDEX IF EXISTS index_books_name_author")
+        connection.execSQL("CREATE INDEX index_books_name_author ON books(name, author)")
+    }
+
 
     fun migrate80To81(connection: SQLiteConnection) {
         connection.execSQL("DROP TABLE IF EXISTS searchBooks")
@@ -166,3 +184,7 @@ internal expect fun migration80To81(): Migration
 internal expect fun migration81To82(): Migration
 
 internal expect fun migration82To83(): Migration
+
+internal expect fun migration88To89(): Migration
+
+internal expect fun migration89To90(): Migration

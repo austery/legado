@@ -11,6 +11,8 @@ struct NativeReaderApp: App {
 struct ReaderScreen: View {
     @StateObject private var model: ReaderModel
     init(model: ReaderModel) { _model = StateObject(wrappedValue: model) }
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var confirmingDiscard = false
     @State private var importing = false
     @State private var settings = false
     @State private var menu = true
@@ -27,16 +29,28 @@ struct ReaderScreen: View {
                         Button("Dismiss") { model.message = nil }
                     }.padding().background(.regularMaterial)
                 }
+                if let notice = model.saveNotice ?? model.resumeNotice {
+                    HStack {
+                        Text(notice).font(.callout)
+                        Spacer()
+                        if model.saveNotice != nil && model.canRetryPosition { Button("Retry save") { model.flushReadingPosition() } }
+                        if model.canRetryPosition {
+                            Button("Return without saving") { confirmingDiscard = true }
+                        }
+                        Button("Dismiss") { model.resumeNotice = nil; model.saveNotice = nil }
+                    }.padding().background(.regularMaterial)
+                }
                 if model.busy {
-                    HStack { ProgressView(); Text("Loading…"); Spacer(); Button("Cancel") { model.cancel() } }.padding()
+                    HStack { ProgressView(); Text("Loading…"); Spacer(); Button("Cancel") { model.cancelLoading() } }.padding()
                 }
                 ZStack {
                     if let content = model.content {
-                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style)
+                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled)
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)
                     }
+                    if model.route == .shelf { shelf }
                     if model.route == .search { search }
                     if model.route == .contents { contents }
                 }
@@ -57,6 +71,9 @@ struct ReaderScreen: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if model.route != .shelf {
+                    ToolbarItem(placement: .navigationBarTrailing) { Button("Shelf") { model.showShelf() } }
+                }
                 if model.route != .search {
                     ToolbarItem(placement: .navigationBarLeading) { Button("Search") { model.navigate(.search) } }
                 }
@@ -67,18 +84,48 @@ struct ReaderScreen: View {
                 case .failure(let error): model.reportFileError(error.localizedDescription)
                 }
             }
+            .confirmationDialog("Discard the unsaved reading position?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button("Discard position and return to shelf", role: .destructive) { model.discardPositionAndReturnToShelf() }
+                Button("Keep reading", role: .cancel) {}
+            } message: {
+                Text("The latest unsaved position will be lost. Previously saved progress is kept; reopen the book from the shelf to continue.")
+            }
             .sheet(isPresented: $settings) { typography }
             .task { model.start() }
+            .onChange(of: scenePhase) { phase in
+                if phase != .active { model.flushReadingPosition() }
+            }
             .preferredColorScheme(style.dark ? .dark : .light)
         }
     }
 
     private var title: String {
         switch model.route {
+        case .shelf: return "Shelf"
         case .search: return "Native Reader"
         case .contents: return model.book?.title ?? "Contents"
         case .reading: return model.content?.chapter.title ?? "Reader"
         }
+    }
+
+    private var shelf: some View {
+        List {
+            if model.shelf.isEmpty {
+                Text("Your shelf is empty. Search for a book and add it from Contents.").foregroundStyle(.secondary)
+            }
+            Button("Search and import sources") { model.navigate(.search) }
+            ForEach(model.shelf, id: \.book.id) { entry in
+                Button { model.openShelfBook(entry) } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(entry.book.title)
+                        Text(ReaderModel.authorLabel(entry.book.author)).font(.caption)
+                        Text(entry.sourceName).font(.caption).foregroundStyle(.secondary)
+                        if !entry.lastChapter.isEmpty { Text(entry.lastChapter).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }.buttonStyle(.plain).disabled(model.busy)
+                    .swipeActions { Button("Remove", role: .destructive) { model.removeShelfBook(entry) } }
+            }
+        }.refreshable { model.refreshShelf() }
     }
 
     private var search: some View {
@@ -108,7 +155,7 @@ struct ReaderScreen: View {
                 if model.hasSearched && model.results.isEmpty { Text("No books found.").foregroundStyle(.secondary) }
                 ForEach(model.results, id: \.id) { book in
                     Button { model.select(book) } label: {
-                        VStack(alignment: .leading, spacing: 6) { Text(book.title); Text(book.author).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 6) { Text(book.title); Text(ReaderModel.authorLabel(book.author)).font(.caption).foregroundStyle(.secondary) }
                     }.disabled(model.busy)
                 }
                 if model.hasNextPage { Button("More results") { model.search(more: true) }.disabled(model.busy) }
@@ -119,14 +166,17 @@ struct ReaderScreen: View {
     private var contents: some View {
         List {
             if let book = model.book {
-                Section { Text(book.author); Text(book.intro).font(.callout).foregroundStyle(.secondary) }
+                Section { Text(ReaderModel.authorLabel(book.author)); Text(book.intro).font(.callout).foregroundStyle(.secondary) }
+            }
+            Section {
+                Button("Add to shelf") { model.addCurrentBook() }.disabled(model.busy || model.chapters.isEmpty)
+                if let notice = model.shelfNotice { Text(notice).foregroundStyle(.secondary) }
             }
             Section("Chapters") {
                 if model.chapters.isEmpty { Text("No chapters available.") }
                 ForEach(model.chapters, id: \.id) { chapter in
                     Button {
-                        if model.content?.chapter.id == chapter.id { model.navigate(.reading) }
-                        else { model.read(chapter) }
+                        model.read(chapter)
                     } label: {
                         HStack { Text(chapter.title); Spacer(); if model.content?.chapter.id == chapter.id { Image(systemName: "bookmark.fill") } }
                     }.disabled(model.busy)

@@ -14,7 +14,7 @@ Repeated searches return fresh search snapshots while retaining existing session
 
 Imports parse and validate the whole batch before one DAO insertion. The last object wins for duplicate source IDs; existing IDs are replaced. Malformed input preserves prior valid sources. Only text-book source operations are supported.
 
-`loadChapter(cacheOnly: true)` never fetches. Other chapter calls use existing cached text first and otherwise reuse upstream pagination and formatting. Text is saved through the real upstream provider only after cancellation and interaction checks. A process restart retains imported sources, JS cache and chapter cache; searching/loading the TOC still requires network access in this slice.
+`loadChapter(cacheOnly: true)` never fetches. C3 reports `CACHE_UNAVAILABLE` for missing or unverifiable chapter text, including after rejected network or interaction responses; `NOT_FOUND` remains for absent book/catalog identities. Other chapter calls use existing cached text first and otherwise reuse upstream pagination and formatting. Text is saved through the real upstream provider only after cancellation and interaction checks. A process restart retains imported sources, JS cache and chapter cache; searching/loading the TOC still requires network access in this slice.
 
 Failures have stable codes: invalid input, missing entity, network/HTTP, timeout, rule failure, unsupported capability, interaction required, cancellation, and initialization/internal failure. Browser verification requests return `INTERACTION_REQUIRED`; background WebView returns `UNSUPPORTED`. No login UI is launched. A request-local latch preserves interaction failures even when the legacy JavaScript bridge swallows the provider exception.
 
@@ -107,3 +107,48 @@ The additional two-file cost is bounded: complete pagination failure reporting a
 Local detailed evidence is under the repository's intentionally ignored `docs/evidence/path-c-c0` and `docs/evidence/path-c-c1` directories. C0 proved the original app's controlled flow plus unchanged Aixiashu and Dingdian samples. C1 simulator execution proves real import/search/detail/TOC/multi-page content, empty search, typed failures, JS cache, cookies, cancellation and persistence. Both device and simulator debug frameworks linked; the original UI recompiled. Consult the final acceptance record for exact run counts and framework digests.
 
 Initial 2026-10-12 simulator result: 72/72 records passed (32 behavioral assertions, 39 callback-thread checks, one terminal marker); process-restart result: 16/16. PR #1 review follow-up reproduced the repeated-search TOC failure on the original engine (76/77, HTTP 404), then passed 77/77 with the fix, 20/20 after process restart, and 77/77 on another normal run with earlier caches retained. Both normal runs required network content; restart required cached content. Simulator and device debug frameworks and the Swift harness rebuilt successfully. Detailed follow-up evidence is under `docs/evidence/path-c-pr1-review`. These counts include callback observations and are not independent test counts. Source and JavaScript caches were not reimported/rewritten in the restart run. Delivery is tracked in [PR #1](https://github.com/austery/legado/pull/1), on `codex/path-c-engine`; merge and C2 remain separate owner decisions.
+
+## C3 native reading contract
+
+The isolated C3 implementation adds persisted shelf operations and `openReading`.
+It reads Book and the saved catalog before consulting a source, resolves a native
+resume by exact chapter URL and index, and validates cached text against its saved
+SHA-256 and UTF-16 length. Missing saved chapter identities require an explicit
+chapter choice. A verified legacy chapter starts at its beginning; a new book
+starts at its first non-volume chapter. Book creation time is not evidence of
+previous reading because upstream initializes `durChapterTime` on construction.
+
+`ContentReply.reading` is absent for books outside the shelf. Otherwise it contains
+an opaque token, revision, normalized UTF-16 paragraph offset, a restore notice,
+and whether the record can be saved. Unsupported record versions remain readable
+at chapter start without overwriting the unknown format. Swift must wait for
+layout/display before reporting a position and suppress layout-generated scroll
+samples. It must show restore notices rather than silently interpreting a fallback
+as an exact restoration.
+
+`saveReadingPosition` and `finishReading` accept strictly increasing positive event
+sequences and return their commit acknowledgement through `ReadingSaved`. They do
+not return an `EngineRequest`: accepted persistence outlives cancellation of a
+foreground request or session close. Retry and finish use a fresh event sequence,
+even after an invalid or failed attempt. Finish invalidates its token only after a
+successful commit. `abandonReading` explicitly discards a token without writing.
+Flush and await acknowledgement before starting navigation work on the shared
+engine gate. Native removal invalidates matching tokens across engine sessions.
+
+Before saving, the engine rechecks current shelf/catalog identity, the shared Book
+chapter projection and the exact cached body; the DAO independently checks the
+resume revision in its transaction. This prevents a saved revision from attaching
+to a destructive legacy replacement. An initial revision-zero token cannot prove
+that an identical legacy replacement occurred before the first native save; there
+is no persistent row-incarnation marker. Do not describe that case as proven
+lifecycle invalidation.
+
+Chapter-cache I/O failure after a successful download returns the same body with
+`ContentReply.storageNotice`; it also disables saving for that reading token.
+The notice applies to unshelved reading as well. Network/rule failures and
+cancellation still fail the request. Successful chapter writes are read back before
+a saveable token is issued; the native storage provider performs checked atomic
+replacement at the existing cache path. Native resume saves recheck the cached body
+again before committing their database transaction. These are separate file and
+database commits, not a common transaction or a power-loss durability guarantee.
+Physical-device acceptance remains a separate owner gate.

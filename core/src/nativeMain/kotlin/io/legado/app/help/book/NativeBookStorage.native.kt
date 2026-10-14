@@ -5,6 +5,7 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.storage.DataStorageProviders
 import io.legado.app.utils.File
 import kotlinx.coroutines.runBlocking
+import okio.Path.Companion.toPath
 
 /**
  * [BookStorage] iOS/鸿蒙 (Native target) 共用真实实现 (基于 [kotlin.io.File])。
@@ -22,7 +23,7 @@ import kotlinx.coroutines.runBlocking
  *   (chapterFileName 由 [BookChapter.getFileName] 派生, 形如 `00001-abc123.nb`)
  *
  * # 行为对齐 jvmMain JvmBookStorage / 原 iOS IosBookStorage / 原 ohos OhosBookStorage
- * - [saveText]: [File.mkdirs] + [File.writeText] (UTF-8)
+ * - [saveText]: verified UTF-8 sibling staging and atomic replacement at the existing path.
  * - [getContent]: [File.readText] (UTF-8) + 空字符串视为无内容
  * - [hasContent]: [File.exists]
  * - [delContent]/[clearCache]: [File.deleteRecursively] (递归删除整本书缓存目录)
@@ -32,8 +33,7 @@ import kotlinx.coroutines.runBlocking
  *   (遍历 + 累计大小 + 按修改时间淘汰, 三端共用)
  *
  * # 与原 iOS 端差异 (统一为 kotlin.io.File 后)
- * - 原子写: iOS 用 NSData.writeToFile(atomically=true); 统一后用 [File.writeText]
- *   (Kotlin/Native kotlin.io.File 无原子写 API, 与 jvmMain Files.write 行为一致, 已足够)
+ * - Atomic chapter writes preserve the previous file until verified staging is replaced.
  * - 文件大小/修改时间: iOS 用 NSFileManager.attributesOfItemAtPath 取 NSFileSize/NSFileModificationDate;
  *   统一后用 [File.length] / [File.lastModified] (返回 epoch millis, 与 iOS NSDate.timeIntervalSince1970*1000 等价)
  * - 普通文件判断: iOS 用 attributesOfItemAtPath 取 NSFileType; 统一后用 [File.isFile]
@@ -82,11 +82,7 @@ class NativeBookStorage(
 
     override fun saveText(book: Book, chapter: BookChapter, text: String) {
         if (text.isEmpty()) return
-        val file = File(resolveChapterFile(book, chapter))
-        // 父目录不存在则递归创建 (与 Android FileUtils.createFileIfNotExist / iOS createDirectoryAtPath 行为对齐)
-        file.parentFile?.mkdirs()
-        // 直接 writeText (默认 UTF-8) (kotlin.io.File 无原子写 API, 与 JVM Files.write 行为一致)
-        file.writeText(text)
+        AtomicChapterWriter().write(resolveChapterFile(book, chapter).toPath(), text)
     }
 
     override fun getContent(book: Book, chapter: BookChapter): String? {
