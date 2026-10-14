@@ -1,8 +1,8 @@
 ---
 specId: SPEC-004
 title: Incremental Multi-Source Search and Expandable Candidates
-status: draft
-revision: R2
+status: ready-for-implementation
+revision: R3
 creationDate: 2026-10-14
 lastUpdateDate: 2026-10-14
 relatedSpecs: [ADR-001, SPEC-001, SPEC-003]
@@ -18,7 +18,7 @@ This is incremental result display. It is not necessarily demand-triggered lazy 
 
 ## Status and fixed baseline
 
-R2 replaces the original draft's premature decisions to require sequential search, separate source rows as the main presentation, and a manually selected small source set. The product requirement does not prohibit temporary UI grouping across sources. No implementation is approved by this revision; ADR-001 is unchanged.
+R2 replaced the original draft's premature decisions to require sequential search, separate source rows as the main presentation, and a manually selected small source set. The product requirement does not prohibit temporary UI grouping across sources. On 2026-10-14, the owner approved merging this documentation and starting implement-spec execution. R3 records that authorization and removes fresh Wanyuan observation as a prerequisite. ADR-001 is unchanged; implementation PR merging and device installation remain separate approvals.
 
 [SPEC-003 C3-A](https://github.com/austery/legado/pull/8) merged at `7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f`. All code findings below use that fixed baseline, not an unverified newer upstream version. The next slice follows [ADR-001](../decisions/ADR-001-native-experience-and-upstream-ownership.md): reuse existing capabilities, keep one authority per category of state, and avoid speculative storage redesign.
 
@@ -45,7 +45,7 @@ The observed search used an existing author-history chip because keyboard forwar
 
 ## Proposed product behavior
 
-- Show the active search scope clearly. Establish the default from targeted observation and an explicit product choice before implementation; do not assume all 66 imported Wanyuan configurations exist or are eligible in this app. Allow source-scope selection without requiring users to handpick a small set before every query.
+- Show the active search scope clearly. Use all enabled, supported text sources as the initial product default, with explicit narrowing to selected sources. This is our MVP choice, not a claim about Wanyuan's factory default; do not assume all 66 imported Wanyuan configurations exist or are eligible in this app. Allow source-scope selection without requiring users to handpick a small set before every query.
 - Show results as source pages arrive and update the displayed work list and discovered source counts. A discovered candidate is not proof that its chapters are readable. Show necessary overall progress, partial-failure and cancellation information without turning the main result list into a per-source diagnostic console.
 - Group exact, nonblank title/author matches provisionally for display. Keep missing/blank-author candidates separate by exact source/book identity. Do not invent author values or normalize title/author beyond a reviewed policy. Placeholder-author treatment remains an explicit decision if observed data require it.
 - Expand a displayed work into its currently retained candidates, with source name and exact source/book identity. Candidate records, not only upstream origins IDs, must survive the projection. Derive source counts from distinct source IDs among retained candidates in the current session; restart/removal must not leave stale counts or unselectable entries.
@@ -59,17 +59,17 @@ Prefer reusing SearchModel's orchestration through a narrow native contract. Do 
 
 Current ReaderEngine requests hold EngineHost.gate around an action (ReaderEngine:336-377). SearchModel.search starts child work and returns before its complete search lifetime. Wrapping that launch alone in the existing action lock does not protect all subsequent work. EngineHost also holds a process-wide interaction-failure marker (EngineHost:34-47); simultaneous sources cannot be assumed to have independent errors merely because HTTP supports concurrency.
 
-Before implementation, review and verify scope/provider registration, coroutine lifetime, cancellation, JavaScript host state, Cookie/variables, interaction errors, result ownership and coexistence with shelf/resume operations. A concurrency-safe adapter must preserve per-source outcomes and complete session ownership. If existing reuse cannot satisfy this with a bounded change, report the concrete limitation and compare options before changing the runtime. Serialization is a possible evidence-based fallback, not the preselected product design.
+As the first implementation gate, review and verify scope/provider registration, coroutine lifetime, cancellation, JavaScript host state, Cookie/variables, interaction errors, result ownership and coexistence with shelf/resume operations. A concurrency-safe adapter must preserve per-source outcomes and complete session ownership. If existing reuse cannot satisfy this with a bounded change, report the concrete limitation and compare options before changing the runtime. Serialization is a possible evidence-based fallback, not the preselected product design.
 
 ## Exclusions
 
 No schema migration, persistent cross-source work/candidate database, active-source switching, automatic shelf insertion, discovery browsing, prefetch, full-book download, cloud sync, per-site rule repair or runtime replacement. Search's normal runtime Cookie/variable/cache effects are not represented as side-effect-free; shelf membership and saved reading state remain protected.
 
-## Required evidence before scope approval
+## Execution gates and optional reference observation
 
-1. Targeted Wanyuan behavior check: record app/version, initial search scope, any remembered setting, query and incremental updates; expand a grouped work and observe candidate selection. Distinguish the observed session from a factory default and avoid changing the owner's shelf/progress. Compare a selected-source scope if safely available; record untested items rather than guessing.
+1. Optional targeted Wanyuan behavior check (not an implementation prerequisite): record app/version, initial search scope, any remembered setting, query and incremental updates; expand a grouped work and observe candidate selection. Distinguish the observed session from a factory default and avoid changing the owner's shelf/progress. Compare a selected-source scope if safely available; record untested items rather than guessing.
 2. Shared-runtime/native integration assessment: establish how SearchModel's concurrent lifetime and callbacks can coexist with EngineHost's global state, including failures and cancellation. Use isolated fixtures and storage for dynamic validation; no owner-data experiment.
-3. Select the default scope and a conservative display-grouping policy, then review the revised interface/acceptance proposal. Evidence collection and this draft are not implementation authorization.
+3. Implement the stated default scope and conservative exact, nonblank title/author display grouping through a narrow native contract. Missing/blank authors remain separate. Record any host limitation requiring a wider runtime change before proceeding. The owner's 2026-10-14 authorization permits scoped implementation and task-branch PR publication; it does not approve a wider redesign or merge of that implementation PR.
 
 ## Acceptance proposal
 
