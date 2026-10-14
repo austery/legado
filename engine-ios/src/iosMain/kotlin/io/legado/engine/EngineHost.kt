@@ -22,27 +22,46 @@ import io.legado.app.help.storage.registerNativeDataStorage
 import io.legado.app.help.toast.Toaster
 import io.legado.app.help.toast.Toasters
 import io.legado.app.model.script.registerNativeJsEngines
+import io.legado.app.model.script.JsHostFailureObserver
 import io.legado.app.model.webBook.registerNativeWebBookProviders
-import kotlinx.atomicfu.atomic
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import platform.Foundation.NSLog
 import platform.UIKit.UIDevice
 
-/** Owns the process-wide upstream providers; all engine operations hold gate. */
+/** Owns upstream providers; gate protects serialized product and registry operations. */
 internal object EngineHost {
     val gate = Mutex()
     private var ready = false
     private var failed = false
-    private val interaction = atomic<EngineFailure?>(null)
 
-    fun beginOperation() { interaction.value = null }
-    fun interactionFailure(): EngineFailure? = interaction.value
+    suspend fun <T> withOperation(action: suspend () -> T): T {
+        val operation = EngineOperation()
+        val observer = JsHostFailureObserver { error ->
+            generateSequence(error) { it.cause }.take(16)
+                .filterIsInstance<EngineHostRejection>().firstOrNull()?.failure?.let {
+                    operation.reject(it.code, it.message)
+                }
+        }
+        return withContext(operation + observer) {
+            try {
+                action()
+            } finally {
+                currentCoroutineContext().ensureActive()
+            }
+        }
+    }
+
+    suspend fun interactionFailure(): EngineFailure? =
+        currentCoroutineContext()[EngineOperation]?.interactionFailure()
 
     private fun reject(code: EngineErrorCode, message: String): Nothing {
         // The upstream C bridge catches Throwable and returns JS undefined. Preserve
         // the failure separately so a later successful JS value cannot hide it.
-        interaction.compareAndSet(null, EngineFailure(code, message))
-        throw IllegalStateException(message)
+        EngineOperation.currentScript()?.reject(code, message)
+        throw EngineHostRejection(EngineFailure(code, message))
     }
 
     fun initialize() {
@@ -73,6 +92,12 @@ internal object EngineHost {
         registerNativeSourceProviders()
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()
+        registerInteractionProviders()
+        ready = true
+        failed = false
+    }
+
+    internal fun registerInteractionProviders() {
         VerificationUiProviders.register(object : VerificationUiProvider {
             override fun showVerificationCodeDialog(url: String, source: BaseSource) {
                 reject(EngineErrorCode.INTERACTION_REQUIRED, "Source requires verification")
@@ -88,7 +113,6 @@ internal object EngineHost {
                 javaScript: String?, delayTime: Long): BackstageWebViewHandle =
                 reject(EngineErrorCode.UNSUPPORTED, "Background WebView is outside this engine slice")
         })
-        ready = true
-        failed = false
     }
+
 }

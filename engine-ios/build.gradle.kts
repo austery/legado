@@ -17,8 +17,15 @@ kotlin {
         }
     }
     iosArm64(configureFramework)
-    iosSimulatorArm64(configureFramework)
+    iosSimulatorArm64 {
+        configureFramework()
+        binaries.withType<org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable>().configureEach {
+            val nativeDir = rootProject.file("data/build/iosNativeLibs/ios_simulator_arm64")
+            linkerOpts("-L${nativeDir.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3")
+        }
+    }
     sourceSets {
+        commonTest.dependencies { implementation(libs.jetbrains.kotlin.test) }
         val iosMain = maybeCreate("iosMain").apply { dependsOn(commonMain.get()) }
         iosArm64Main.get().dependsOn(iosMain)
         iosSimulatorArm64Main.get().dependsOn(iosMain)

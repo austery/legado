@@ -302,6 +302,11 @@ interface BaseSource : JsExtensionsCommon {
     fun evalJS(jsStr: String, bindingsConfig: JsBindings.() -> Unit = {}): Any? {
         // 空字符串早返回，避免不必要的编译执行开销
         if (jsStr.isBlank()) return null
+        val coroutineContext = try {
+            JsEngines.get().currentContextNonNull().coroutineContext
+        } catch (_: IllegalStateException) {
+            null
+        }
         val bindings = buildScriptBindings { bindings ->
             bindings["java"] = this
             bindings["source"] = this
@@ -311,7 +316,7 @@ interface BaseSource : JsExtensionsCommon {
             bindings.apply(bindingsConfig)
             bindings.dangerousApi = enableDangerousApi == true
         }
-        val sharedScope = getShareScope()
+        val sharedScope = getShareScope(coroutineContext)
         // - sharedScope == null: 创建独立 scope, bindings 注入 globalThis
         // - sharedScope 路径: SharedJsScope 缓存的 topScope (ThreadLocal 线程独占),
         //   bindings 注入该 topScope 的 globalThis 后再执行, evalInSubScope 内部清理,
@@ -320,7 +325,7 @@ interface BaseSource : JsExtensionsCommon {
             val scope = JsEngines.get().getRuntimeScope(bindings)
             val wrappedJs = JsEngines.get().wrapJsForEval(jsStr)
             try {
-                JsEngines.get().eval(wrappedJs, scope, null)
+                JsEngines.get().eval(wrappedJs, scope, coroutineContext)
             } finally {
                 // 无 jsLib 时创建的独立 scope 必须显式 close,
                 // 否则 native JSRuntime/JSContext 只能等 GC + PhantomReference 异步释放
@@ -328,7 +333,7 @@ interface BaseSource : JsExtensionsCommon {
             }
         } else {
             val compiled = JsEngines.get().compileForSubScope(jsStr)
-            JsEngines.get().evalInSubScope(compiled, sharedScope, bindings, null)
+            JsEngines.get().evalInSubScope(compiled, sharedScope, bindings, coroutineContext)
         }
     }
 

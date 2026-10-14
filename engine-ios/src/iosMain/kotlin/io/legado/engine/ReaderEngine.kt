@@ -344,18 +344,19 @@ class ReaderEngine {
                     if (!response.isSuccessful()) throw HttpFailure(response.code())
                 }) {
                     EngineHost.gate.withLock {
-                        EngineHost.beginOperation()
-                        try {
-                            if (requiresReady && !initialized) throw InvalidInput("Initialize this engine session first")
-                            val result = action()
-                            createdReadingToken = (result as? ContentReply)?.reading?.token
-                            currentCoroutineContext().ensureActive()
-                            EngineHost.interactionFailure() ?: result
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            currentCoroutineContext().ensureActive()
-                            EngineHost.interactionFailure() ?: failure(e)
+                        EngineHost.withOperation {
+                            try {
+                                if (requiresReady && !initialized) throw InvalidInput("Initialize this engine session first")
+                                val result = action()
+                                createdReadingToken = (result as? ContentReply)?.reading?.token
+                                currentCoroutineContext().ensureActive()
+                                EngineHost.interactionFailure() ?: result
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                currentCoroutineContext().ensureActive()
+                                EngineHost.interactionFailure() ?: failure(e)
+                            }
                         }
                     }
                 }
@@ -378,6 +379,8 @@ class ReaderEngine {
     }
 
     private fun failure(error: Exception): EngineFailure {
+        generateSequence<Throwable>(error) { it.cause }.take(16)
+            .filterIsInstance<EngineHostRejection>().firstOrNull()?.let { return it.failure }
         val code = when (error) {
             is CacheUnavailable -> EngineErrorCode.CACHE_UNAVAILABLE
             is StaleReading -> EngineErrorCode.STALE_UPDATE
