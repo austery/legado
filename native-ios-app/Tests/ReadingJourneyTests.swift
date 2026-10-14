@@ -76,8 +76,8 @@ final class ReadingJourneyTests: XCTestCase {
 
     private func settle(_ model: ReaderModel, file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = Date().addingTimeInterval(20)
-        while model.busy && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
-        XCTAssertFalse(model.busy, "Operation did not finish", file: file, line: line)
+        while (model.busy || model.searchRunning || model.searchCommandPending) && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertFalse(model.busy || model.searchRunning || model.searchCommandPending, "Operation did not finish", file: file, line: line)
     }
 
     private func captureShelfView(_ model: ReaderModel, name: String) async throws {
@@ -113,7 +113,7 @@ final class ReadingJourneyTests: XCTestCase {
         model.start(); try await settle(model)
         let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
-        model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+        model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle(model)
         model.select(try XCTUnwrap(model.results.first)); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
@@ -160,7 +160,7 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertEqual(model.route, .shelf)
         let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         try await importFixture(model, base: base, titleSuffix: titleSuffix)
-        model.sourceID = base; model.query = "Path"; model.search()
+        model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search()
         try await settle(model)
         model.select(try XCTUnwrap(model.results.first))
         try await settle(model)
@@ -173,7 +173,7 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertNil(model.message)
         let candidateBase = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         try await importFixture(model, base: candidateBase, titleSuffix: titleSuffix)
-        model.sourceID = candidateBase; model.query = "Path"; model.search(); try await settle(model)
+        model.searchScope = .selected; model.selectedSourceIDs = [candidateBase]; model.query = "Path"; model.search(); try await settle(model)
         model.select(try XCTUnwrap(model.results.first)); try await settle(model)
         model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
         XCTAssertEqual(model.content?.chapter.sourceId, candidateBase)
@@ -212,7 +212,7 @@ final class ReadingJourneyTests: XCTestCase {
         model.start(); try await settle(model)
         let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
-        model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+        model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle(model)
         model.select(try XCTUnwrap(model.results.first)); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.read(model.chapters[1]); try await settle(model)
@@ -263,7 +263,7 @@ final class ReadingJourneyTests: XCTestCase {
         for _ in 0..<2 {
             let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
             try await importFixture(model, base: base, unknown: true, titleSuffix: titleSuffix)
-            model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+            model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle(model)
             model.select(try XCTUnwrap(model.results.first)); try await settle(model)
             model.addCurrentBook(); try await settle(model)
             XCTAssertNil(model.message)
@@ -306,14 +306,14 @@ final class ReadingJourneyTests: XCTestCase {
             try await settle(model)
             XCTAssertNil(model.message)
         }
-        model.sourceID = base + "/regex"
+        model.searchScope = .selected; model.selectedSourceIDs = [base + "/regex"]
         model.query = "Path"
         model.search()
         try await settle(model)
         XCTAssertTrue(model.message?.contains("UNSUPPORTED") == true)
         XCTAssertTrue(model.message?.contains("did not advance safely") == true)
         model.cancel()
-        model.sourceID = base
+        model.searchScope = .selected; model.selectedSourceIDs = [base]
         model.search()
         try await settle(model)
         XCTAssertNil(model.message)
@@ -336,8 +336,8 @@ final class ReadingJourneyTests: XCTestCase {
         try await settle(model)
         XCTAssertNil(model.message)
         XCTAssertTrue(model.importDetails?.contains(importURL.lastPathComponent) == true)
-        model.sourceID = String(sourceURL.absoluteString.dropLast("/sources.json".count))
-        XCTAssertTrue(model.sources.contains { $0.id == model.sourceID })
+        model.searchScope = .selected; model.selectedSourceIDs = [String(sourceURL.absoluteString.dropLast("/sources.json".count))]
+        XCTAssertTrue(model.sources.contains { model.selectedSourceIDs.contains($0.id) })
         model.query = "Path"
         model.search()
         try await settle(model)

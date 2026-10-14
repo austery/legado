@@ -23,8 +23,8 @@ final class ShelfProcessRestartTests: XCTestCase {
 
     private func settle(_ model: ReaderModel) async throws {
         let deadline = Date().addingTimeInterval(20)
-        while model.busy && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
-        XCTAssertFalse(model.busy)
+        while (model.busy || model.searchRunning || model.searchCommandPending) && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertFalse(model.busy || model.searchRunning || model.searchCommandPending)
         XCTAssertNil(model.message)
     }
 
@@ -42,7 +42,7 @@ final class ShelfProcessRestartTests: XCTestCase {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(run + ".json")
         try Data(json.utf8).write(to: file)
         model.importFile(file); try await settle(model)
-        model.sourceID = base; model.query = "Path"; model.search(); try await settle(model)
+        model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle(model)
         model.select(try XCTUnwrap(model.results.first)); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         let book = try XCTUnwrap(model.book)

@@ -17,6 +17,7 @@ struct ReaderScreen: View {
     @State private var settings = false
     @State private var menu = true
     @State private var style = ReadingStyle()
+    @State private var expandedWorks: Set<String> = []
 
     var body: some View {
         NavigationStack {
@@ -142,24 +143,86 @@ struct ReaderScreen: View {
                 }
                 if model.sources.isEmpty { Text("Import an enabled text source to begin.").foregroundStyle(.secondary) }
                 else {
-                    Picker("Source", selection: $model.sourceID) {
-                        ForEach(model.sources, id: \.id) { source in Text(source.name).tag(source.id) }
-                    }.disabled(model.busy).onChange(of: model.sourceID) { _ in model.sourceChanged() }
+                    Picker("Search scope", selection: $model.searchScope) {
+                        Text("All enabled sources").tag(ReaderSearchScope.all)
+                        Text("Selected sources").tag(ReaderSearchScope.selected)
+                    }.disabled(model.busy)
+                    if model.searchScope == .all {
+                        Text("All \(model.sources.count) enabled text sources").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        DisclosureGroup("Selected sources (\(model.selectedSourceIDs.count))") {
+                            ForEach(model.sources, id: \.id) { source in
+                                Toggle(source.name, isOn: Binding(get: {
+                                    model.selectedSourceIDs.contains(source.id)
+                                }, set: { selected in
+                                    if selected { model.selectedSourceIDs.insert(source.id) }
+                                    else { model.selectedSourceIDs.remove(source.id) }
+                                })).disabled(model.busy)
+                            }
+                        }
+                        if model.selectedSourceIDs.isEmpty { Text("Select at least one source to search.").foregroundStyle(.secondary) }
+                    }
                 }
             }
             Section("Search") {
                 TextField("Book title or author", text: $model.query).onSubmit { model.search() }
-                Button("Search") { model.search() }.disabled(model.sourceID.isEmpty || model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Search") { model.search() }.disabled(!model.canSearch)
             }
             Section("Results") {
-                if model.hasSearched && model.results.isEmpty { Text("No books found.").foregroundStyle(.secondary) }
-                ForEach(model.results, id: \.id) { book in
-                    Button { model.select(book) } label: {
-                        VStack(alignment: .leading, spacing: 6) { Text(book.title); Text(ReaderModel.authorLabel(book.author)).font(.caption).foregroundStyle(.secondary) }
-                    }.disabled(model.busy)
+                if model.hasSearched {
+                    HStack {
+                        if model.searchRunning { ProgressView() }
+                        Text(model.searchProgress).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        if model.searchRunning { Button("Stop") { model.stopSearch() }.disabled(model.searchCommandPending) }
+                    }
+                    if model.searchIncomplete { Text("Results may be incomplete. A discovered candidate does not guarantee readable chapters.").font(.caption).foregroundStyle(.secondary) }
                 }
-                if model.hasNextPage { Button("More results") { model.search(more: true) }.disabled(model.busy) }
+                if model.searchIsEmpty { Text("No books found.").foregroundStyle(.secondary) }
+                ForEach(model.searchWorks, id: \.id) { work in
+                    DisclosureGroup(isExpanded: Binding(get: {
+                        expandedWorks.contains(work.id)
+                    }, set: { expanded in
+                        if expanded { expandedWorks.insert(work.id) }
+                        else { expandedWorks.remove(work.id) }
+                    })) {
+                        ForEach(work.candidates, id: \.id) { candidate in
+                            Button { model.select(candidate.book) } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(candidate.sourceName)
+                                    Text(candidate.book.id).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }.disabled(model.busy)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(work.title)
+                            Text(ReaderModel.authorLabel(work.author)).font(.caption).foregroundStyle(.secondary)
+                            Text("\(work.sourceCount) discovered sources · \(work.candidates.count) candidates").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if model.hasNextPage { Button("More results") { model.loadMoreSearch() }.disabled(model.busy || model.searchCommandPending) }
+                if !model.searchSources.isEmpty {
+                    DisclosureGroup("Source outcomes") {
+                        ForEach(model.searchSources, id: \.sourceId) { source in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(source.name)
+                                Text(source.status.name + " · page \(source.page)").font(.caption).foregroundStyle(.secondary)
+                                if let failure = source.failure { Text(failure.message).font(.caption) }
+                                if model.searchSessionID != nil {
+                                    HStack {
+                                        if source.status == .failed { Button("Retry") { model.retrySearchSource(source.sourceId) } }
+                                        Button("Restart") { model.restartSearchSource(source.sourceId) }
+                                    }.disabled(model.busy || model.searchCommandPending)
+                                }
+                            }
+                        }
+                    }
+                }
             }
+        }.onChange(of: model.searchSessionID) { _ in
+            if model.searchSessionID == nil { expandedWorks.removeAll() }
         }
     }
 

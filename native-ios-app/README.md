@@ -1,10 +1,11 @@
-# C2 Native Reader
+# Native Reader
 
 An independent SwiftUI/TextKit client of ReaderEngine, with bundle ID
 `io.legado.pathc.nativereader`. It does not share a sandbox with existing readers
-or the C1 harness. C2 covers source import, single-source search, contents,
-scrolling text, chapter navigation and typography. Bookshelf, persistent reading
-positions, offline reopening and source switching remain outside this slice.
+or the C1 harness. The app covers source import, incremental multi-source search,
+contents, scrolling text, chapter navigation, typography, an explicit bookshelf
+and durable reading positions with cached reopening. Changing an existing shelf
+book's active source remains outside this slice.
 
 ## Deliberate UI defaults
 
@@ -16,13 +17,41 @@ These are product defaults awaiting owner feedback, not recovered Wanyuan values
 - Warm light background; optional dark appearance. Settings last for the view session.
 - Explicit show/hide control button instead of guessed tap regions. Long-press text
   selection follows UITextView behavior. No custom pagination engine.
-- A paragraph-based UTF-16 anchor is transient presentation state. Layout changes
-  restore it; successful chapter changes reset it. No upstream progress is written.
+- Text layout keeps a paragraph-based UTF-16 anchor across typography and size
+  changes. The reading coordinator saves accepted scroll positions through the
+  native engine and finishes a reading session before navigation.
 
 The existing IPA provides static menu, typography and navigation clues. It does
 not establish default values, active interaction wiring or physical iPad comfort.
 The approved scope and device acceptance are in local `SPEC-002`; its `docs/`
 directory is ignored by the inherited repository policy.
+
+## Incremental search (SPEC-004)
+
+Search starts with **All enabled sources**, using the engine's enabled, supported
+text-source list. **Selected sources** narrows the scope explicitly; selecting no
+sources disables search. Title, author and combined input are passed to source
+rules; individual sources determine which input they support.
+
+Results arrive through one owned engine subscription. Exact, nonblank title/author
+matches form provisional display groups. Expand a work to see its retained source
+candidates, including the exact book URL. The discovered-source count uses distinct
+sources, while the candidate count preserves multiple editions from one source.
+Missing-author candidates remain separate. These counts do not certify readable
+chapters or create persistent work identities.
+
+Candidate selection remains available while peer sources search and opens that
+candidate's own details and catalog. Shelf admission is still explicit; adding an
+already shelved known-author work preserves its original source and saved progress.
+
+Progress distinguishes successful/empty sources, failures and incomplete searches.
+**Stop** retains completed results and marks them incomplete. A new search clears
+old candidates and paging state. Query edits, scope changes, refresh, import,
+navigation and candidate selection retire the old subscription before proceeding.
+**More results** advances each eligible source's own page; failed sources require
+an explicit **Retry**. **Source outcomes** also provides source-specific **Restart**.
+Idle subscriptions remain available for these commands. Search activity is separate
+from foreground loading, so it does not block expanding or selecting a candidate.
 
 ## Build
 
@@ -70,7 +99,23 @@ Import remains independent of transport reachability and live source correctness
 
 ## Validation status
 
-2026-10-12 local candidate checks:
+2026-10-14 SPEC-004 checks on a dedicated task iOS simulator:
+
+- Hosted Swift build succeeded with the actual ReaderEngine debug framework.
+- All four `IncrementalSearchTests` passed against the real engine and controlled
+  loopback HTTP sources: default-all fast partial candidates and exact selection
+  while a peer is held; Stop retaining results and suppressing late updates;
+  empty selected scope and query replacement; and idle-session pagination through
+  failure, source retry and restart with independent source state/counts.
+- All seven existing `ReadingJourneyTests` passed with explicit fixture subsets
+  and stream-aware settling. They retain the real reader, shelf/re-add,
+  missing-author, saved-position, regex-failure, typography and cancellation
+  assertions. The reading save coordinator is unchanged by this search slice.
+- The new tests observe the hosted model's work/candidate projection and commands.
+  They do not automate tapping SwiftUI's disclosure rows. Physical iPad scope,
+  expansion, incremental updates and candidate-to-reader acceptance remain pending.
+
+Earlier 2026-10-12 local candidate checks:
 
 - Device and simulator debug engine frameworks linked; original Compose UI compiled.
 - C1 network / restart / fresh-network suites passed 82/82, 22/22 and 82/82
@@ -93,8 +138,21 @@ python3 scripts/path-c/c2_fixture_server.py
 # In another terminal, after generating the project:
 xcodebuild -project native-ios-app/NativeReader.xcodeproj -scheme NativeReader \
   -destination 'platform=iOS Simulator,id=<dedicated simulator UUID>' \
-  -derivedDataPath native-ios-app/build CODE_SIGNING_ALLOWED=NO test
+  -derivedDataPath native-ios-app/build CODE_SIGNING_ALLOWED=NO \
+  -only-testing:NativeReaderTests/ReadingJourneyTests test
 ```
+
+For the four SPEC-004 hosted cases, also run
+`python3 engine-ios/fixtures/search_fixture_server.py`. It binds an OS-assigned
+loopback port and prints its base URL. Generate the test runner with
+`build-for-testing`, then set `EnvironmentVariables.SPEC004_FIXTURE_BASE` in the
+`NativeReaderTests` entry of the generated `.xctestrun` file to that printed URL.
+Run that runner with `xcodebuild -xctestrun <generated file> -destination
+'platform=iOS Simulator,id=<dedicated simulator UUID>' test-without-building`.
+The tests require that environment value; no fixture port is pinned in Swift.
+Use a dedicated task app/simulator containing only controlled fixture imports:
+default-all intentionally searches every enabled text source. Per-test UUID
+namespaces isolate responses, and teardown releases held fixture responses.
 
 The C2 fixture binds loopback port 18769; the third chapter fails once per unique
 URL namespace to exercise retry, and the second contains long original Chinese
