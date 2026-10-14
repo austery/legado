@@ -1,22 +1,98 @@
-# ReaderEngine: Path C C1
+# ReaderEngine: native iOS boundary
 
-A narrow Swift-callable iOS framework over the existing Legado runtime. This is an extraction experiment and validation harness, not the C2 reader product UI. The intended product interface takes Wanyuan Reader as its reference.
+A narrow Swift-callable framework over the existing Legado runtime, including one-shot reading operations, persisted shelf/resume behavior, and incremental multi-source search. The C1 harness is a separate validation application; the native product UI uses this typed boundary.
 
 ## Contract
 
-Create `ReaderEngine`, call `initialize`, import original Legado JSON, then call `search`, `loadBook`, `loadToc`, and `loadChapter`. Callbacks arrive on the main thread and return an `EngineReply` subclass. Room entities and Kotlin `Result` do not cross the boundary. Every book/chapter snapshot preserves its source and URL identities.
+Create `ReaderEngine`, call `initialize`, and import original Legado JSON. All
+callbacks arrive on the main thread and return immutable `EngineReply` values;
+Room entities and Kotlin `Result` do not cross the boundary. Source and book URL
+identities remain exact. Do not throw from completion callbacks.
 
-Each call returns an `EngineRequest`. Cancel the previous request when its result is no longer wanted; a newer search does not implicitly cancel another caller's search. Cancellation returns `CANCELLED`, including when the operation is waiting for the engine lock or its main-thread delivery. `close` cancels the session. Do not throw from a completion callback.
+### Legacy one-shot operations
 
-Initialization registers real upstream HTTP, cookies, QuickJS, Room, source cache and chapter storage providers once per process. Top-level calls are serialized across sessions because upstream content processors contain mutable caches. This is a correctness-first C1 boundary, not a concurrent search product API. Books and TOCs must be loaded in the current session before requesting a chapter. Imports invalidate that session's affected entities. Avoid concurrent source editing through multiple sessions in this slice.
+`search`, `loadBook`, `loadToc`, and `loadChapter` keep their existing one-shot
+contract. Their top-level product and registry operations remain serialized across
+engine sessions. Each returns an `EngineRequest`; cancelling it delivers
+`CANCELLED`, including while waiting for the gate or main-thread delivery. A newer
+legacy `search` call does not implicitly cancel another one-shot request.
 
-Repeated searches return fresh search snapshots while retaining existing session books, including detail-derived TOC URLs and rule variables. Reload details explicitly with `loadBook`; a lightweight search result does not replace that state or detach it from its loaded chapters.
+Search results register Books with `getOrPut`, preserving loaded detail state.
+Preloaded TOCs remain untouched; searching does not replace a Book paired with
+its catalog. Load details explicitly with `loadBook`. Books and catalogs must be
+loaded into the current engine session before requesting chapters.
 
-Imports parse and validate the whole batch before one DAO insertion. The last object wins for duplicate source IDs; existing IDs are replaced. Malformed input preserves prior valid sources. Only text-book source operations are supported.
+### Incremental search subscriptions
 
-`loadChapter(cacheOnly: true)` never fetches. C3 reports `CACHE_UNAVAILABLE` for missing or unverifiable chapter text, including after rejected network or interaction responses; `NOT_FOUND` remains for absent book/catalog identities. Other chapter calls use existing cached text first and otherwise reuse upstream pagination and formatting. Text is saved through the real upstream provider only after cancellation and interaction checks. A process restart retains imported sources, JS cache and chapter cache; searching/loading the TOC still requires network access in this slice.
+`startSearch(query, sourceIds, completion)` reuses the shared SearchModel for
+concurrent source pages and invokes its completion repeatedly with `SearchUpdate`.
+An empty `sourceIds` list selects all enabled, supported text sources. A nonempty
+list is a strict selection: disabled, missing, or unsupported IDs fail rather
+than widening the search. Blank input and use before initialization report typed
+failures through the completion.
 
-Failures have stable codes: invalid input, missing entity, network/HTTP, timeout, rule failure, unsupported capability, interaction required, cancellation, and initialization/internal failure. Browser verification requests return `INTERACTION_REQUIRED`; background WebView returns `UNSUPPORTED`. No login UI is launched. A request-local latch preserves interaction failures even when the legacy JavaScript bridge swallows the provider exception.
+Each update includes the search `sessionId`, increasing revision, phase, works,
+exact candidates, and per-source outcomes. Exact nonblank title/author pairs group
+provisionally; missing authors remain separate by source/book identity. Source
+counts use distinct retained candidate source IDs, including when one source has
+multiple book candidates. Grouping does not persist a new work identity or admit
+a book to the shelf.
+
+`IDLE` finishes the current round and retains the subscription for later commands.
+A newer `startSearch` on the same ReaderEngine synchronously retires its previous
+subscription, including queued main-thread deliveries. Other engine instances own
+their subscriptions independently. Source HTTP work shares process-wide permits
+and per-source leases with legacy operations; it does not hold the product gate
+for the entire search lifetime.
+
+Commands take the exported argument label `searchSessionId`:
+
+- `loadMoreSearch` requests eligible next pages.
+- `retrySearchSource` retries a failed source's page while retaining accepted pages.
+- `restartSearchSource` clears that source's candidates and starts its first page,
+  rejecting responses from its earlier generation.
+- `cancelSearch` on an active session joins owned work, emits a retained
+  `CANCELLED` search update, and acknowledges through `SearchCommandAccepted`.
+  Completed candidates remain available; cancelled work has no next-page
+  indication. An already retired session returns `EngineFailure(CANCELLED)` after
+  owned cleanup has joined or completed, without a final stream delivery.
+
+Command completions are one-shot and separate from the `startSearch` subscription.
+`EngineRequest.cancel()` on that subscription silently retires future deliveries;
+it does not emit a final cancelled update. Use `cancelSearch` for an explicit Stop
+that retains results and acknowledges joined cancellation. `close()` retires the
+engine's search subscription and cancels its foreground session. See the
+[incremental fixture instructions](fixtures/README.md) for reproducible native
+coverage and its device-evidence limits.
+
+### Runtime and storage behavior
+
+Initialization registers real upstream HTTP, cookies, QuickJS, Room, source cache
+and chapter storage providers once per process. Operation-local failure state
+preserves interaction rejections across the native JavaScript bridge. Browser
+verification requests return `INTERACTION_REQUIRED`; background WebView returns
+`UNSUPPORTED`. No login UI is launched.
+
+Imports decode and validate the entire batch before retiring that engine's search
+subscription and inserting sources. The last object wins for duplicate source
+IDs; existing IDs are replaced and affected session entities are invalidated.
+Malformed input preserves valid sources and the current subscription. Avoid
+concurrent source editing through multiple sessions. Only text sources are
+supported.
+
+`loadChapter(cacheOnly: true)` never fetches. C3 reports `CACHE_UNAVAILABLE` for
+missing or unverifiable cached text; `NOT_FOUND` identifies absent book/catalog
+identities. Other chapter calls use existing cached text first, then upstream
+pagination and formatting. Text is saved through the upstream provider only after
+cancellation and interaction checks. Imported sources and runtime caches persist
+across process restarts. Shelf admission remains explicit, and incremental search
+does not change existing shelf membership, stored source, or saved progress.
+
+Failures retain stable codes for invalid input, missing identity, HTTP/network,
+timeout, rule failure, unsupported capability, interaction, cancellation, storage
+and initialization failures. The native concurrency gates and controlled fixture
+results do not establish community-source compatibility or physical-device UI
+acceptance.
 
 ## Dependency boundary
 

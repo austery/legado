@@ -21,6 +21,8 @@ import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.network.sockets.SocketTimeoutException
 import io.legado.app.utils.KS_JSON
+import io.legado.app.utils.concurrent.newConcurrentMap
+import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerializationException
@@ -51,8 +53,8 @@ class TocReply internal constructor(val chapters: List<ChapterSnapshot>) : Engin
 class ContentReply internal constructor(val chapter: ChapterSnapshot, val text: String,
     val fromCache: Boolean, val reading: ReadingSnapshot? = null,
     val storageNotice: String = "") : EngineReply()
-class EngineRequest internal constructor(private val job: Job) {
-    fun cancel() { job.cancel() }
+class EngineRequest internal constructor(private val job: Job, private val onCancel: (() -> Unit)? = null) {
+    fun cancel() { onCancel?.invoke(); job.cancel() }
 }
 
 /** One host session. Call close when its owner leaves; initialization is process-wide. */
@@ -61,6 +63,9 @@ class ReaderEngine {
     private val books = mutableMapOf<Pair<String, String>, Book>()
     private val chapters = mutableMapOf<Pair<String, String>, List<BookChapter>>()
     private var initialized = false
+    private val closed = atomic(false)
+    private val activeSearch = atomic<NativeSearchSession?>(null)
+    private val ownedSearches = newConcurrentMap<String, NativeSearchSession>()
     private val sessionId = NSUUID().UUIDString
 
     fun initialize(completion: (EngineReply) -> Unit): EngineRequest = request(completion, false) {
@@ -90,6 +95,7 @@ class ReaderEngine {
         if (!sources.all { it.bookSourceUrl.isNotBlank() && it.bookSourceName.isNotBlank() })
             throw InvalidInput("Each source requires a nonempty identity and name")
         val unique = sources.associateBy { it.bookSourceUrl }.values.toList()
+        activeSearch.getAndSet(null)?.retire()
         AppDbProviders.get().bookSourceDao.insert(*unique.toTypedArray())
         // Invalidate session entities whose source rules were replaced.
         val ids = unique.map { it.bookSourceUrl }.toSet()
@@ -137,10 +143,76 @@ class ReaderEngine {
         catch (error: NativeShelfException) { throw error }
         catch (error: Exception) { throw ShelfStorageFailure(error.message ?: "Shelf storage failed") }
 
+    /** Empty sourceIds means every enabled text source; explicit IDs never widen scope. */
+    fun startSearch(query: String, sourceIds: List<String>, completion: (EngineReply) -> Unit): EngineRequest {
+        activeSearch.getAndSet(null)?.retire()
+        if (closed.value) return request(completion, false) {
+            EngineFailure(EngineErrorCode.CANCELLED, "Engine session is closed")
+        }
+        if (query.isBlank()) return request(completion, false) { throw InvalidInput("Search requires a nonblank query") }
+        if (!initialized) return request(completion, false) { throw InvalidInput("Initialize this engine session first") }
+        val selectedIds = sourceIds.toList()
+        val search = NativeSearchSession(NSUUID().UUIDString, query, scope,
+            resolveSources = {
+                EngineHost.gate.withLock {
+                    if (!initialized) throw InvalidInput("Initialize this engine session first")
+                    val dao = AppDbProviders.get().bookSourceDao
+                    val resolved = if (selectedIds.isEmpty()) {
+                        dao.allTextEnabledPart().map { source(it.bookSourceUrl) }
+                    } else selectedIds.distinct().map { source(it) }
+                    if (resolved.isEmpty()) throw MissingEntity("No enabled text sources are available")
+                    resolved
+                }
+            },
+            registerBooks = { incoming ->
+                EngineHost.gate.withLock {
+                    incoming.forEach { candidate -> books.getOrPut(candidate.origin to candidate.bookUrl) { candidate } }
+                }
+            },
+            failure = { error -> failure(error as? Exception ?: Exception(error.message, error)) },
+            completion = completion)
+        ownedSearches[search.id] = search
+        search.onRetired { ownedSearches.remove(search.id) }
+        activeSearch.getAndSet(search)?.retire()
+        if (closed.value) search.retire()
+        return search.start()
+    }
+
+    fun loadMoreSearch(searchSessionId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        searchCommand(searchSessionId, SearchCommand.LOAD_MORE, "", completion)
+
+    fun retrySearchSource(searchSessionId: String, sourceId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        searchCommand(searchSessionId, SearchCommand.RETRY, sourceId, completion)
+
+    fun restartSearchSource(searchSessionId: String, sourceId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        searchCommand(searchSessionId, SearchCommand.RESTART, sourceId, completion)
+
+    fun cancelSearch(searchSessionId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        searchCommand(searchSessionId, SearchCommand.CANCEL, "", completion)
+
+    private fun searchCommand(searchSessionId: String, command: SearchCommand, sourceId: String,
+        completion: (EngineReply) -> Unit): EngineRequest {
+        val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val operationJob = currentCoroutineContext().job
+            val reply = try {
+                val search = if (command == SearchCommand.CANCEL) ownedSearches[searchSessionId] else activeSearch.value
+                if (search == null || search.id != searchSessionId)
+                    EngineFailure(EngineErrorCode.CANCELLED, "Search session is no longer active")
+                else search.command(command, sourceId)
+            } catch (error: CancellationException) {
+                EngineFailure(EngineErrorCode.CANCELLED, "Search command cancelled")
+            } catch (error: Exception) { failure(error) }
+            withContext(NonCancellable + Dispatchers.Main) {
+                completion(if (operationJob.isCancelled) EngineFailure(EngineErrorCode.CANCELLED, "Search command cancelled") else reply)
+            }
+        }
+        return EngineRequest(job)
+    }
+
     fun search(sourceId: String, query: String, page: Int, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         if (page <= 0 || query.isBlank()) throw InvalidInput("Search requires a query and positive page")
         val source = source(sourceId)
-        val result = WebBook.getBookListAwait(source, query, page)
+        val result = EngineHost.withSourceRequest(sourceId) { WebBook.getBookListAwait(source, query, page) }
         currentCoroutineContext().ensureActive()
         val snapshots = result.books.map {
             val book = it.toBook()
@@ -154,14 +226,14 @@ class ReaderEngine {
     fun loadBook(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         val source = source(sourceId)
         val book = book(sourceId, bookId)
-        WebBook.getBookInfoAwait(source, book)
+        EngineHost.withSourceRequest(sourceId) { WebBook.getBookInfoAwait(source, book) }
         BookReply(snapshot(book))
     }
 
     fun loadToc(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         val source = source(sourceId)
         val book = book(sourceId, bookId)
-        val result = WebBook.getChapterListAwait(source, book).getOrThrow()
+        val result = EngineHost.withSourceRequest(sourceId) { WebBook.getChapterListAwait(source, book).getOrThrow() }
         currentCoroutineContext().ensureActive()
         chapters[sourceId to bookId] = result
         TocReply(result.map { snapshot(sourceId, it) })
@@ -207,8 +279,10 @@ class ReaderEngine {
             val source = try { source(sourceId) } catch (error: Exception) {
                 throw CacheUnavailable("Verified cache unavailable; source cannot fetch: ${error.message}")
             }
-            val downloaded = WebBook.getContentAwait(source, book, chapter,
-                nextChapterUrl = toc.getOrNull(position + 1)?.url, needSave = false)
+            val downloaded = EngineHost.withSourceRequest(sourceId) {
+                WebBook.getContentAwait(source, book, chapter,
+                    nextChapterUrl = toc.getOrNull(position + 1)?.url, needSave = false)
+            }
             currentCoroutineContext().ensureActive()
             EngineHost.interactionFailure()?.let { return it }
             if (downloaded.isEmpty()) throw CacheUnavailable("Chapter returned an empty body")
@@ -315,6 +389,8 @@ class ReaderEngine {
     }
 
     fun close() {
+        closed.value = true
+        activeSearch.getAndSet(null)?.retire()
         scope.cancel()
         ReadingSessions.scope.launch(start = CoroutineStart.UNDISPATCHED) {
             EngineHost.gate.withLock { ReadingSessions.tokens.entries.removeAll { it.value.owner == sessionId } }
@@ -401,7 +477,8 @@ class ReaderEngine {
             }
             is MissingEntity -> EngineErrorCode.NOT_FOUND
             is InvalidInput -> EngineErrorCode.INVALID_INPUT
-            is HttpFailure -> EngineErrorCode.NETWORK
+            is HttpFailure, is SearchHttpFailure -> EngineErrorCode.NETWORK
+            is TimeoutCancellationException -> EngineErrorCode.TIMEOUT
             is UnsupportedOperationException -> EngineErrorCode.UNSUPPORTED
             is kotlinx.io.IOException, is okio.IOException ->
                 if (generateSequence<Throwable>(error) { it.cause }.take(16).any {
