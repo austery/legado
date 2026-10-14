@@ -112,8 +112,12 @@ Import remains independent of transport reachability and live source correctness
   missing-author, saved-position, regex-failure, typography and cancellation
   assertions. The reading save coordinator is unchanged by this search slice.
 - The new tests observe the hosted model's work/candidate projection and commands.
-  They do not automate tapping SwiftUI's disclosure rows. Physical iPad scope,
-  expansion, incremental updates and candidate-to-reader acceptance remain pending.
+  They do not automate tapping SwiftUI's disclosure rows. Subsequent physical
+  iPad checks on commit `9cfd3b4bd` exercised scope, incremental results, an actual
+  expansion tap and candidate-to-reader navigation. Overall acceptance remains
+  partial: a large remote drag left the reading viewport blank, and physical
+  Stop/paging/retry/restart were not established. See the
+  [dated device evidence](../docs/evidence/2026-10-14-spec004-ipad.md).
 
 Earlier 2026-10-12 local candidate checks:
 

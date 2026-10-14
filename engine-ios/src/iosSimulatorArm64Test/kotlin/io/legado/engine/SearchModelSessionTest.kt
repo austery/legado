@@ -26,9 +26,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SearchModelSessionTest {
@@ -373,6 +375,55 @@ class SearchModelSessionTest {
                 releaseSecond.complete(Unit)
                 releaseRestart.complete(Unit)
             }
+        }
+    }
+
+    @Test
+    fun stoppedSearchCanRestartOneSourceWithUpdatedOptionsAndRetainPeers() = runBlocking {
+        val changed = source("changed"); val peer = source("peer")
+        val option = atomic(0)
+        val requests = Channel<Pair<String, Int>>(Channel.UNLIMITED)
+        fixture(listOf(changed, peer), fetch = { current, number ->
+            requests.send(current.bookSourceUrl to number)
+            page(current, if (current == changed) "Option ${option.value}" else "Peer")
+        }) { model, callback ->
+            model.search(1L, "Fixture")
+            assertEquals("finished:false", callback.rounds.receive())
+            repeat(2) { requests.receive() }
+            model.cancelSearch()
+            assertEquals("failed", callback.rounds.receive())
+            option.value = 1
+            model.restartSource(changed.bookSourceUrl)
+            assertEquals(changed.bookSourceUrl to 1, requests.receive())
+            callback.pageUntil(changed.bookSourceUrl, 1, 1)
+            val groups = callback.groups
+            var titles: Set<String>
+            do { titles = groups.receive().flatMap { it.books }.map { it.name }.toSet() }
+            while (titles != setOf("Option 1", "Peer"))
+            assertNull(withTimeoutOrNull(200) { callback.rounds.receive() },
+                "Stopped main search must not finish again")
+            model.closeAndJoin()
+            assertTrue(requests.tryReceive().isFailure, "Only the changed source is requested again")
+        }
+    }
+
+    @Test
+    fun permanentCloseRejectsSourceCommandsEvenAfterAStop() = runBlocking {
+        val source = source("retired")
+        val requests = Channel<Unit>(Channel.UNLIMITED)
+        fixture(listOf(source), fetch = { current, _ ->
+            requests.send(Unit)
+            page(current, "Accepted")
+        }) { model, callback ->
+            model.search(1L, "Fixture")
+            assertEquals("finished:false", callback.rounds.receive())
+            requests.receive()
+            model.cancelSearch()
+            model.closeAndJoin()
+            model.restartSource(source.bookSourceUrl)
+            model.retrySource(source.bookSourceUrl)
+            assertNull(withTimeoutOrNull(200) { requests.receive() },
+                "Permanent retirement cannot resume a retained query")
         }
     }
 

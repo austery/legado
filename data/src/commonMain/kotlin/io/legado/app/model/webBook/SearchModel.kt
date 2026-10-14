@@ -93,6 +93,8 @@ class SearchModel(
     private val searchGroupGenerations = HashMap<String, Int>()
     private var searchPool: kotlinx.coroutines.CoroutineDispatcher? = null
     private var mSearchId = 0L
+    // Shared UI Stop retains source controls; close permanently retires them.
+    private var stoppedSourceControls = false
     private var searchKey: String = ""
     private var bookSources = emptyList<BookSource>()
     private var searchBooks = arrayListOf<SearchBook>()
@@ -228,7 +230,8 @@ class SearchModel(
     }
 
     private fun isCurrent(sourceUrl: String, generation: Int, version: Long): Boolean =
-        version == sessionVersion.value && mSearchId != 0L && generation == generationOf(sourceUrl)
+        version == sessionVersion.value && (mSearchId != 0L || stoppedSourceControls) &&
+            generation == generationOf(sourceUrl)
 
     /** A source owns its page until acceptance; other sources still run concurrently. */
     private suspend fun executeSourcePage(source: BookSource, generation: Int, version: Long) {
@@ -331,7 +334,7 @@ class SearchModel(
     }
 
     private fun startSource(sourceUrl: String, reset: Boolean) {
-        if (searchKey.isEmpty() || mSearchId == 0L) return
+        if (searchKey.isEmpty() || (mSearchId == 0L && !stoppedSourceControls)) return
         val source = bookSources.firstOrNull { it.bookSourceUrl == sourceUrl } ?: return
         val version = sessionVersion.value
         val generation = generationOf(sourceUrl) + 1
@@ -355,9 +358,9 @@ class SearchModel(
                     callBack.onSearchGroupsChanged(groupSnapshot())
                 }
                 executeSourcePage(source, generation, version)
-                if (isCurrent(sourceUrl, generation, version) && searchJob?.isActive != true) {
+                if (isCurrent(sourceUrl, generation, version) && mSearchId != 0L && searchJob?.isActive != true) {
                     resultMutex.withLock {
-                        if (isCurrent(sourceUrl, generation, version)) {
+                        if (isCurrent(sourceUrl, generation, version) && mSearchId != 0L) {
                             callBack.onSearchFinish(searchBooks.isEmpty(), hasMore)
                         }
                     }
@@ -464,12 +467,14 @@ class SearchModel(
 
     fun cancelSearch() {
         close()
+        stoppedSourceControls = true
         callBack.onSearchCancel()
     }
 
     fun close() {
         sessionVersion.incrementAndGet()
         mSearchId = 0L
+        stoppedSourceControls = false
         ownedJobs.toList().forEach { it.cancel() }
         searchPool = null
     }

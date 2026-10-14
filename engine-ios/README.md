@@ -65,6 +65,13 @@ engine's search subscription and cancels its foreground session. See the
 [incremental fixture instructions](fixtures/README.md) for reproducible native
 coverage and its device-evidence limits.
 
+The shared Compose client's `SearchModel.cancelSearch()` has a distinct retained
+page contract: source filters/options can restart one source after Stop, preserving
+peer results without re-emitting the stopped main round's completion. Old work is
+still invalidated by the session version. `SearchModel.close()` / `closeAndJoin()`
+disable those controls. ReaderEngine cancellation uses the latter retirement path;
+a cancelled native subscription cannot be restarted.
+
 ### Runtime and storage behavior
 
 Initialization registers real upstream HTTP, cookies, QuickJS, Room, source cache

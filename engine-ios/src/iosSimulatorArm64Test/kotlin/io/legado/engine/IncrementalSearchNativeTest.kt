@@ -148,6 +148,9 @@ class IncrementalSearchNativeTest {
         assertEquals(1, stopped.works.single().candidates.size)
         assertEquals(SearchSourceStatus.CANCELLED, stopped.sources.single { it.sourceId.endsWith("/slow") }.status)
         assertFalse(stopped.hasNextPage)
+        val restart = awaitReply { fixture.engine.restartSearchSource(first.sessionId, fixture.base + "/fast", it) }
+        assertTrue(restart is EngineFailure)
+        assertEquals(EngineErrorCode.CANCELLED, restart.code)
         val count = probe.updates.size
         fixture.releaseSlow()
         pumpFor(0.2)
