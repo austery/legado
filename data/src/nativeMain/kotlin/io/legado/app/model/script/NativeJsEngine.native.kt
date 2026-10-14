@@ -113,6 +113,7 @@ import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
+import kotlin.native.concurrent.ThreadLocal
 import platform.posix.memcpy
 
 /**
@@ -135,6 +136,10 @@ internal fun qjsEvalUtf8(
     // cinterop 绑定为 String?, 只能直接传 String, 不能传 ByteArray 的 refTo(0) 字节指针
     return JS_Eval(ctx, js, js.encodeToByteArray().size.toULong(), filename, evalFlags)
 }
+
+/** Each synchronous JS execution stack owns its scope on its current thread. */
+@ThreadLocal
+private val threadLocalScope = atomic<NativeJsScope?>(null)
 
 /**
  * native 端 (iOS/鸿蒙) JS 引擎: 基于 quickjs-ng C 源码 (cinterop 编译), 与 Android/Desktop
@@ -159,9 +164,6 @@ object NativeJsEngine : JsEngine {
 
     /** 引擎类型, 复用 QUICKJS ([JsEngines.type] 硬编码 QUICKJS, 切换入口已撤)。 */
     override val type: JsEngineType = JsEngineType.QUICKJS
-
-    /** 当前线程的 JS 执行上下文 (ThreadLocal), 对应 quickjs 的 QuickJsContext.threadLocalContext。 */
-    private val threadLocalScope = atomic<NativeJsScope?>(null)
 
     /** JS 递归深度上限, 对齐 QuickJsContext.MAX_RECURSION。 */
     private const val MAX_RECURSION = 10
@@ -373,6 +375,7 @@ object NativeJsEngine : JsEngine {
         // 同步 dangerousApi (native 上语义为 no-op, 保留字段对齐)
         nativeScope.dangerousApi = bindings.dangerousApi
         val prevScope = threadLocalScope.value
+        val prevCoroutineContext = nativeScope.coroutineContext
         threadLocalScope.value = nativeScope
         nativeScope.coroutineContext = coroutineContext
         nativeScope.recursiveCount++
@@ -400,7 +403,7 @@ object NativeJsEngine : JsEngine {
             }
         } finally {
             nativeScope.recursiveCount--
-            nativeScope.coroutineContext = null
+            nativeScope.coroutineContext = prevCoroutineContext
             threadLocalScope.value = prevScope
         }
     }
