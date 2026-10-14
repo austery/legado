@@ -1,54 +1,93 @@
 ---
 specId: SPEC-004
-title: Bounded Multi-Source Search and Candidate Display
+title: Incremental Multi-Source Search and Expandable Candidates
 status: draft
+revision: R2
 creationDate: 2026-10-14
 lastUpdateDate: 2026-10-14
 relatedSpecs: [ADR-001, SPEC-001, SPEC-003]
 ---
 
-# Bounded Multi-Source Search and Candidate Display
+# Incremental Multi-Source Search and Expandable Candidates
 
 ## Goal
 
-Find a readable source across an explicitly selected set of imported sources while preserving the existing bookshelf and reading state.
+Search a defined source scope using a title, author or combined query; show useful results as they arrive, update displayed works and their discovered source counts, and let the user expand and choose an exact source candidate for details and reading without changing existing shelf membership or progress.
 
-## Context and fixed baseline
+This is incremental result display. It is not necessarily demand-triggered lazy loading: source searches can already be in flight while earlier results become visible. Query interpretation and matching remain subject to source-rule capability; combined input does not imply a new universal query language.
 
-[SPEC-003 C3-A](https://github.com/austery/legado/pull/8) is merged at `7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f`. The current Engine exports single-source search with exact source/book identities (`engine-ios/src/iosMain/kotlin/io/legado/engine/ReaderEngine.kt:140`). ReaderModel currently tracks one selected source, one result list and one pagination counter (`native-ios-app/Sources/ReaderModel.swift:40,177`). Engine operations use a process-wide gate (`ReaderEngine.kt:346`). This slice reuses that execution policy rather than assuming independent parallel source sessions.
+## Status and fixed baseline
 
-The local roadmap suggests multi-source candidate display before active-source switching. This document proposes that next slice; the owner has not yet approved its concrete scope or implementation. [ADR-001](../decisions/ADR-001-native-experience-and-upstream-ownership.md) prioritizes a complete bounded journey and existing storage reuse.
+R2 replaces the original draft's premature decisions to require sequential search, separate source rows as the main presentation, and a manually selected small source set. The product requirement does not prohibit temporary UI grouping across sources. No implementation is approved by this revision; ADR-001 is unchanged.
 
-## Proposed scope
+[SPEC-003 C3-A](https://github.com/austery/legado/pull/8) merged at `7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f`. All code findings below use that fixed baseline, not an unverified newer upstream version. The next slice follows [ADR-001](../decisions/ADR-001-native-experience-and-upstream-ownership.md): reuse existing capabilities, keep one authority per category of state, and avoid speculative storage redesign.
 
-- Select a bounded set of enabled supported text sources for one query; retain single-source search as the one-source case. Confirm the practical selection limit before implementation.
-- Execute the existing source search sequentially and expose per-source pending/loading/results/empty/failed/cancelled state. Deliver useful results as each source completes. Do not redesign the Engine gate or introduce parallel runtime sessions.
-- Display results with explicit source provenance. Keep candidates separate by source ID and book ID; do not introduce cross-source work identity or merge missing-author results.
-- Keep pagination state per source/query and provide source-specific load-more/retry. Reuse the current pinned runtime's paging contract; do not assume it implements newer upstream continuation capabilities.
-- Selecting a candidate follows the existing detail/catalog/reading journey. Shelf admission remains an explicit action using the existing safe-add contract. Re-adding a known identity retains its stored source and progress.
-- Cancel or supersede a query without accepting stale callbacks into the new search. Keep already completed results and distinguish unsearched/cancelled sources from verified empty results.
+## Existing shared capability
+
+The shared SearchModel already provides substantial orchestration that the narrow ReaderEngine export does not expose:
+
+| Capability | Fixed-source evidence | Qualification |
+| --- | --- | --- |
+| Controlled concurrent source searches | SearchModel:114-117,150-183; mapParallelSafe:63-76 | A configured concurrency limit bounds in-flight work. It is not a product cap on total searchable sources. |
+| Incremental result delivery | SearchModel:184-185,214-239 | Each completed source page updates results; it does not wait for every source to finish. |
+| Temporary work grouping and source counts | SearchModel:308-346; SearchBook:50-55 | Exact name/author pairs are grouped; origins is a set of source IDs, not a full list of independently selectable candidate records. |
+| Source-local pagination and restart | SearchModel:99-109,202-207,249-299 | Existing next-page/exhausted/generation state should be evaluated for reuse, not rebuilt without reason. |
+| Raw source candidate groups | SearchModel:354-378,406-407 | These retain exact source/book records and can support expansion plus a conservative presentation projection. Export immutable values; do not expose mutable upstream entities. |
+| Scope resolution | SearchScope:115-165 | Empty scope resolves all enabled sources; group/single-source modes and fallbacks exist. This describes Legado, not Wanyuan's default or our approved default. |
+
+Multi-source mapParallelSafe suppresses non-cancellation failures when the scope has more than one source (FlowExtensionsShared:69-74). Existing callbacks alone therefore do not establish a faithful per-source failed-versus-empty contract. Necessary outcome reporting must be validated or narrowly adapted rather than inferred from absence of results.
+
+## Reference application evidence
+
+The retained 2026-10-13 iPad walkthrough records grouped search results, expandable source editions and counts increasing while results arrive. Screenshot 03 shows the All sources switch enabled at that observed moment. These support incremental grouped presentation, but do not establish a clean-launch default, the actual number of sources requested, Wanyuan's concurrency algorithm, exact grouping normalization, or its missing-author policy.
+
+The observed search used an existing author-history chip because keyboard forwarding did not enter the requested text. The successful reading example was subsequently entered through discovery, not through a proven uninterrupted search-to-reader journey. No fresh device experiment or 66-source request audit is claimed by this revision. Detailed screenshots remain in the local evidence archive; the behavior and limitations needed for this proposal are stated here.
+
+## Proposed product behavior
+
+- Show the active search scope clearly. Establish the default from targeted observation and an explicit product choice before implementation; do not assume all 66 imported Wanyuan configurations exist or are eligible in this app. Allow source-scope selection without requiring users to handpick a small set before every query.
+- Show results as source pages arrive and update the displayed work list and discovered source counts. A discovered candidate is not proof that its chapters are readable. Show necessary overall progress, partial-failure and cancellation information without turning the main result list into a per-source diagnostic console.
+- Group exact, nonblank title/author matches provisionally for display. Keep missing/blank-author candidates separate by exact source/book identity. Do not invent author values or normalize title/author beyond a reviewed policy. Placeholder-author treatment remains an explicit decision if observed data require it.
+- Expand a displayed work into its currently retained candidates, with source name and exact source/book identity. Candidate records, not only upstream origins IDs, must survive the projection. Derive source counts from distinct source IDs among retained candidates in the current session; restart/removal must not leave stale counts or unselectable entries.
+- Selecting any candidate follows its own details/catalog/reading path. Grouping does not persist a new work identity, replace a shelf record, or switch an existing shelf book's active source. Shelf admission remains explicit and preserves SPEC-003's safe re-add behavior.
+- Retain source-local pagination, retry/restart and stale-response protection where supported by the shared implementation. Show an explicit incomplete/error outcome instead of presenting a failed source as successfully empty.
+- Cancelling or replacing a query retires that session's future callbacks and work. Completed results may remain visible after cancellation with an incomplete-search indication. A new query must never inherit old results or paging state.
+
+## Reuse and host integration gate
+
+Prefer reusing SearchModel's orchestration through a narrow native contract. Do not commit to sequential execution or directly bypass the host gate before evaluating actual iOS behavior.
+
+Current ReaderEngine requests hold EngineHost.gate around an action (ReaderEngine:336-377). SearchModel.search starts child work and returns before its complete search lifetime. Wrapping that launch alone in the existing action lock does not protect all subsequent work. EngineHost also holds a process-wide interaction-failure marker (EngineHost:34-47); simultaneous sources cannot be assumed to have independent errors merely because HTTP supports concurrency.
+
+Before implementation, review and verify scope/provider registration, coroutine lifetime, cancellation, JavaScript host state, Cookie/variables, interaction errors, result ownership and coexistence with shelf/resume operations. A concurrency-safe adapter must preserve per-source outcomes and complete session ownership. If existing reuse cannot satisfy this with a bounded change, report the concrete limitation and compare options before changing the runtime. Serialization is a possible evidence-based fallback, not the preselected product design.
 
 ## Exclusions
 
-No schema migration, new persistent candidate store, source switching, automatic shelf insertion, discovery browsing, prefetch, full-book download, cloud sync, per-site rule repair, or source-runtime replacement. Runtime Cookie/variable/cache effects remain governed by the existing source execution contract; this is not a claim of side-effect-free search.
+No schema migration, persistent cross-source work/candidate database, active-source switching, automatic shelf insertion, discovery browsing, prefetch, full-book download, cloud sync, per-site rule repair or runtime replacement. Search's normal runtime Cookie/variable/cache effects are not represented as side-effect-free; shelf membership and saved reading state remain protected.
+
+## Required evidence before scope approval
+
+1. Targeted Wanyuan behavior check: record app/version, initial search scope, any remembered setting, query and incremental updates; expand a grouped work and observe candidate selection. Distinguish the observed session from a factory default and avoid changing the owner's shelf/progress. Compare a selected-source scope if safely available; record untested items rather than guessing.
+2. Shared-runtime/native integration assessment: establish how SearchModel's concurrent lifetime and callbacks can coexist with EngineHost's global state, including failures and cancellation. Use isolated fixtures and storage for dynamic validation; no owner-data experiment.
+3. Select the default scope and a conservative display-grouping policy, then review the revised interface/acceptance proposal. Evidence collection and this draft are not implementation authorization.
 
 ## Acceptance proposal
 
-1. A controlled fixture query searches at least two selected sources; each candidate retains the exact source/book identity through detail and catalog selection.
-2. Mixed success, empty, network failure and unsupported/interaction-required results remain distinguishable; one source failure does not discard another source's successful results.
-3. Load-more/retry operates on the correct source/query without replacing another source's results or losing paging state.
-4. Cancelling and immediately starting a different query cannot add stale results or launch remaining old-query work.
-5. Searches and retries do not write shelf membership, active shelf source or saved reading progress. Explicit re-add preserves the existing identity/source/progress under SPEC-003 policy.
-6. Missing-author candidates remain separate; no false source counts or cross-source deduplication claims appear in the UI.
-7. Existing shelf, cached resume, navigation and cancellation regressions remain green. Actual device acceptance covers the delivered multi-source interaction separately from fixture evidence.
-
-## Decision before implementation
-
-Review this proposed slice and the practical source selection limit. If it demands persistent cross-source identity or wider runtime/state changes, stop and discuss that scope instead of folding it into this MVP. Preserve C3-A acceptance and the source-rule/runtime reuse policy.
+1. Fast and delayed fixture sources prove that usable results appear before all sources finish. Concurrency stays within its chosen supported limit; no claim of native concurrency safety rests only on reading mapParallelSafe.
+2. Same nonblank title/author candidates update one provisional display group and its exact discovered-source count; expansion preserves every selectable source/book record. Missing-author records remain separate. Pagination/restart cannot retain stale candidates or counts.
+3. Selecting each expanded candidate obtains its own details and catalog. Existing shelf source/progress is unchanged until an explicit, governed shelf action; re-add keeps the stored source/progress.
+4. Success, empty, partial failure, timeout and interaction-required paths have truthful outcomes. A failed source does not erase another source's results or silently become an empty success.
+5. Source-local pagination/restart does not corrupt another source's state. Cancellation followed by a new query cannot deliver old results, paging state or misleading source counts.
+6. Query input supports the agreed title/author/combined examples on controlled fixtures; source-specific limitations are disclosed rather than promised away.
+7. Existing C3-A shelf/cached-resume and relevant C1/C2 regressions remain green. Device acceptance separately verifies the delivered scope control, incremental list, expansion and candidate-to-reader interaction.
 
 ## Fixed implementation references
 
-- [ReaderEngine single-source search and exact candidate identity](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/engine-ios/src/iosMain/kotlin/io/legado/engine/ReaderEngine.kt#L140).
-- [ReaderModel search state](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/native-ios-app/Sources/ReaderModel.swift#L40).
-- [ReaderModel current search flow](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/native-ios-app/Sources/ReaderModel.swift#L177).
-- [Engine request serialization](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/engine-ios/src/iosMain/kotlin/io/legado/engine/ReaderEngine.kt#L346).
+- [SearchModel orchestration and incremental callbacks](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/data/src/commonMain/kotlin/io/legado/app/model/webBook/SearchModel.kt#L150).
+- [SearchModel provisional aggregation](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/data/src/commonMain/kotlin/io/legado/app/model/webBook/SearchModel.kt#L308).
+- [Raw source candidate snapshot callback](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/data/src/commonMain/kotlin/io/legado/app/model/webBook/SearchModel.kt#L370).
+- [Source scope resolution](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/data/src/commonMain/kotlin/io/legado/app/ui/book/search/SearchScope.kt#L115).
+- [Concurrent flow failure behavior](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/foundation/src/commonMain/kotlin/io/legado/app/utils/FlowExtensionsShared.kt#L63).
+- [Candidate origin set and conversion](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/data/src/commonMain/kotlin/io/legado/app/data/entities/SearchBook.kt#L50).
+- [ReaderEngine request serialization](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/engine-ios/src/iosMain/kotlin/io/legado/engine/ReaderEngine.kt#L336).
+- [Process-wide host interaction state](https://github.com/austery/legado/blob/7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f/engine-ios/src/iosMain/kotlin/io/legado/engine/EngineHost.kt#L34).
