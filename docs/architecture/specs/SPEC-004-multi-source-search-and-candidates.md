@@ -1,10 +1,10 @@
 ---
 specId: SPEC-004
 title: Incremental Multi-Source Search and Expandable Candidates
-status: ready-for-implementation
-revision: R3
+status: implemented-core-device-accepted
+revision: R7
 creationDate: 2026-10-14
-lastUpdateDate: 2026-10-14
+lastUpdateDate: 2026-10-15
 relatedSpecs: [ADR-001, SPEC-001, SPEC-003]
 ---
 
@@ -21,6 +21,47 @@ This is incremental result display. It is not necessarily demand-triggered lazy 
 R2 replaced the original draft's premature decisions to require sequential search, separate source rows as the main presentation, and a manually selected small source set. The product requirement does not prohibit temporary UI grouping across sources. On 2026-10-14, the owner approved merging this documentation and starting implement-spec execution. R3 records that authorization and removes fresh Wanyuan observation as a prerequisite. ADR-001 is unchanged; implementation PR merging and device installation remain separate approvals.
 
 [SPEC-003 C3-A](https://github.com/austery/legado/pull/8) merged at `7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f`. All code findings below use that fixed baseline, not an unverified newer upstream version. The next slice follows [ADR-001](../decisions/ADR-001-native-experience-and-upstream-ownership.md): reuse existing capabilities, keep one authority per category of state, and avoid speculative storage redesign.
+
+## Implementation and acceptance checkpoint (R7)
+
+Implementation merged in [PR #16](https://github.com/austery/legado/pull/16)
+(`8fd9921c4`); the physical reader overscroll follow-up merged in
+[PR #17](https://github.com/austery/legado/pull/17) (`eba022605`). The product
+behavior and exclusions below remain unchanged. The fixed-source analysis below
+is historical rationale, not a claim that implementation has yet to begin.
+
+Build 7 physical checks on 2026-10-14 passed the observed Stop-to-narrowed-scope
+and Stop-to-replacement-query sequences. On 2026-10-15, the isolated two-source
+physical check also passed expansion and candidate selection while a slow peer
+was unfinished, followed by details, catalog and visible chapter body. The
+original build 7 was restored before this check; temporary permission diagnostics
+were not part of the accepted search implementation.
+
+The previous `Local network prohibited` blocker was resolved for the isolated
+installation by obtaining the system local-network permission prompt during a
+Bonjour diagnostic flow. This is an observed recovery, not a proven OS root cause
+or a production networking change. See [permission recovery and timed evidence](../../evidence/2026-10-14-spec004-ipad.md#follow-up-local-network-recovery-and-in-flight-selection-passed).
+
+On 2026-10-15, a further isolated physical sequence passed source-local paging,
+failed-page retry and completed-source restart. Request logs confirmed that retry
+repeated only the failed page, exhausted peers were skipped, and restart replaced
+only the selected source's candidates. This exercised the nonempty-page fallback,
+not explicit `hasMoreRule` termination or restart during an in-flight request.
+See [paging/retry/restart evidence](../../evidence/2026-10-14-spec004-ipad.md#follow-up-isolated-paging-retry-and-restart-passed).
+
+The isolated search/shelf-resume round trip also passed on 2026-10-15: after
+searching and reading a different candidate, the original synthetic shelf book
+retained its source, chapter 2 and the same visible numbered paragraph region.
+See [resume evidence and limits](../../evidence/2026-10-14-spec004-ipad.md#follow-up-isolated-search-and-shelf-resume-round-trip-passed).
+
+This completes this round's core physical search acceptance. The next step is
+review closeout of PR #18 and ordinary use, not another automatically expanded
+test cycle. Merge still requires explicit owner approval. The accepted scope is
+the observed build 7 journeys, not universal device/source certification.
+Rotation, split view, offline process restart, in-flight source restart and
+explicit `hasMoreRule` physical coverage remain follow-up coverage. Importing or
+certifying the 66-source bundle and changing Loading are not prerequisites for
+this MVP search slice. Core-flow regressions discovered later remain actionable.
 
 ## Existing shared capability
 
