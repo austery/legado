@@ -127,7 +127,7 @@ behaviors. Each retained item is treated as a claim checked against its callers.
 | F16 | Defer: queue policy duplication is real, but extraction changes native lifecycle boundaries. | Separate architectural follow-up; no behavior failure established by duplication alone. This nonblocking item remains open. |
 | F17 | Accept: the palette callback captured a discarded state holder. | Include cover identity in callback lifetime keys. |
 | F18 | Accept: failed defaults advanced versions and could remove old rows. | Strictly read resources before deletion, replace transactionally, advance versions only on success, and retry independently of release-notes app-version bookkeeping. |
-| F19 | Accept: failed shelf deletion was reported as navigation success. | Exit only on successful removal; preserve state and route on failure. |
+| F19 | Accept: failed shelf deletion was reported as navigation success. | Accept platform null-success and silent true-success; preserve state and route on false. See the v2 correction below. |
 | F20 | Accept: unshelved RSS refresh used the previous in-memory index. | Update the in-memory selection before conditionally persisting it. |
 | F21 | Accept: cancelled initialization could mutate the process-wide audio session. | Rethrow cancellation before fallback resolution and global writes. |
 
@@ -159,3 +159,22 @@ platform acceptance. F15 and F16 remain explicitly open recommendations. No user
 app, real provider, or user database was used by these fault-injection tests.
 The four interruption cases and shelf restart evidence in the initial section
 belong to `6fbe03a6`; they were not rerun for this follow-up.
+
+## v2 F19 callback correction
+
+The complete independent `pr-19v2.md` report applies to `b63b4758` and records
+18 Fixed, F19 Partially fixed, and F15/F16 Not addressed. Its F19 finding is
+accepted: both SharedPlatformCapabilities and AndroidPlatformCapabilities emit
+`null` after successful deletion, while the silent route emits `true`. The
+previous `removed == true` check incorrectly retained the local audio route.
+The callback now accepts both success values and rejects `false`. F15/F16 remain
+deferred. The v2 report itself is preserved unchanged as evidence of its head.
+
+A Kotlin 2.3.20 probe extracted the production callback verbatim, substituting
+only the shared-state and navigation objects with recording doubles. All three
+null/false/true cases passed for both bookshelf state and navigation count. This
+is a callback-boundary check, not a rendered route, deletion, or device test.
+
+On this correction, `:ui:jvmTest` passed all 241 tests (no failures, errors or
+skips), and `:ui:compileKotlinIosSimulatorArm64` succeeded. Other prior counts
+remain associated with their documented heads; no platform runtime was rerun.

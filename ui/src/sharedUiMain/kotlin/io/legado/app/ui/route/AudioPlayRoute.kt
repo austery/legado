@@ -212,7 +212,8 @@ fun AudioPlayRoute(
     var shelfDeleteRequest by remember { mutableStateOf<ShelfDeleteRequest?>(null) }
     // 移出完成: 退出音频页 (完成之后才出栈)
     val exitAfterRemove: (Boolean?) -> Unit = { removed ->
-        if (removed == true) {
+        // Platform deletion returns null on success; silent deletion returns true.
+        if (removed != false) {
             AudioPlayShared.inBookshelf = false
             navigator.pop()
         }
