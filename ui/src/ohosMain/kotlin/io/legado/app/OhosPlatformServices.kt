@@ -1,6 +1,7 @@
 package io.legado.app
 
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.DirUsage
 import io.legado.app.help.copyToClipboard
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.file.OhosDirAuthorizations
@@ -11,8 +12,11 @@ import io.legado.app.help.file.saveImageToAlbum
 import io.legado.app.help.log.NativeCrashLogs
 import io.legado.app.help.openURL
 import io.legado.app.help.toast.Toasters
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.napi.OhosNativeBridge
 import io.legado.app.ui.OhosPlatformCapabilities
+import io.legado.app.ui.compose.platform.SharedThemeStoreProvider
+import io.legado.app.ui.percentDecode
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.BrowserService
 import io.legado.app.ui.root.CrashLogProvider
@@ -22,12 +26,14 @@ import io.legado.app.ui.root.FilePickerService
 import io.legado.app.ui.root.KeyboardController
 import io.legado.app.ui.root.LaunchRequest
 import io.legado.app.ui.root.LaunchRequestBus
+import io.legado.app.ui.root.navigateToRoute
 import io.legado.app.ui.root.MediaService
 import io.legado.app.ui.root.NotificationService
 import io.legado.app.ui.root.OrientationPolicy
 import io.legado.app.ui.root.PermissionService
 import io.legado.app.ui.root.PlatformCapabilities
 import io.legado.app.ui.root.PlatformServices
+import io.legado.app.ui.root.ReaderSystemBarAppearance
 import io.legado.app.ui.root.ShareService
 import io.legado.app.ui.root.SoftInputPolicy
 import io.legado.app.ui.root.SystemBarsPolicy
@@ -36,7 +42,9 @@ import io.legado.app.ui.root.WindowController
 import io.legado.app.ui.video.VideoDirect
 import io.legado.app.utils.File
 import io.legado.app.utils.KS_JSON
+import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.systemCurrentTimeMillis
+import androidx.compose.ui.graphics.toArgb
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 
@@ -101,9 +109,15 @@ object OhosPlatformServices : PlatformServices {
     // 窗口策略经 OhosNativeBridge tsfn 桥 dispatch 到 ArkTS @ohos.window (无 NDK C 接口);
     // 桥未就绪时记一条降级日志 (兼容 napi 未接入阶段)
     override val window: WindowController = object : WindowController {
+        /**
+         * 沉浸式布局由 ArkTS 宿主在启动时恒开 (内容铺满整个窗口, 避让交 Compose insets),
+         * 与 Android 15+ 强制边到边、iOS 安全区同一模型; 路由策略不再翻转它 ——
+         * 转场期间翻转会让仍在屏上的上一页整页重排 (同 Android 端注释)。
+         */
+        override val appliesPolicyFullscreen: Boolean get() = false
+
         override fun setFullscreen(enabled: Boolean) {
-            // window.setWindowLayoutFullScreen: 布局延伸到状态栏区域 (对照 Android immersive)
-            OhosNativeBridge.setWindowFullScreenLayout(enabled)
+            // 布局模式由宿主启动时统一建立, 此处 no-op; 保留空实现对齐 WindowController 契约
         }
 
         override fun setKeepScreenOn(enabled: Boolean) {
@@ -125,12 +139,37 @@ object OhosPlatformServices : PlatformServices {
         }
 
         override fun setSystemBars(policy: SystemBarsPolicy) {
-            // window.setWindowSystemBarEnable 仅支持整体显隐 (鸿蒙 API 无分栏参数),
-            // 故单栏策略 (HiddenStatusBar / HiddenNavigationBar) 降级为整体隐藏 ——
-            // 与原版"隐藏指定栏"意图一致但会连带另一栏, 属平台 API 限制;
+            // 分栏显隐 (对照 Android WindowInsetsController 分栏 show/hide):
+            // setSpecificSystemBarEnabled 支持 status / navigation / navigationIndicator 单栏控制,
+            // 宿主侧 'navigation' 与 'navigationIndicator' 跟随同一份导航栏可见性。
             // 桥未注册 (EntryAbility 未 registerWindowCallback) 时丢弃命令。
-            val visible = policy == SystemBarsPolicy.Default || policy == SystemBarsPolicy.Visible
-            OhosNativeBridge.setWindowSystemBarEnable(visible)
+            val statusVisible = policy != SystemBarsPolicy.Hidden &&
+                policy != SystemBarsPolicy.Immersive &&
+                policy != SystemBarsPolicy.HiddenStatusBar
+            val navigationVisible = policy != SystemBarsPolicy.Hidden &&
+                policy != SystemBarsPolicy.Immersive &&
+                policy != SystemBarsPolicy.HiddenNavigationBar
+            OhosNativeBridge.setWindowSystemBarEnable(statusVisible, navigationVisible)
+        }
+
+        override fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {
+            if (appearance == null) {
+                // 离开阅读页: 图标内容色交还系统默认 (系统栏底色由系统与窗口决定, 本端不接管)
+                OhosNativeBridge.setWindowSystemBarProperties(DEFAULT_CONTENT_COLORS)
+                return
+            }
+            // 阅读页: 状态栏图标明暗按外观值; 导航栏区域由页面内容铺满 (沉浸式全屏布局),
+            // 按导航栏底色亮度定 (外观未指定底色时回到主题导航栏色)
+            val navigationBarColor = appearance.navigationBarColor
+                ?: SharedThemeStoreProvider().navigationBarColor.toArgb()
+            OhosNativeBridge.setWindowSystemBarProperties(
+                mapOf(
+                    "statusBarContentColor" to
+                        if (appearance.lightStatusBarIcons) ICON_DARK else ICON_LIGHT,
+                    "navigationBarContentColor" to
+                        if (ColorUtils.isColorLight(navigationBarColor)) ICON_DARK else ICON_LIGHT,
+                )
+            )
         }
     }
 
@@ -188,8 +227,9 @@ object OhosPlatformServices : PlatformServices {
         override fun handleLaunchRequest(request: LaunchRequest): Boolean = false
     }
 
-    // 崩溃日志: 崩溃现场 (logs/crash/crash-*.log, 未捕获异常钩子 + 信号处理器落盘)
-    // 与运行日志 (logs/appLog-*.txt, recordLog 开启时落盘), 由 NativeCrashLogs 汇总
+    // 崩溃日志: 只列本应用自己落盘的异常现场 (logs/crash/ 下的 crash-*.log, 未捕获异常钩子与
+    // 系统崩溃事件, 两条都带调用栈)。系统事件的故障日志文件也写进同目录；
+    // 运行日志 (logs/appLog-*.txt, recordLog 开启时落盘) 不再混入
     override val crashLogs: CrashLogProvider = object : CrashLogProvider {
         override suspend fun loadCrashLogs(): List<CrashLogProvider.CrashLogEntry> =
             NativeCrashLogs.listLogs().map { CrashLogProvider.CrashLogEntry(it) }
@@ -212,11 +252,34 @@ object OhosPlatformServices : PlatformServices {
 }
 
 /**
+ * 鸿蒙文档授权体 URI (`file://docs/...`) 的前缀。
+ *
+ * `docs` 不是网络主机段, 而是文档授权体: 去前缀即存储挂载点真实路径
+ * (与 ArkTS 媒体桥 MediaBridgeHandler.sandboxPathFromFileUri 同一规则)。
+ */
+internal const val OHOS_DOCS_URI_PREFIX = "file://docs"
+
+/**
+ * 文档授权体 URI → 存储挂载点真实路径 (去授权体前缀 + 百分号解码); 非该形态原样返回。
+ *
+ * URI 里的空格 / 中文等一律是百分号编码形式, 挂载点路径是解码后的形态。
+ */
+internal fun String.docsUriToMountPath(): String =
+    if (startsWith(OHOS_DOCS_URI_PREFIX)) {
+        removePrefix(OHOS_DOCS_URI_PREFIX).percentDecode()
+    } else {
+        this
+    }
+
+/**
  * 鸿蒙外部启动请求解析/投递 (对照 app 端 `Intent.toLaunchRequest`)。
  *
- * ArkTS 侧 Want 无法跨 napi 传对象, 约定只传 `want.uri`; 通知点击等携带路由的场景
- * 约定前缀 `route:`; Want 带了 MIME (`want.type`) 时约定 `mime:<type>|<uri>` 同串捎带
- * (两种前缀都只存在于本对象与 ArkTS EntryAbility 之间, napi 导出签名不变)。
+ * ArkTS 侧 Want 无法跨 napi 传对象, 约定只传 `want.uri`; 通知点击与主屏快捷方式等携带路由的
+ * 场景约定前缀 `route:` (快捷方式的路由在 `want.parameters.route`, 由 EntryAbility 拼上同一前缀
+ * 后投递, 见 shortcuts_config.json 的说明); Want 带了 MIME (`want.type`) 时约定
+ * `mime:<type>|<uri>` 同串捎带
+ * (两种前缀都只存在于本对象与 ArkTS EntryAbility 之间, napi 导出签名不变);
+ * 系统分享进来的文本由 ArkTS 宿主加 `text:` 前缀 (文本可能含任意字符, 也与普通 uri 无法区分)。
  * 由 [io.legado.app.napi.LegadoNativeExports.handleLaunchRequest] 调用。
  */
 object OhosLaunchRequests {
@@ -226,8 +289,16 @@ object OhosLaunchRequests {
         val value = uri.trim()
         if (value.isEmpty()) return null
         if (value.startsWith(ROUTE_PREFIX)) {
-            return value.removePrefix(ROUTE_PREFIX).takeIf { it.isNotEmpty() }
-                ?.let(LaunchRequest::NavigateTo)
+            return navigateToRoute(value.removePrefix(ROUTE_PREFIX))
+        }
+        if (value.startsWith(TEXT_PREFIX)) {
+            // 系统分享进来的文本 (ArkTS EntryAbility.handleSharedData 打的前缀): 文本可能含任意
+            // 字符, 与普通 uri 无法区分, 故按已有 route:/mime: 同一路数显式标记。
+            // 整段是链接当书籍地址添加 / 其余进搜索页的分流在 [LaunchRequest.ProcessText] 的消费方
+            // 统一处置 (判据见 shared shareTextTarget), 各端入口只负责原样投递文本。
+            val text = value.removePrefix(TEXT_PREFIX)
+            if (text.isEmpty()) return null
+            return LaunchRequest.ProcessText(text)
         }
         val hint = extractMimeHint(value)
         val address = hint?.second ?: value
@@ -282,6 +353,7 @@ object OhosLaunchRequests {
     private const val ROUTE_PREFIX = "route:"
     private const val MIME_PREFIX = "mime:"
     private const val MIME_SEPARATOR = '|'
+    private const val TEXT_PREFIX = "text:"
 }
 
 /** 权限请求 payload (Kotlin → ArkTS)。 */
@@ -325,29 +397,77 @@ private object OhosFilePickerService : FilePickerService {
             .mapNotNull(::materialize)
 
     /**
-     * 鸿蒙 DocumentViewPicker.save 需在弹窗时就交出字节, 与"先要路径后写入"的接口顺序相反,
-     * 故同 iOS: 返回沙盒 filesDir/export 下的可写路径, 用户可在"文件"应用中取用。
+     * 单文件导出取目标路径: 弹目录选择器 ([pickDirectory], 对照原版导出形制 —— 先选目录,
+     * 再把文件写进该目录, 见 HandleFileContract.EXPORT + FileUtils.exportFile), 返回该目录下的
+     * 目标文件路径, 由调用方写盘。
+     *
+     * 写入用的是选择器当场给的临时授权 (授权持久化与 URI→路径转换在 [pickDirectory] 内完成),
+     * 后续访问才需激活。
+     *
+     * @return 用户取消选目录返回 null (调用方静默)
      */
     override fun saveFile(suggestedName: String, defaultDir: String?): String? {
-        val dir = defaultDir ?: (AppFilesDirs.get().filesDir + "/export")
-        return runCatching {
-            File(dir).mkdirs()
-            "$dir/$suggestedName"
-        }.getOrNull()
+        val dir = defaultDir ?: pickDirectory(DirUsage.Export) ?: return null
+        return "$dir/$suggestedName"
     }
 
+    /**
+     * 图片查看器长按保存落系统相册 (用户指定要求, 与原版 PhotoDialog 的目录记忆不同)。
+     * 漫画图片保存不受本项影响, 始终走 [saveImageRememberingDir] 的目录记忆。
+     */
+    override val imageViewerSavesToAlbum: Boolean = true
+
+    /**
+     * 落系统相册。写不进相册 (未授予相册权限/图库拒绝/桥未就绪) 一律返回 false 并记日志, 由调用方
+     * 如实报"保存失败"——不能改写进用户看不到的应用私有目录还报成功 (那个落点用户取不到,
+     * 报成功就是谎报)。
+     */
     override fun saveImageBytes(suggestedName: String, bytes: ByteArray): Boolean? {
         val ext = imageExtension(bytes, suggestedName).removePrefix(".")
-        val savedToAlbum = runCatching { saveImageToAlbum(ext, bytes) }.getOrDefault(false)
-        if (savedToAlbum) return true
-        val path = saveFile(suggestedName) ?: return null
-        return runCatching {
-            File(path).writeBytes(bytes)
-            true
-        }.getOrDefault(false)
+        // Result.getOrElse 的入参是 Throwable (失败原因), 不是成功值 —— 取成功值要用 getOrDefault。
+        // 两类失败分开如实记录: 抛异常走原因, 正常返回 false 则是未授权/被图库拒绝
+        val result = runCatching { saveImageToAlbum(ext, bytes) }
+        val failure = result.exceptionOrNull()
+        if (failure != null) {
+            AppLog.put("保存图片到相册失败\n$suggestedName\n${failure.message}", failure)
+            return false
+        }
+        val saved = result.getOrDefault(false)
+        if (!saved) {
+            AppLog.put("保存图片到相册失败, 未授予相册权限或被图库拒绝\n$suggestedName")
+        }
+        return saved
     }
 
-    override fun checkWrite(path: String): Boolean = runCatching {
+    /**
+     * 支持把图片字节写进选定目录 ([saveImageRememberingDir] 的"选一次目录后直写"分支)。
+     *
+     * 选定目录在沙盒外, 写入前必须先激活其持久化目录授权 ([OhosDirAuthorizations]),
+     * 否则重启后写入被拒 (对照 [OhosAuthorizedFileBookAccessor] 的书籍落盘同款处理);
+     * 落盘走"同目录临时件 + 改名就位" (与备份 zip 写进用户选定目录同一机制:
+     * BackupFileOps.copyFile → copyFileAtomically), 覆盖同名图时目标始终完整。
+     */
+    override val supportsDirWrite: Boolean = true
+
+    override fun writeImageToDir(dir: String, fileName: String, bytes: ByteArray): Boolean =
+        runCatching {
+            OhosDirAuthorizations.ensureActivatedFor(dir, DirUsage.ImageSave)
+            val destDir = File(dir).apply { mkdirs() }
+            writeBytesAtomically(File(destDir, fileName).path, bytes)
+        }.getOrDefault(false)
+
+    /**
+     * 目录可写性预检。
+     *
+     * 用户选定的备份目录在沙盒外, "已记住的备份路径"须先激活持久化授权才可写 —— 否则
+     * 重启后这里会为真可写的目录报出 false, 把用户拉回重选目录 (对照
+     * [io.legado.app.ui.route.BackupConfigRoute] 不可写即重选的分支)。
+     * 激活按 [usage] 匹配: 该目录须在该用途下已授权。
+     * 应用私有目录 [OhosDirAuthorizations.ensureActivatedFor] 直通; 私有目录之外未按该用途登记的
+     * 路径报不可写。
+     */
+    override fun checkWrite(path: String, usage: DirUsage): Boolean = runCatching {
+        OhosDirAuthorizations.ensureActivatedFor(path, usage)
         val testDir = File(path)
         if (!testDir.exists()) testDir.mkdirs()
         if (!testDir.isDirectory) return@runCatching false
@@ -357,23 +477,30 @@ private object OhosFilePickerService : FilePickerService {
         true
     }.getOrDefault(false)
 
-    // 选目录: Tablet (path 非空) 为已持久化授权 + 官方转换的路径, 验证可访问后记入授权表;
-    // Phone (path 为 null) 保持原折回规则, 不做持久化/激活/可读性过滤
-    override fun pickDirectory(): String? {
+    // 选目录: Tablet (path 非空) 为已持久化授权 + 官方转换的路径, 验证可访问后记入授权表
+    // (带 [usage]: 该目录只放行同用途的访问);
+    // Phone (path 为 null) 折回挂载点路径后同样记入授权表 (该设备无目录授权持久化能力,
+    // 登记即该路径在本用途下的唯一授权, 不做可读性过滤)
+    override fun pickDirectory(usage: DirUsage): String? {
         val picked = pickDirectoryPolicy() ?: return null
-        val path = picked.path ?: return picked.uri.toLegacySandboxPath()
+        val convertedPath = picked.path
+        if (convertedPath == null) {
+            val legacyPath = picked.uri.toLegacySandboxPath()
+            OhosDirAuthorizations.remember(picked.uri, legacyPath, usage)
+            return legacyPath
+        }
         // 官方转换不校验可访问性: 此刻临时授权在, 目录仍不可读即真实失败, 不假成功
-        if (!File(path).isDirectory) {
-            AppLog.put("选中目录不可访问 path=$path")
+        if (!File(convertedPath).isDirectory) {
+            AppLog.put("选中目录不可访问 path=$convertedPath")
             return null
         }
-        OhosDirAuthorizations.remember(picked.uri, path)
-        return path
+        OhosDirAuthorizations.remember(picked.uri, convertedPath, usage)
+        return convertedPath
     }
 
-    /** Phone 降级分支的 picker URI 折回 (原折回规则: docs 授权体去前缀即挂载点路径)。 */
+    /** Phone 降级分支的 picker URI 折回: docs 授权体去前缀即挂载点路径 (与文件关联投递同一规则)。 */
     private fun String.toLegacySandboxPath(): String = when {
-        startsWith("file://docs") -> removePrefix("file://docs")
+        startsWith(OHOS_DOCS_URI_PREFIX) -> docsUriToMountPath()
         startsWith("file://") -> removePrefix("file://")
         else -> this
     }
@@ -418,3 +545,13 @@ private fun FileFilter.toUtis(): List<String> = when {
         }
     }.distinct().ifEmpty { listOf("public.data") }
 }
+
+/** 系统栏图标内容色: 深色图标 (浅色底色) / 浅色图标 (深色底色) */
+private const val ICON_DARK = "#FF000000"
+private const val ICON_LIGHT = "#FFFFFFFF"
+
+/** 图标内容色交还系统默认 (对照 @ohos.window SystemBarProperties 内容色默认值) */
+private val DEFAULT_CONTENT_COLORS = mapOf(
+    "statusBarContentColor" to "#E5FFFFFF",
+    "navigationBarContentColor" to "#E5FFFFFF",
+)

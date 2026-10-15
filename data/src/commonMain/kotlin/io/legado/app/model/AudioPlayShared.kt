@@ -21,6 +21,7 @@ import io.legado.app.model.chapter.ChapterProgressStore
 import io.legado.app.model.chapter.resolveChapter
 import io.legado.app.utils.postEvent
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 
 /**
@@ -32,7 +33,7 @@ import kotlinx.coroutines.withContext
  * # 平台差异处理
  * - **Service 派发**: 原 `sendAction(action) { putExtra(...) }` 走
  *   `appCtx.startService<AudioPlayService>`, 依赖 Android Context/Intent/splitties,
- *   抽象为 [AudioPlayCommander] 接口, app 端注册 `AndroidAudioPlayCommander` 实现
+ *   抽象为 [AudioPlayCommander] 接口, app 端注册 `AudioPlayProvidersImpl` 实现
  *   (内部仍走 startService<AudioPlayService> + IntentAction + extras, 行为完全等价)。
  * - **Book 操作**: `book.saveRead()` / `book.save()` 已是 [Book] 的 commonMain 成员, 四端直接调;
  *   书源查询走 [bookSourceOf] (suspend DAO, 不用 runBlocking 的 `Book.getBookSource()` 扩展)。
@@ -60,7 +61,6 @@ import kotlinx.coroutines.withContext
  *
  * UI 命令面应通过 AudioPlayViewModel, 而不是直接调本对象。
  */
-@Suppress("unused")
 object AudioPlayShared {
 
     /**
@@ -125,8 +125,6 @@ object AudioPlayShared {
 
     fun play() = AudioPlayCommanders.get().play()
 
-    private fun playNew() = AudioPlayCommanders.get().playNew()
-
     fun stop() = AudioPlayCommanders.get().stop()
 
     fun stopPlay() = AudioPlayCommanders.get().stopPlay()
@@ -143,7 +141,7 @@ object AudioPlayShared {
 
     fun adjustProgress(position: Int) {
         durChapterPos = position
-        seekEpoch.value = seekEpoch.value + 1
+        seekEpoch.update { it + 1 }
         AudioPlayCommanders.get().adjustProgress(position)
     }
 
@@ -269,8 +267,9 @@ object AudioPlayShared {
             && durChapterPos == progress.durChapterPos
         ) return
         if (durChapterIndex != progress.durChapterIndex) {
-            skipTo(progress.durChapterIndex)
-            durChapterPos = progress.durChapterPos
+            // 切章 + 起始位置一次到位: 分两步会把章头位置先落库/落书 (saveRead 与后续赋值竞态),
+            // 云端进度下来后从章头起播
+            skipTo(progress.durChapterIndex, progress.durChapterPos)
         } else {
             adjustProgress(progress.durChapterPos)
         }
@@ -331,20 +330,27 @@ object AudioPlayShared {
     }
 
     fun saveRead() {
+        Coroutine.async { saveReadAwait() }
+    }
+
+    /**
+     * [saveRead] 的可等待形式: 落库完成才返回。
+     *
+     * 供退出流程在结束进程前确保当前位置已写回库 (异步版会在进程结束前被截断)。
+     */
+    suspend fun saveReadAwait() {
         val book = book ?: return
-        Coroutine.async {
-            // 落库 + 回写内存 book 实体 + 通知书架重查 (实现已收敛至 [ChapterProgressStore], 四模式共用)。
-            // 章名以当前 durChapter 为准: next/prev/skipTo 已预同步 book.durChapterIndex,
-            // 若按 "book.durChapterIndex != durChapterIndex" 判断章节是否变化则恒为 false,
-            // durChapterTitle 会永远停在旧章标题 (回归 2026-08)。
-            ChapterProgressStore.save(
-                book = book,
-                durChapterIndex = durChapterIndex,
-                durChapterPos = durChapterPos,
-                chapter = durChapter,
-            )
-            postEvent(EventBus.UP_BOOKSHELF, book.bookUrl)
-        }
+        // 落库 + 回写内存 book 实体 + 通知书架重查 (实现已收敛至 [ChapterProgressStore], 四模式共用)。
+        // 章名以当前 durChapter 为准: next/prev/skipTo 已预同步 book.durChapterIndex,
+        // 若按 "book.durChapterIndex != durChapterIndex" 判断章节是否变化则恒为 false,
+        // durChapterTitle 会永远停在旧章标题 (回归 2026-08)。
+        ChapterProgressStore.save(
+            book = book,
+            durChapterIndex = durChapterIndex,
+            durChapterPos = durChapterPos,
+            chapter = durChapter,
+        )
+        postEvent(EventBus.UP_BOOKSHELF, book.bookUrl)
     }
 
     /**

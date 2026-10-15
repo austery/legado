@@ -13,11 +13,14 @@ import io.legado.app.help.showSourceLogin
 import io.legado.app.help.toast.Toasters
 import io.legado.app.model.ReadTimeRecorder
 import io.legado.app.model.chapter.ChapterLoadState
+import io.legado.app.ui.root.BookRef
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.ScreenModel
 import io.legado.app.ui.root.VideoPlayTarget
+import io.legado.app.ui.root.asBook
 import io.legado.app.ui.root.screenModelScope
 import io.legado.app.utils.systemCurrentTimeMillis
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,7 +32,10 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 视频播放页 shared ScreenModel: 适配 [VideoPlayViewModelShared] 各 StateFlow
@@ -88,6 +94,42 @@ data class PlaybackSnapshot(
      */
     val showPlayIcon: Boolean
         get() = !playWhenReady || ended || idle
+}
+
+/**
+ * 画面缩放状态 (双指捏合 / Ctrl+滚轮改写, 渲染层读它应用)。
+ *
+ * @param scale 相对 FIT 显示的画面缩放倍数 ([VideoZoomMinScale]..[VideoZoomMaxScale])
+ * @param panX 画面中心的横向位置, 单位是“本轴可平移范围” (0 = 居中, ±1 = 贴左/右边)
+ * @param panY 同上, 纵向 (0 = 居中, ±1 = 贴上/下边)
+ */
+/** 位移残留容差 (归一化位移): 极轻的捏合会因锚点公式留下远小于它的位移 */
+private const val PanDefaultEpsilon = 0.005f
+
+/**
+ * 小窗请求期的兜底时长: 系统进入小窗的过渡在数百毫秒内完成, 平台迟迟不回送结果就按"没进去"
+ * 收尾 —— 请求期不结束页面会一直停在纯画面渲染, 用户连唤出控制栏的入口都没有。
+ */
+private const val PipRequestTimeoutMs = 2000L
+
+data class VideoZoom(
+    val scale: Float = 1f,
+    val panX: Float = 0f,
+    val panY: Float = 0f,
+) {
+    /**
+     * 是否为默认视图 (显示值四舍五入为 100% 且未平移)。
+     * 判据必须与控制栏显隐同一口径: 两套标准会让“状态已非默认但界面没有重置入口”的空档复活。
+     * 位移与倍率用同一套容差: 严格要求等于 0 会让极轻的捏合留下微小位移时,
+     * 界面看着是默认视图却常驻一个显示 100% 的重置入口。
+     */
+    val isDefault: Boolean
+        get() = percent == 100 &&
+            abs(panX) <= PanDefaultEpsilon &&
+            abs(panY) <= PanDefaultEpsilon
+
+    /** 显示用缩放百分比 (四舍五入) */
+    val percent: Int get() = (scale * 100f).roundToInt()
 }
 
 /**
@@ -205,8 +247,17 @@ interface VideoPlayPlatformProvider {
      * [controller] 供平台取当前媒体宽高比（Android 需显式声明宽高比，iOS/鸿蒙系统自动适配）。
      * 平台不支持（桌面）或系统版本不支持（Android API<26）时走默认空实现 —— 按钮显隐由
      * [rememberIsInPictureInPicture] 是否返回 null 决定，正常走不到这里。
+     *
+     * [onSettled] 是本次请求的结果信号: 进入成功与进入失败都必须回传恰好一次。请求期的结束不能
+     * 按平台态取值变化推断 —— 进入失败时平台把态置成与请求前相同的值, 取值不变就永远等不到
+     * 结束信号。
+     *
+     * @return 是否已向系统发起进入请求 (false = 平台当场判定没进去, 共享层立即结束请求期)
      */
-    fun enterPictureInPicture(controller: VideoPlayerController?) {}
+    fun enterPictureInPicture(
+        controller: VideoPlayerController?,
+        onSettled: () -> Unit,
+    ): Boolean = false
 
     /**
      * 平台「画中画」真实态（可选）。
@@ -251,6 +302,27 @@ class VideoPlayScreenModel : ScreenModel {
     val platform = VideoPlayPlatformProviders.getOrNull()
 
     /**
+     * 进入小窗的请求期 (按下画中画钮到系统确认之间)。
+     *
+     * 平台真实态要到系统进入动画结束后才翻 true (Android 的进入回调 / iOS 的启动完成回调 /
+     * 鸿蒙的窗口状态事件), 只按它收起覆盖层, 系统过渡期间窗口里就是带着标题栏与选集的整页界面,
+     * 缩小到小窗时先露出的就是那片页底 (视频页所在窗口底色为亮色, 观感即白屏)。请求期内先按
+     * 小窗语义渲染, 系统过渡拿到的最小画面里只有视频。
+     *
+     * 请求期的结束一律由结算结果决定: 平台回传进入成功/失败、平台当场拒绝、平台不回送结果超时,
+     * 三条路径见 [requestEnterPictureInPicture]。
+     */
+    private val _pipEntering = MutableStateFlow(false)
+    val pipEntering: StateFlow<Boolean> = _pipEntering.asStateFlow()
+
+    /**
+     * 本次小窗请求的结算信号 (平台回传结果时完成); null = 没有请求在飞。
+     * 请求从主线程发起、结算判定在自管 scope 上, 跨线程读写故加 @Volatile。
+     */
+    @Volatile
+    private var pipRequestSettle: CompletableDeferred<Unit>? = null
+
+    /**
      * 播控器。不写成 val: 桌面端媒体播放组件是首次进本页才按需下载的, 构造期可能还没装好,
      * 当时拿到的是占位控制器 —— 下载完成后靠 [onRetryLoad] 补建真控制器。其它端一次创建即定型。
      */
@@ -271,6 +343,21 @@ class VideoPlayScreenModel : ScreenModel {
      */
     private val _gestureText = MutableStateFlow<String?>(null)
     val gestureText: StateFlow<String?> = _gestureText.asStateFlow()
+
+    /**
+     * 画面缩放状态 (双指捏合 / Ctrl+滚轮改写, 控制层与渲染层同读这一份)。
+     * 独立 flow 而非并入 [state]: 捏合期间每帧变, 并进主 state 会整页重组。
+     */
+    private val _zoom = MutableStateFlow(VideoZoom())
+    val zoom: StateFlow<VideoZoom> = _zoom.asStateFlow()
+
+    /**
+     * 画面显示宽高比 (宽/高, 已含变形像素比与旋转后的显示尺寸); null = 未就绪。
+     *
+     * 各端在几何变化时上报 (装载完成 / 换分辨率): 手势层的可平移范围与质心锚点都按它算。
+     */
+    private val _videoAspectRatio = MutableStateFlow<Float?>(null)
+    val videoAspectRatio: StateFlow<Float?> = _videoAspectRatio.asStateFlow()
 
     /** onExit 已执行标记: 一次活跃期只保存一次 (释放后位置归零), [onResume] 重开 */
     private var exited = false
@@ -347,33 +434,32 @@ class VideoPlayScreenModel : ScreenModel {
                 // chapterListData.observe + BaseReadViewModel.upBook 的 inBookshelf = !book.isNotShelf)
                 // 上一版 ShowBook 只写 bookName、从不初始化 inShelf → 从书架进页星恒空心,
                 // 下一次点击又拿陈旧 false 当“不在架”去上架 (空点一下)
+                val snapshot = event.book.asBook()
                 _state.update {
                     it.copy(
-                        bookName = event.book.name,
-                        inShelf = !event.book.isNotShelf,
+                        bookName = snapshot.name,
+                        inShelf = !snapshot.isNotShelf,
                         isDirect = false,
                     )
                 }
                 scope.launch {
-                    val book = event.book
-                    // 只有显式带了章节定位 (书签/目录回传) 才覆盖已存进度 —— 对照原版
-                    // `initData` 的 `if (overrideIndex >= 0)` 门控。上一版无条件
-                    // `chapterPos ?: 0` + applyChapterOverride, 而所有常规入口都不带定位
-                    // → 进页那一瞬就把用户看到一半的 durChapterPos 清零并 PATCH 落库。
-                    // 未覆盖时由 initData 自己从 book.durChapterPos 取恢复位置。
-                    val overrideIndex = event.chapterIndex
-                    if (overrideIndex != null) {
-                        shared.applyChapterOverride(
-                            book, overrideIndex, event.chapterPos ?: 0
-                        )
-                    }
-                    // persistProgress=false: 首次装载不得回写进度 (会把 just 取到的
-                    // durChapterPos 归零), 与原版 initData 一致
+                    // 章节定位 (书签/目录回传) 交给 initData 在装载对账之后施加 ——
+                    // 先写会写在被对账丢弃的瘦身副本上。persistProgress=false: 首次装载
+                    // 不得回写进度 (会把 just 取到的 durChapterPos 归零), 与原版 initData 一致
                     shared.initData(
-                        book,
-                        overrideIndex ?: book.durChapterIndex,
+                        book = snapshot,
+                        chapterIndexOverride = event.chapterIndex ?: -1,
+                        chapterPosOverride = event.chapterPos ?: 0,
                         persistProgress = false,
+                        isSearchBook = event.book is BookRef.Search,
                     )
+                    // 装载对账后以库里那本为准刷新书名/在架态 (路由快照的 type 位不可信:
+                    // 首页展示项进来的未入架书没有 notShelf 标)
+                    shared.curBook?.let { loaded ->
+                        _state.update {
+                            it.copy(bookName = loaded.name, inShelf = !loaded.isNotShelf)
+                        }
+                    }
                 }
             }
 
@@ -462,12 +548,61 @@ class VideoPlayScreenModel : ScreenModel {
         _gestureText.value = text
     }
 
+    /**
+     * 画面缩放变更 (双指捏合 / Ctrl+滚轮)。
+     *
+     * 传进来的值已经按容器与画面尺寸钳制过 (见 [VideoGestureController]), 这里只兜底倍率范围。
+     */
+    fun onZoomChange(zoom: VideoZoom) {
+        _zoom.value = zoom.copy(
+            scale = zoom.scale.coerceIn(VideoZoomMinScale, VideoZoomMaxScale),
+        )
+    }
+
+    /** 重置画面缩放到默认视图 (重置钮)。 */
+    fun onResetZoom() {
+        if (!_zoom.value.isDefault) _zoom.value = VideoZoom()
+    }
+
+    /** 画面显示比例变化上报 (各端渲染层); 非正或非有限值按未就绪处理。 */
+    fun onVideoAspectRatioChanged(aspectRatio: Float?) {
+        _videoAspectRatio.value = aspectRatio?.takeIf { it.isFinite() && it > 0f }
+    }
+
     fun onSeekBack() = controller?.seekBack() ?: Unit
     fun onSeekForward() = controller?.seekForward() ?: Unit
 
-    /** 进入系统画中画（控制栏画中画钮）：平台能力，委托 [VideoPlayPlatformProvider.enterPictureInPicture] */
+    /**
+     * 进入系统画中画（控制栏画中画钮）：平台能力，委托 [VideoPlayPlatformProvider.enterPictureInPicture]。
+     *
+     * 小窗是等比缩小的“整窗画面”: 放大裁剪的画面进去会变成局部特写, 所以进小窗先回默认视图;
+     * 退出小窗不做任何恢复 —— 一次进出只有这一个缩放动作。
+     */
     fun onEnterPictureInPicture() {
-        platform?.enterPictureInPicture(controller)
+        onResetZoom()
+        _pipEntering.value = true
+    }
+
+    /**
+     * 界面已按小窗语义绘制完成后真正请求系统进入 (调用方先等过两帧, 见画中画钮)。
+     * 平台当场判定没进去时立刻结束请求期, 页面回到常规渲染。
+     */
+    fun requestEnterPictureInPicture() {
+        // 上一次请求没结算就被新请求顶掉: 它的信号不再改动状态 (结算身份对不上), 计时到点自行结束
+        val settle = CompletableDeferred<Unit>()
+        pipRequestSettle = settle
+        val onSettled: () -> Unit = { settle.complete(Unit) }
+        if (platform?.enterPictureInPicture(controller, onSettled = onSettled) != true) onSettled()
+        scope.launch {
+            // 进入成功 / 进入失败 / 平台不回送结果三条路径都在这里收口。不能只等平台回传结果:
+            // 进入失败时平台把态置成与请求前相同的值, 取值不变就永远等不到结束信号, 页面会一直
+            // 停在纯画面渲染 (标题栏/控制栏/选集/手势全不见), 只能退出页面重进。
+            withTimeoutOrNull(PipRequestTimeoutMs) { settle.await() }
+            if (pipRequestSettle === settle) {
+                pipRequestSettle = null
+                _pipEntering.value = false
+            }
+        }
     }
 
     // ---- 菜单动作 (对照 Activity onCompatOptionsItemSelected / VideoTitleActions) ----
@@ -540,7 +675,9 @@ class VideoPlayScreenModel : ScreenModel {
                 // 再点又是“删一本不存在的书”
                 val nowInShelf = if (result == null) false else result
                 _state.update { it.copy(inShelf = nowInShelf) }
-            }
+            },
+            // 上架时把已装载的目录一并落库 (对照原 addToBookshelf), 否则进阅读页要回源再拉一次
+            chapters = shared.chapters,
         )
     }
 
@@ -738,7 +875,7 @@ sealed interface VideoPlayUiEvent {
     /** 书籍数据更新 (对齐 VideoPlayActivity.titleText/durChapterIndex 初始化)。
      *  chapterIndex/chapterPos 用于书签/目录回传定位 (对照 AudioPlayUiEvent.Init) */
     data class ShowBook(
-        val book: Book,
+        val book: BookRef,
         val chapterIndex: Int? = null,
         val chapterPos: Int? = null,
     ) : VideoPlayUiEvent

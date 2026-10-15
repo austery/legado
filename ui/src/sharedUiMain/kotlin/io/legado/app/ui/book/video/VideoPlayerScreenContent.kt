@@ -45,8 +45,10 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -95,6 +97,7 @@ import legado.ui.generated.resources.video_unlock
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 import kotlin.math.abs
+import kotlinx.coroutines.launch
 
 /**
  * 手机 vs 宽屏断点: 容器宽 < DesignTokens.wideScreenMinWidth 视为手机 (宽边判定, 对齐音频页
@@ -362,7 +365,7 @@ fun VideoControlsOverlay(
     // 颜色走 ThemeStore 动态色, 倍速档位对齐 app SpeedButton
     accentColor: Color = AppTheme.colors.accent,
     secondaryTextColor: Color = AppTheme.colors.primaryText,
-    speeds: List<Float> = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f),
+    speeds: List<Float> = listOf(0.1f, 0.5f, 1f, 1.25f, 1.5f, 1.75f, 2f),
     bufferedMs: Long = 0L,
     onSeekDragStateChange: (Boolean) -> Unit = {},
     onPopupVisibleChange: (Boolean) -> Unit = {},
@@ -438,6 +441,7 @@ fun VideoControlsOverlay(
                         ),
                         color = Color.White,
                         fontSize = 14.sp,
+                        maxLines = 1,
                         modifier = Modifier.weight(1f),
                     )
                     SpeedButton(
@@ -658,23 +662,30 @@ fun VideoSeekBar(
     // → 乐观值残留、seeking 恒 true 把自动隐藏永久抑制住
     val currentRange = rememberUpdatedState(max.coerceAtLeast(1L))
     val currentOnSeek = rememberUpdatedState(onSeek)
+    // 换算区间与绘制区间同源: 两端各内缩一个滑块半径, 四舍五入取整
+    val thumbRadius = 8.dp
 
     fun seekTo(target: Long) {
         optimistic = target
         currentOnSeek.value(target)
     }
 
-    fun fractionToValue(fraction: Float): Long =
-        (fraction * currentRange.value).toLong().coerceIn(0L, currentRange.value)
+    fun valueAt(x: Float, widthPx: Float, radiusPx: Float): Long {
+        val span = (widthPx - 2 * radiusPx).coerceAtLeast(1f)
+        val fraction = ((x - radiusPx) / span).coerceIn(0f, 1f)
+        return (fraction * currentRange.value + 0.5f).toLong().coerceIn(0L, currentRange.value)
+    }
 
     Box(
         modifier
             .pointerInput(Unit) {
+                val rPx = thumbRadius.toPx()
                 detectTapGestures(onTap = { pos ->
-                    seekTo(fractionToValue(pos.x / size.width))
+                    seekTo(valueAt(pos.x, size.width.toFloat(), rPx))
                 })
             }
             .pointerInput(Unit) {
+                val rPx = thumbRadius.toPx()
                 detectHorizontalDragGestures(
                     onDragStart = { onDragStateChange(true) },
                     onDragEnd = {
@@ -687,13 +698,13 @@ fun VideoSeekBar(
                     },
                 ) { change, _ ->
                     change.consume()
-                    optimistic = fractionToValue(change.position.x / size.width)
+                    optimistic = valueAt(change.position.x, size.width.toFloat(), rPx)
                 }
             },
         contentAlignment = Alignment.CenterStart,
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val thumbR = 8.dp.toPx()
+            val thumbR = thumbRadius.toPx()
             val trackH = 2.dp.toPx()
             val cy = size.height / 2
             val startX = thumbR
@@ -720,7 +731,7 @@ fun VideoSeekBar(
 /**
  * 倍速钮 (文字 + AppDropdownMenu, 可配置档位/颜色)。
  *
- * @param speeds 倍速档位 (默认对齐 app 端 7 档)
+ * @param speeds 倍速档位 (7 档)
  * @param currentSpeedColor 当前选中档位文字色
  * @param otherSpeedColor 未选中档位文字色
  * @param onVisibleChange 下拉开合上报 (调用层据此抑制控制栏自动隐藏)
@@ -729,7 +740,7 @@ fun VideoSeekBar(
 fun SpeedButton(
     currentSpeed: Float,
     onSpeedChange: (Float) -> Unit,
-    speeds: List<Float> = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f),
+    speeds: List<Float> = listOf(0.1f, 0.5f, 1f, 1.25f, 1.5f, 1.75f, 2f),
     currentSpeedColor: Color = AppTheme.colors.accent,
     otherSpeedColor: Color = AppTheme.colors.primaryText,
     onVisibleChange: (Boolean) -> Unit = {},
@@ -850,7 +861,7 @@ fun ResolutionButton(
             },
             modifier = Modifier.appDialogSize(),
             properties = AppDialogSizes.properties(),
-            shape = DesignTokens.dialogShape,
+            shape = DesignTokens.shapeDefault,
             backgroundColor = AppTheme.colors.background,
         )
     }
@@ -970,7 +981,7 @@ fun VideoLockToggle(
  * 平台仅需通过 [VideoPlayPlatformProvider.RenderSurface] 提供纯视频画面 Surface。
  * 全部 UI 覆盖层在此统一编排:
  * 1. 平台原生 Surface (底面)
- * 2. 手势交互层 (单击切控制栏/双击播放暂停/长按倍速/横竖滑动)
+ * 2. 手势交互层 (单击切控制栏/双击播放暂停/长按倍速/横竖滑动/双指缩放/Ctrl+滚轮缩放)
  * 3. 错误占位 / 加载中转圈 (样式统一为主题强调色缓冲圈)
  * 4. 播放控制栏 (中央播放快进快退选集 + 底部进度条/倍速/分辨率/全屏)
  * 5. 锁定/解锁钮 (锁定后隐藏手势与控制栏)
@@ -986,6 +997,8 @@ fun VideoPlayerHostContainer(
 ) {
     val uiState by screenModel.state.collectAsState()
     val gestureText by screenModel.gestureText.collectAsState()
+    // 画面缩放 (双指捏合/Ctrl+滚轮改写): 控制层显示百分比与重置钮, 渲染层订阅后应用到画面
+    val zoom = screenModel.zoom.collectAsState().value
     // 播放态直读控制器快照流 (回显唯一数据源, 见 [PlaybackSnapshot]): 图标 / 倍速 / 缓冲 /
     // 控制栏自动隐藏全部同源。上一版把这些缓存在 UiState 里、靠各端"记得回灌", 结果
     // 桌面/iOS/鸿蒙三端全漏 (按钮恒显示暂停态、控制栏永不自动隐藏), Android 端又因监听器
@@ -993,8 +1006,14 @@ fun VideoPlayerHostContainer(
     val playback by controller.playback.collectAsState()
     // 画中画平台真实态: null = 端不支持 (控制栏不画画中画钮); true = 已在系统小窗,
     // 小窗内只留纯画面 (手势/控制栏/锁定等一切覆盖层都交还给系统交互), false = 页面正常渲染。
+    // 进入请求期 (按下画中画钮到系统确认之间): 同样按小窗语义渲染, 系统过渡期间窗口里
+    // 只有视频 —— 平台真实态要到系统动画结束后才翻 true (见 [VideoPlayScreenModel.pipEntering])
+    val pipEntering by screenModel.pipEntering.collectAsState()
+    val pipEnterScope = rememberCoroutineScope()
+    // 平台真实态只决定"此刻在不在小窗", 不参与请求期结算: 请求期由平台回传的结果结束
+    // (见 [VideoPlayScreenModel.requestEnterPictureInPicture]), 取值没变也照样结束
     val pipState = platform.rememberIsInPictureInPicture()
-    val isPip = pipState == true
+    val isPip = pipState == true || pipEntering
     // 系统级全屏以平台真实态为准: 桌面真全屏由窗口决定 (ESC / 标题栏 / 原生控制条三条入口
     // 都会改窗口全屏), 页面自存副本必然分叉成"按一次 ESC 只退一半"; 全屏切换失败的平台上
     // 该值恒 false, 页面就不会按全屏渲染。无窗口全屏概念的端返回 null → 沿用页面意图标志。
@@ -1042,7 +1061,9 @@ fun VideoPlayerHostContainer(
         )
     }
     val gestureController = customGestureController ?: defaultGestureController
-
+    // 画面显示比例变化 (装载完成 / 换分辨率): 手势层按新几何把画面位置收敛回边界内
+    val videoAspectRatio by screenModel.videoAspectRatio.collectAsState()
+    LaunchedEffect(videoAspectRatio) { gestureController.onVideoGeometryChanged() }
     val loadState = uiState.loadState
     // 覆盖层之外仍按布尔用 (控制层显隐 / 缓冲圈互斥), 从单一状态源派生
     val error = loadState.errorMessage
@@ -1136,7 +1157,16 @@ fun VideoPlayerHostContainer(
                 },
                 showSystemFullScreenButton = true,
                 showPictureInPictureButton = pipState != null,
-                onEnterPictureInPicture = screenModel::onEnterPictureInPicture,
+                // 先进"只有画面"的渲染态并等它落两帧, 再请求系统进入: 系统过渡用的就是那一
+                // 帧, 否则它拿到的是带标题栏与选集的整页界面, 收小窗时先露出那片亮色页底
+                onEnterPictureInPicture = {
+                    screenModel.onEnterPictureInPicture()
+                    pipEnterScope.launch {
+                        withFrameNanos { }
+                        withFrameNanos { }
+                        screenModel.requestEnterPictureInPicture()
+                    }
+                },
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -1162,14 +1192,29 @@ fun VideoPlayerHostContainer(
             )
         }
 
-        // 7. 手势反馈文字 (画中画内不渲染)
-        gestureText?.takeIf { !isPip }?.let {
-            VideoGestureFeedbackText(
-                text = it,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = DesignTokens.spacingLg),
-            )
+        // 7. 手势反馈与缩放状态共用一个显示位 (画中画/锁定态不渲染):
+        //    手势进行中显示反馈文字 (长按倍速/音量/亮度/进度/捏合百分比); 无手势时缩放非默认则
+        //    常驻显示当前百分比, 重置入口也放在同一处; 锁屏只留小锁钮, 此处不能被误触重置缩放
+        if (!isPip && !uiState.isLocked) {
+            val feedback = gestureText
+            if (feedback != null) {
+                VideoGestureFeedbackText(
+                    text = feedback,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = DesignTokens.spacingLg),
+                )
+            } else if (!zoom.isDefault) {
+                // 缩放非默认: 百分比文案本身就是重置入口 (点位与长按倍速提示同一处)
+                VideoGestureFeedbackText(
+                    text = "${zoom.percent}%",
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = DesignTokens.spacingLg)
+                        .clip(DesignTokens.shapeSm)
+                        .clickable { screenModel.onResetZoom() },
+                )
+            }
         }
 
         // 8. 无系统返回通道的平台 (iOS): 全屏期间常驻退出入口。

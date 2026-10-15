@@ -5,27 +5,27 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
-import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.http.DownloadProgressRegistry
-import io.legado.app.help.image.MangaImageBytesLoader
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.ui.book.manga.config.MangaColorFilterConfig
 import io.legado.app.ui.book.manga.entities.MangaCellState
 import io.legado.app.ui.book.manga.render.MangaSkiaImage
 import io.legado.app.ui.book.manga.render.mangaProgressText
 import io.legado.app.ui.book.manga.render.preloadMangaImage
+import io.legado.app.ui.book.read.IosReaderPlatformProvider
 import io.legado.app.ui.root.PlatformServiceProviders
-import io.legado.app.ui.root.imageExtension
-import io.legado.app.utils.File
-import io.legado.app.utils.systemCurrentTimeMillis
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 
 // iOS 漫画阅读平台能力: 图片流复用 shared 提取器, 渲染走 Skia 三端共用的 MangaSkiaImage
 // (本端只负责把 DownloadProgressRegistry 的下载进度接到转圈环心)
 object IosMangaReaderPlatform : MangaReaderScreenModel.Platform {
+
+    // 信息条电量: 不覆写时走接口默认值 100, 与 Android/桌面(读真实电量)以及本端小说阅读页
+    // (UIDevice 真实电量) 都不一致。这里直接复用小说阅读页那一份实现, 保证两页口径唯一。
+    override fun getBatteryLevel(): Int = IosReaderPlatformProvider.getBatteryLevel()
 
     @Composable
     override fun Image(
@@ -60,25 +60,17 @@ object IosMangaReaderPlatform : MangaReaderScreenModel.Platform {
         )
     }
 
-    // 保存图片：先取得原始字节，再按魔数生成正确扩展名后写入导出目录。
+    // 保存图片：只导出已缓存的图 (对照原版 BaseReadViewModel.saveImage 的读取段), 落点走沙盒导出目录。
+    // 落盘整份归位: 覆盖写被打断会在用户可见目录留下半张图
     override suspend fun saveImage(
         url: String,
         book: Book?,
         source: BookSource?,
     ): Boolean? = withContext(IoDispatcher) {
-        book ?: return@withContext false
-        val files = PlatformServiceProviders.get().files
-        runCatching {
-            val bytes = MangaImageBytesLoader.load(url, book, source, currentCoroutineContext())
-                ?: return@runCatching false
-            val name = "manga-${systemCurrentTimeMillis()}${imageExtension(bytes, url)}"
-            val destPath = files.saveFile(name)
-                ?: return@runCatching null
-            File(destPath).writeBytes(bytes)
-            true
-        }.getOrElse {
-            AppLog.put("保存图片出错\n${it.message}", it)
-            false
+        saveCachedMangaImage(url, book) { name, bytes ->
+            val destPath = PlatformServiceProviders.get().files.saveFile(name)
+                ?: return@saveCachedMangaImage null
+            writeBytesAtomically(destPath, bytes)
         }
     }
 

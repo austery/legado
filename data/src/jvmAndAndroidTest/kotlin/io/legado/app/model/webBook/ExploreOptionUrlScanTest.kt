@@ -332,7 +332,9 @@ class ExploreOptionUrlScanTest {
     @Test
     fun `selectedValue 返回 null 回落 resolvedValue`() {
         assertEquals("1", replaceExploreOptionsInUrl("<t(a:1,b:2)>") { null })
-        assertEquals("全部2", replaceExploreOptionsInUrl("<t(全部,a:1,b:2)>") { "2" })
+        // Callers supply resolved values, including any prefix, rather than raw selections.
+        assertEquals("2", replaceExploreOptionsInUrl("<t(全部,a:1,b:2)>") { "2" })
+        assertEquals("全部2", replaceExploreOptionsInUrl("<t(全部,a:1,b:2)>") { "全部2" })
     }
 
     @Test

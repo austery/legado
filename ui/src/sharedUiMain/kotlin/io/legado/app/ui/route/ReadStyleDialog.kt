@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -31,6 +30,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.legado.app.constant.DirUsage
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
@@ -49,7 +49,7 @@ import io.legado.app.ui.book.read.config.ReadStyleActions
 import io.legado.app.ui.book.read.config.ReadStyleController
 import io.legado.app.ui.book.read.config.ReadStyleScreen
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
-import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppSheetSurface
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.root.PlatformCapabilityProviders
@@ -79,16 +79,14 @@ fun ReadStyleDialogHost(
     if (subConfig == ReadStyleSubConfig.NONE) {
         AppBottomSheetDialog(
             onDismissRequest = onDismiss,
-            properties = AppDialogSizes.properties(),
         ) {
             AppTheme {
                 // 原版 BaseBottomDialogFragment: 窗口 MATCH_PARENT 全宽贴底 + Gravity.BOTTOM + WRAP_CONTENT,
-                // 背景 filletBackground (bottomBackground 色 + radius.default 8dp 圆角);
+                // 底色 bottomBackground (原版 filletBackground); 圆角收口于半屏弹层统一规格
+                // (AppSheetSurface: 顶角 16dp, 随上拉展开收平);
                 // 内容横向 8dp 间距由 ReadStyleScreen 内部 padding(horizontal=spacingDefault) 提供
                 // (arco_spacing_default; 原 XML root 为 lg)。
-                Surface(
-                    shape = DesignTokens.shapeDefault,
-                    color = AppTheme.colors.bottomBackground,
+                AppSheetSurface(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     ReadStyleContent(
@@ -284,7 +282,7 @@ private fun ReadStyleContent(
                         .clickable {
                             scope.launch {
                                 val path = withContext(IoDispatcher) {
-                                    PlatformServiceProviders.get().files.pickDirectory()
+                                    PlatformServiceProviders.get().files.pickDirectory(DirUsage.Font)
                                 } ?: return@launch
                                 prefs.putString(PreferKey.fontFolder, path)
                                 rescanFontItems()

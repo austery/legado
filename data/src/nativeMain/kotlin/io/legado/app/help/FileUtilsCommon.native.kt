@@ -4,6 +4,10 @@ import io.legado.app.exception.SecurityException
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.utils.File
 import io.legado.app.utils.InputStream
+import io.legado.app.utils.ensureParentDirectory
+import io.legado.app.utils.isAtomicWriteTempName
+import okio.FileSystem
+import okio.Path.Companion.toPath
 
 /**
  * FileUtilsCommon 的 nativeMain actual (iOS / 鸿蒙 共用)。
@@ -20,6 +24,8 @@ import io.legado.app.utils.InputStream
  * - [resolveCachePath] 安全检查走 absolutePath 比较 (无 canonicalPath; POSIX 路径解析由 fs 保证)
  * - [delete] 递归删除子项后删自身 (kotlin.io.File 无 File.deleteRecursively, 但有 listFiles)
  * - [createFileReplace] 用 delete + createNewFile (kotlin.io.File 无原子写, 与 jvm 行为对齐)
+ * - [replaceFileAtomically] 委托 [io.legado.app.utils.replaceFileAtomically] (okio atomicMove =
+ *   POSIX rename), 失败收成 false
  *
  * # 行为差异说明
  * - canonicalPath: JVM 有, Native 无。安全检查退化用 absolutePath 比较, 业务可接受
@@ -86,28 +92,17 @@ actual object FileUtilsCommon {
     actual fun copyToFile(path: String, input: InputStream) {
         // expect InputStream 无 copyTo 扩展, 分块读后写文件; IO 异常直接上抛
         val file = File(path)
-        if (!file.exists()) {
-            file.parent?.let { File(it).mkdirs() }
-            file.createNewFile()
+        file.ensureParentDirectory()
+        // native File 无 outputStream (okio 封装), 用 okio sink 边读边写:
+        // 内存只有一块复用缓冲区, 与文件体积无关 (expect KDoc 的"分块, 不整块缓冲")
+        FileSystem.SYSTEM.write(file.path.toPath()) {
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buffer)
+                if (n <= 0) break
+                write(buffer, 0, n)
+            }
         }
-        // native File 无 outputStream (okio 封装), 只能分段读入后整块 writeBytes ——
-        // 这一端仍有全量内存峰值, 与 expect KDoc 承诺的"不整块缓冲"不符, 待 okio sink 接线后修正
-        val buffer = ByteArray(64 * 1024)
-        val chunks = ArrayList<ByteArray>()
-        while (true) {
-            val n = input.read(buffer)
-            if (n <= 0) break
-            // read 会覆写 buffer, 必须拷贝当前段
-            chunks.add(buffer.copyOfRange(0, n))
-        }
-        val total = chunks.sumOf { it.size }
-        val all = ByteArray(total)
-        var offset = 0
-        for (chunk in chunks) {
-            chunk.copyInto(all, offset)
-            offset += chunk.size
-        }
-        file.writeBytes(all)
     }
 
     actual fun delete(path: String, deleteRootDir: Boolean): Boolean {
@@ -125,6 +120,12 @@ actual object FileUtilsCommon {
         } catch (_: Exception) {
             false
         }
+    }
+
+    actual fun length(path: String): Long {
+        // 与 jvmAndAndroid actual 同语义 (FileUtilsBase.getLength): 不存在或非普通文件返回 0
+        val file = File(path)
+        return if (file.isFile) file.length() else 0L
     }
 
     actual fun listFiles(path: String): List<String> {
@@ -182,12 +183,22 @@ actual object FileUtilsCommon {
         return dir.listFiles()?.filter { it.isDirectory }?.map { it.absolutePath } ?: emptyList()
     }
 
+    actual fun isDirAbsentOrEmpty(path: String): Boolean {
+        // 与 jvm actual 同语义: kotlin.io.File.listFiles() 同样在"不是目录"与"是目录但读目录出错"
+        // 两种情况下都返回 null, 靠 isDirectory 区分 —— 后者按"非空"处理 (返回 false)。
+        val dir = File(path)
+        val entries = dir.listFiles()
+        return if (entries == null) !dir.isDirectory else entries.isEmpty()
+    }
+
     actual fun getDirSize(path: String): Long {
         val file = File(path)
         if (!file.exists()) return 0L
         if (file.isFile) return file.length()
         var size = 0L
-        file.walkTopDown().forEach { if (it.isFile) size += it.length() }
+        file.walkTopDown().forEach {
+            if (it.isFile && !isAtomicWriteTempName(it.name)) size += it.length()
+        }
         return size
     }
 
@@ -200,4 +211,9 @@ actual object FileUtilsCommon {
         val idx = maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\'))
         return if (idx >= 0) path.substring(idx + 1) else path
     }
+
+    actual fun replaceFileAtomically(srcPath: String, dstPath: String): Boolean =
+        runCatching {
+            io.legado.app.utils.replaceFileAtomically(File(srcPath), File(dstPath))
+        }.isSuccess
 }

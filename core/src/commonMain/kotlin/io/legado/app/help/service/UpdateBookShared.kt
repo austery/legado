@@ -340,6 +340,8 @@ class UpdateBookShared(
      */
     private suspend fun refreshBook(bookUrls: List<String>) {
         upPool()
+        // 本代标识: 收尾只在仍登记着本代时才动登记与进度 (见下方 onCompletion)
+        val self = currentCoroutineContext()[Job]
         bookUrls.asFlow()
             .onEachParallel(threadCount) { bookUrl ->
                 val book = appDb.bookDao.getBook(bookUrl)
@@ -364,8 +366,9 @@ class UpdateBookShared(
                     syncBookProgress(book, oldBookUrl)
                     book.removeType(BookType.updateError)
                     val bookUrlChanged = book.bookUrl != bookUrl
-                    // 合并 DB 写入: 用 suspend 事务 (KMP 安全, 无 runBlocking 死锁风险)
-                    // Android 端走 room-ktx withTransaction, Desktop/Native 降级为直接执行
+                    // 合并 DB 写入: 用 suspend 事务 (KMP 安全, 无 runBlocking 死锁风险)。
+                    // 三端一致: Room KMP 真事务 (BEGIN IMMEDIATE, 抛异常自动回滚),
+                    // 下沉实现见 AppDatabase.runInImmediateTransaction
                     appDb.runInTransactionSuspending {
                         if (bookUrlChanged) appDb.bookDao.replace(oldBook, book)
                         else appDb.bookDao.update(book)
@@ -393,6 +396,8 @@ class UpdateBookShared(
                 refreshCount.incrementAndGet()
                 updateProgress()
             }.onCompletion {
+                // 收尾可能晚到 (本代已被顶掉): 本代不再动登记/计数/进度/提示, 交新一代自己收尾
+                if (refreshJob !== self) return@onCompletion
                 refreshCount.value = 0
                 refreshTotal.value = 0
                 onRefreshJobCompleted()
@@ -415,9 +420,11 @@ class UpdateBookShared(
      * 受 [AppConfigAccessor.autoRefreshBook] 控制: 配置关闭时直接 return (对照 app 端
      * observeGroupBooks 内 `AppConfig.autoRefreshBook` 判断)。
      *
-     * # iOS/鸿蒙 ServiceLauncher.startUpdateBookService 入口
-     * iOS/鸿蒙端无 MainViewModel, NativeServiceLauncher.startUpdateBookService 调用本方法
-     * 触发全书架自动更新 (从 DB 查所有书), 替代原 stub。
+     * # 唯一触发链 (四端共用)
+     * 目前由书架页激活链调用: 书架路由 RESUMED → BookshelfViewModel.setBookshelfActive →
+     * onGroupBooks → autoUpdateGroup 内调本方法。原注释声称还有
+     * "iOS/鸿蒙 ServiceLauncher.startUpdateBookService 入口", 实际那个启动器方法全仓零调用点, 已删除
+     * (`ServiceLaunchers` 的 `stopUpdateBookService` 同为零调用点死代码, 已一并删除)。
      */
     fun scheduleAutoUpdate(books: List<Book>) {
         if (books.isEmpty()) return
@@ -519,6 +526,8 @@ class UpdateBookShared(
         _isRefreshing.value = true
         startedOnce.value = true
         upTocJob = scope.launch(upTocPool) {
+            // 本代标识: 收尾只在仍登记着本代时才动登记与进度 (见下方 onCompletion)
+            val self = currentCoroutineContext()[Job]
             flow {
                 while (true) {
                     emit(pollWaitUpTocBook() ?: break)
@@ -540,6 +549,8 @@ class UpdateBookShared(
                     postEvent(EventBus.UP_BOOKSHELF, it)
                 }
             }.onCompletion {
+                // 收尾可能晚到 (本代已被顶掉): 本代不再动登记/计数/进度/预下载, 交新一代自己收尾
+                if (upTocJob !== self) return@onCompletion
                 upTocCount.value = 0
                 upTocTotal.value = 0
                 // onUpTocJobCompleted 内会判断是否启动下一批 + updateProgress 同步进度状态
@@ -771,8 +782,8 @@ class UpdateBookShared(
      * 平台差异通过 [UpdateBookCallback.onProgressUpdate] 抽象:
      * - app 端 callback 实现: startForegroundService<UpdateBookService> + NotificationManagerCompat.notify
      *   (NotificationCompat.Builder 设置进度, 与原 updateUpdateNotification 一致)
-     * - 桌面端 callback 实现: NotificationProgresses.get().showProgress (SystemTray 文本通知) +
-     *   StateFlow 暴露给 UI
+     * - 桌面端 callback 实现: NotificationProgresses.get().showProgress(NotificationId.UpdateBookService, ...)
+     *   (SystemTray 文本通知) + StateFlow 暴露给 UI
      * - iOS/鸿蒙 callback 实现: NativeUpdateBookCallback 桥接 NotificationProgresses + Toasters
      *
      * 两个 job 任一在跑时显示对应文案 + isRefreshing=true, 都空闲时清空 + 取消通知。
@@ -855,8 +866,8 @@ class UpdateBookShared(
  * - Android: app 端 `MainViewModel` 持有 callback 实现, 桥接 `NotificationManagerCompat` +
  *   `startForegroundService<UpdateBookService>` + `context.toastOnUi`
  * - 桌面: 桌面端宿主持有 callback 实现, 桥接 `NotificationProgresses` + `Toasters`
- * - iOS/鸿蒙: `NativeServiceLauncher` 持有 `NativeUpdateBookCallback`,
- *   同样桥接 `NotificationProgresses` + `Toasters`
+ * - iOS/鸿蒙: NativeUpdateBookCallback (经 [UpdateBookCallbacks] 注册) 同样桥接
+ *   `NotificationProgresses` + `Toasters`
  *
  * 模式参考 [io.legado.app.model.CacheBookCallback] / [io.legado.app.help.book.BookHelpAccessor]。
  */
@@ -875,7 +886,7 @@ interface UpdateBookCallback {
 
     /**
      * 取消进度通知 (对照 app 端 `updateUpdateNotification` 内 `stopService<UpdateBookService>` /
-     * 桌面端 `NotificationProgresses.get().cancel()`)。
+     * 桌面端 `NotificationProgresses.get().cancel(NotificationId.UpdateBookService)`)。
      *
      * 在 [UpdateBookShared.cancelRefreshJobs] / [UpdateBookShared.updateProgress] (无任务分支) /
      * [UpdateBookShared.onCleared] 时调用。
@@ -910,12 +921,12 @@ interface UpdateBookCallback {
 /**
  * [UpdateBookCallback] 容器 (provider 注入模式, 可选)。
  *
- * 与 [io.legado.app.model.CacheBookCallbacks] 模式一致, 用于 Native (iOS/鸿蒙) 端
- * 注册 NativeUpdateBookCallback (桥接 NotificationProgresses + Toasters), 让
- * UpdateBookShared 在 Native target 也能构造 (无 callback 须由调用方传入时)。
+ * 与 [io.legado.app.model.CacheBookCallbacks] 模式一致, 用于各端宿主启动期注册
+ * default callback (Android: AndroidUpdateBookCallback / 桌面: DesktopUpdateBookCallback /
+ * iOS·鸿蒙: NativeUpdateBookCallback, 均桥接该端已注册的 NotificationProgresses + Toasters),
+ * 让取用方 (如 BookshelfViewModel) 能拿到 callback 构造 UpdateBookShared。
  *
- * app / 桌面端 VM 直接通过构造参数注入 callback (不经本 provider), 与
- * [io.legado.app.model.CacheBookCallback] 注册模式对齐。
+ * 各端取用方不直接依赖实现类, 经 [getDefault] 取用。
  */
 object UpdateBookCallbacks {
 
@@ -923,15 +934,14 @@ object UpdateBookCallbacks {
     private var defaultImpl: UpdateBookCallback? = null
 
     /**
-     * 注册默认 callback (Native 端 NativeServiceLauncher 启动期调用)。
+     * 注册默认 callback (各端宿主启动期调用)。
      *
-     * app / 桌面端 VM 不调本方法, 直接构造时传 callback;
-     * Native 端无 VM, 由 NativeServiceLauncher 持有 callback 实例并传给 UpdateBookShared。
+     * 取用方 (如 BookshelfViewModel) 经 [getDefault] 取出后传给 UpdateBookShared。
      */
     fun registerDefault(impl: UpdateBookCallback) {
         this.defaultImpl = impl
     }
 
-    /** 获取已注册的默认 callback (供 Native 端 NativeServiceLauncher 取用), 未注册返回 null。 */
+    /** 获取已注册的默认 callback (供取用方取用), 未注册返回 null。 */
     fun getDefault(): UpdateBookCallback? = defaultImpl
 }

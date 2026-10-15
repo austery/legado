@@ -2,7 +2,7 @@ package io.legado.app.help.service
 
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
-import io.legado.app.data.AppDbProviders
+import io.legado.app.constant.NotificationId
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.file.FileDownloaders
 import io.legado.app.help.notification.NotificationProgresses
@@ -24,8 +24,10 @@ import kotlinx.coroutines.launch
  * 设计要点 (对照 jvmMain DesktopServiceLauncher): 持有 [CoroutineScope]
  * (SupervisorJob + Default dispatcher, 子任务异常不互相影响);
  * start/remove/stopCacheBookService 接入已下沉的 [CacheBookShared] (对照 app 端
- * CacheBookService); start/stopUpdateBookService 接入 [UpdateBookShared]
- * (Native 无 MainViewModel, 从 DB 查所有书后 scheduleAutoUpdate);
+ * CacheBookService: 一次启动 = 一次会话, 入队失败也照样把调度跑到结束);
+ * `startUpdateBookService` / `stopUpdateBookService` 均为零调用点死代码,
+ * 已于 2026-09 删除 (Native 无 MainViewModel; 书架自动更新走共享触发链, 不在本启动器;
+ * 取消刷新任务走 BookshelfViewModel → UpdateBookShared);
  * startDownloadService 用 [FileDownloaders] 写文件 (iOS 沙盒 Documents 替代 user.home,
  * 鸿蒙 {user.dir}/legado_data/files)。
  *
@@ -37,24 +39,15 @@ class NativeServiceLauncher(
     private val scope: CoroutineScope,
 ) : ServiceLauncher {
 
-    /**
-     * UpdateBook 编排核心 (commonMain 下沉件), 持有实例以复用 across startUpdateBookService /
-     * stopUpdateBookService 调用 (与 app 端 MainViewModel 持有 UpdateBookShared 一致)。
-     *
-     * callback 优先取 [UpdateBookCallbacks.getDefault] (iOS / 鸿蒙端经 [registerNativeUpdateBookCallback]
-     * 注册的真实 [NativeUpdateBookCallback], 桥接 NotificationProgresses + Toasters);
-     * 未注册时 fallback 到 null (UpdateBookShared 内部对 null callback 做容错)。
-     */
-    private val updateBookShared: UpdateBookShared by lazy {
-        UpdateBookShared(scope, UpdateBookCallbacks.getDefault() ?: NativeUpdateBookCallback)
-    }
-
     override fun startCacheBookService(bookUrl: String, start: Int, end: Int) {
         scope.launch {
-            if (enqueueCacheBook(bookUrl, start, end)) {
-                // 启动 startProcessJob (对照 app 端 CacheBookService.download)
-                CacheBookShared.startProcessJob()
-            }
+            // 入队结果由 iOS 后台续跑消费 (见 [enqueueCacheBook]), 本方法不使用
+            enqueueCacheBook(bookUrl, start, end)
+            // 取不到书 (不在书架/已删/无书源) 时池为空, 本行让 job 立即结束: 与原版
+            // addDownloadData 的 onFinally 无条件 download() (内部 startProcessJob 返回后 stopSelf)
+            // 一致 —— "服务起来了但没有可入队的书" 同样以调度 job 结束收尾, 不留悬空会话
+            // (对照 jvmMain DesktopServiceLauncher.startCacheBookService)
+            CacheBookShared.startProcessJob()
         }
     }
 
@@ -69,23 +62,6 @@ class NativeServiceLauncher(
         CacheBookShared.cacheBookMap[bookUrl]?.stop()
         postEvent(EventBus.UP_DOWNLOAD, "")
         // Native 端无 stopSelf; downloadJob 重启由调用方监听 isRun 自行管理
-    }
-
-    override fun startUpdateBookService() {
-        // 接入已下沉的 UpdateBookShared (commonMain 编排核心):
-        // 从 DB 查所有书后调 scheduleAutoUpdate 触发自动更新 (替代原 println stub)。
-        // scheduleAutoUpdate 内部按 canUpdate + lastCheckTime 时间窗过滤, 自动跳过本地书 /
-        // 不可更新书 / 最近 10 分钟已检查的书, 与 app 端 MainViewModel.scheduleAutoUpdate 行为一致。
-        scope.launch {
-            // 协程内直接 suspend 调用 (原 runBlocking 嵌套有死锁风险)
-            val books = AppDbProviders.get().bookDao.all()
-            updateBookShared.scheduleAutoUpdate(books)
-        }
-    }
-
-    override fun stopUpdateBookService() {
-        // 取消所有更新任务 (对照 app 端 MainViewModel.cancelRefreshJobs, 但无 stopService)
-        updateBookShared.cancelRefreshJobs()
     }
 
     override fun startDownloadService(url: String, fileName: String) {
@@ -127,9 +103,10 @@ class NativeServiceLauncher(
  * 取已注册的真实实现。
  *
  * # 行为对照
- * - [onProgressUpdate]: active=true 调 [NotificationProgresses.get().showProgress] (title/content/count/total),
+ * - [onProgressUpdate]: active=true 调 [NotificationProgresses.get().showProgress] (id/title/content/count/total),
  *   active=false 调 [NotificationProgresses.get().cancel] (与接口契约"false=应取消"一致)
  * - [onProgressCancel]: 调 [NotificationProgresses.get().cancel]
+ * - 进度通知固定用 [NotificationId.UpdateBookService] (与 app 端该通知同一 id)
  * - [toastForceRefreshBusy]: Toasters.get().toast("正在刷新中, 请稍后再试") (与桌面端文案一致)
  * - [toastForceRefreshStart]: Toasters.get().toast("开始强制刷新 $count 本") (与桌面端文案一致)
  * - [toastForceRefreshDone]: Toasters.get().toast("刷新完成") (与桌面端文案一致)
@@ -139,7 +116,7 @@ class NativeServiceLauncher(
  * [io.legado.app.help.config.registerOhosProviders] 中
  * `registerIosToaster`/`registerOhosToaster` + `registerIosNotificationProgress`/`registerOhosNotificationProgress`
  * 之后、`registerIosServiceLauncher`/`registerOhosServiceLauncher` 之前调用
- * (NativeServiceLauncher 构造 updateBookShared 时经 [UpdateBookCallbacks.getDefault] 取本实现)。
+ * (BookshelfViewModel / UpdateBookShared 经 [UpdateBookCallbacks.getDefault] 取本实现)。
  *
  * 替代原 iosMain IosUpdateBookCallback + registerIosUpdateBookCallback (行为完全一致,
  * 已下沉到 nativeMain 共用, 避免平台 actual 重复)。
@@ -151,15 +128,17 @@ object NativeUpdateBookCallback : UpdateBookCallback {
     override fun onProgressUpdate(active: Boolean, title: String, content: String, count: Int, total: Int) {
         // active=false: 接口契约"应取消", 调 cancel (与 onProgressCancel 一致)
         if (!active) {
-            NotificationProgresses.get().cancel()
+            NotificationProgresses.get().cancel(NotificationId.UpdateBookService)
             return
         }
         // active=true: 显示进度通知 (title + content 文案由 UpdateBookShared 拼好, count/total 为进度)
-        NotificationProgresses.get().showProgress(title, content, count, total)
+        NotificationProgresses.get().showProgress(
+            NotificationId.UpdateBookService, title, content, count, total,
+        )
     }
 
     override fun onProgressCancel() {
-        NotificationProgresses.get().cancel()
+        NotificationProgresses.get().cancel(NotificationId.UpdateBookService)
     }
 
     override fun toastForceRefreshBusy() {
@@ -182,14 +161,16 @@ object NativeUpdateBookCallback : UpdateBookCallback {
  * Native (iOS / 鸿蒙) 宿主启动早期注册真实 [UpdateBookCallback] (覆盖原 stub)。
  *
  * 调用时机: 在 `registerIosToaster`/`registerOhosToaster` + `registerIosNotificationProgress`/
- * `registerOhosNotificationProgress` 之后 (本 callback 委托这两个 provider)、
- * `registerIosServiceLauncher`/`registerOhosServiceLauncher` 之前
- * ([NativeServiceLauncher.updateBookShared] lazy 构造时经 [UpdateBookCallbacks.getDefault] 取本实现)。
+ * `registerOhosNotificationProgress` 之后 (本 callback 委托这两个 provider)。
+ * 与 ServiceLauncher 的注册顺序无关 (ServiceLauncher 不再持有 UpdateBookShared)。
  *
  * 替代原 iosMain IosUpdateBookCallback + registerIosUpdateBookCallback (行为完全一致,
  * 已下沉到 nativeMain 共用, 避免平台 actual 重复)。
  */
 fun registerNativeUpdateBookCallback() {
+    // 启动即收掉上个进程残留的进度通知 (native 端无前台服务, 进程死亡不带走通知;
+    // 与 registerIosCacheBookServiceNotifications 同一处理)。
+    NotificationProgresses.get().cancel(NotificationId.UpdateBookService)
     UpdateBookCallbacks.registerDefault(NativeUpdateBookCallback)
 }
 
@@ -232,22 +213,14 @@ fun registerOhosServiceLauncher(scope: CoroutineScope = CoroutineScope(Superviso
 }
 
 /**
- * 入队一本书的缓存下载 (创建模型 + addDownload), 不启动处理 job。
+ * 入队一本书的缓存下载 (目录保障 + 章节范围收敛 + 目录快照兜底), 不启动处理 job。
  *
- * [NativeServiceLauncher.startCacheBookService] 是 fire-and-forget 的, 等不到入队结果;
- * iOS 后台续跑 ([io.legado.app.help.service.IosBackgroundTasks]) 必须知道入队是否真的成功,
- * 故把这段抽出来两边共用。
+ * 入队编排在 [CacheBookShared.enqueueDownload] (四端缓存入口共用), 本函数供 iOS 后台续跑
+ * ([io.legado.app.help.service.IosBackgroundTasks]) 按 bookUrl 重入队并消费入队结果;
+ * [NativeServiceLauncher.startCacheBookService] 是 fire-and-forget, 不使用返回值。
  *
- * @param end <0 表示下载到最后一章 (对照 app 端 CacheBookService.addDownloadData)
- * @return false = 这个 bookUrl 已取不到书 (不在书架 / 已删)
+ * @param end <0 表示下载到最后一章
+ * @return false = 这个 bookUrl 已取不到书 (不在书架 / 已删) 或目录保障失败
  */
-internal suspend fun enqueueCacheBook(bookUrl: String, start: Int, end: Int): Boolean {
-    val cacheBook = CacheBookShared.getOrCreate(bookUrl) ?: return false
-    val actualEnd = if (end < 0) {
-        cacheBook.book.lastChapterIndex
-    } else {
-        minOf(end, cacheBook.book.lastChapterIndex)
-    }
-    cacheBook.addDownload(start, actualEnd)
-    return true
-}
+internal suspend fun enqueueCacheBook(bookUrl: String, start: Int, end: Int): Boolean =
+    CacheBookShared.enqueueDownload(bookUrl, start, end)

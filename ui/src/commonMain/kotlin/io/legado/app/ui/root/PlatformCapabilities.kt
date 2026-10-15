@@ -1,6 +1,7 @@
 package io.legado.app.ui.root
 
 import io.legado.app.constant.EventBus
+import io.legado.app.constant.PreferKey
 import io.legado.app.constant.SourceType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -10,7 +11,10 @@ import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.Review
 import io.legado.app.help.DirectLinkUploadRule
 import io.legado.app.help.RssToolbarActions
+import io.legado.app.help.book.effectiveBookSaveDir
+import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
+import io.legado.app.help.coroutine.mainDispatcher
 import io.legado.app.help.toast.Toasters
 import io.legado.app.model.fileBook.FileBook
 import io.legado.app.ui.book.import.ImportFileItem
@@ -21,11 +25,13 @@ import io.legado.app.utils.FlowBus
 import io.legado.app.utils.encodeURI
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.web.WebServerManager
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** AppRoot 只依赖能力面；实现由唯一系统入口注册。 */
 interface PlatformCapabilities {
@@ -108,8 +114,12 @@ interface PlatformCapabilities {
      *
      * 返回 true = 平台已处理 (弹出带 RSS 工具栏的浏览器窗口), 调用方不再渲染 ReadRssScreen
      * 页面外壳 (移动端默认 false, 保持内嵌页面)。窗口工具栏带 收藏/朗读/分享/登录 按钮
+     * (目录不入窗口工具栏: 弹层在主窗口, 会被 RSS 独立窗口遮挡)
      * (动作经 [RssToolbarActions] 回调回 shared), 星收藏态经 [RssToolbarActions.onStarChanged]
      * 反推更新; 窗口被关闭时平台实现负责让 RSS 路由出栈。
+     *
+     * @param js 源注入脚本 (无正文规则、直接加载网址时传入): 原版在每次网页加载完成后执行,
+     *   平台实现应在每次导航完成时执行它 (有正文规则时脚本已随正文 HTML 内联, 传 null)。
      */
     fun openRssReader(
         book: Book,
@@ -118,6 +128,7 @@ interface PlatformCapabilities {
         html: String?,
         headerMap: Map<String, String>,
         actions: RssToolbarActions,
+        js: String? = null,
     ): Boolean = false
 
     /**
@@ -238,6 +249,15 @@ interface PlatformCapabilities {
     /** 创建堆转储 (对照 onCreateHeapDump / createHeapDump) */
     fun createHeapDump() = unsupported("创建堆转储")
 
+    /**
+     * 是否具备堆转储能力 (关于页"创建堆转储"入口的显隐 gate)。
+     *
+     * 只有存在 JVM 堆的平台才有这个概念 (Android 的 `Debug.dumpHprofData` / 桌面 JVM 的
+     * `HotSpotDiagnosticMXBean`); iOS/鸿蒙无 JVM, 保留入口只会弹一句"暂不支持"。
+     * 默认 true (与既有四端行为一致, 除 iOS/鸿蒙显式置 false)。
+     */
+    val createHeapDumpSupported: Boolean get() = true
+
     // 书籍详情页平台能力 (各端按需 override, 未实现端统一给出明确提示)
     // 对照 app 端 BookInfoActivity 同名方法
     /** 上传书籍到远程 (对照 onUploadBook) */
@@ -253,15 +273,49 @@ interface PlatformCapabilities {
     /** 书籍变量弹窗 (对照 onSetBookVariable) */
     fun showBookVariableDialog(book: Book) = unsupported("编辑书籍变量")
 
-    /** 书架操作: 上架/下架 (对照 onShelfClick, onComplete: null=删除, true=已上架, false=取消) */
+    /**
+     * 书架操作: 上架/下架 (对照 onShelfClick, onComplete: null=删除, true=已上架, false=取消)
+     *
+     * [onComplete] 在主线程回调 (调用方在其中做导航返回/状态派发); 实现内部在 IO 上落库/删文件。
+     *
+     * @param chapters 上架时随书落库的目录 (对照原 addToBookshelf 里的
+     *   `chapterListData.value?.let { bookChapterDao.insert(...) }`); null = 调用方无内存目录
+     */
     fun toggleBookshelf(
         book: Book,
         inBookshelf: Boolean,
         onComplete: (Boolean?) -> Unit,
         onWaitDialog: (Boolean) -> Unit = {},
         onAction: (String) -> Unit = {},
+        chapters: List<BookChapter>? = null,
     ) {
         unsupported("书架操作")
+    }
+
+    /**
+     * 下架确认框 (对照原版 `BookInfoActivity.deleteBook` 的 alert) 是否由本能力面自己弹。
+     *
+     * true = 调用方直接把下架交给 [deleteBookshelfBook], 确认框与"删除源文件"勾选值都由能力面
+     *   自己处理 (安卓的系统 alert);
+     * false (默认) = 调用方先弹确认框 (本地书带"删除源文件"勾选), 再把勾选值交给 [deleteBookshelfBook]。
+     */
+    fun confirmsDeleteBookInCapability(): Boolean = false
+
+    /**
+     * 下架书目 (对照原版 `BaseReadViewModel.delBook`): 删章节 + 删记录 + 按 [deleteOriginal]
+     * 删本地书源文件; 不勾选时只下架、不碰文件 (onComplete: null=下架成功, false=失败)。
+     *
+     * [onComplete] 在主线程回调 (调用方在其中做导航返回/状态派发); 实现内部在 IO 上删库/删文件。
+     *
+     * 默认实现忽略 [deleteOriginal] 委托 [toggleBookshelf]: 确认框由能力面自己弹的端
+     * (见 [confirmsDeleteBookInCapability]) 由它自己的下架流程取勾选值。
+     */
+    fun deleteBookshelfBook(
+        book: Book,
+        deleteOriginal: Boolean,
+        onComplete: (Boolean?) -> Unit,
+    ) {
+        toggleBookshelf(book, inBookshelf = true, onComplete = onComplete)
     }
 
     // webFile 下载导入相关 (对照 BookInfoViewModel.importWebFile 等方法)
@@ -328,15 +382,6 @@ interface PlatformCapabilities {
     /** 是否有系统状态栏/导航栏 (决定 MoreConfig 的隐藏状态栏/导航栏开关显隐) */
     fun hasSystemBars(): Boolean = true
 
-    /**
-     * 当前窗口是否处于多窗口模式 (分屏/自由窗口)。
-     *
-     * 对照原版 `BaseActivity.isInMultiWindow`: 多窗口下窗口没有真正的全屏语义,
-     * 原版据此让 `PageView.vwStatusBar` 占位恒 gone (不避让状态栏) 且不加
-     * `SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN` (不进沉浸式布局)。非 Android 端无此概念, 恒 false。
-     */
-    val isInMultiWindow: Boolean get() = false
-
     /** 是否支持锁定屏幕方向 (决定 MoreConfig 的屏幕方向选项显隐) */
     fun hasScreenOrientation(): Boolean = true
 
@@ -382,9 +427,10 @@ interface PlatformCapabilities {
     /**
      * 是否能抢系统音频焦点 (其他设置里"忽略音频焦点"条目 gate)。
      *
-     * Android 走 AudioFocusController, iOS 走 AVAudioSession 类别;
-     * 桌面 (DesktopSmtc.setAudioFocus = Unit) 与鸿蒙 (OhosMediaNotificationController
-     * .setAudioFocus = Unit) 无焦点模型, 拨了等于没拨。
+     * Android 走 AudioFocusController 申请/归还焦点, iOS 走 AVAudioSession 类别;
+     * 鸿蒙的申请/归还由 AVPlayer 按 StreamUsage 自动完成 (setAudioFocus 是空实现),
+     * 仅事件回调经 AVPlayer.on('audioInterrupt') 接入同一状态机;
+     * 桌面 (DesktopSmtc.setAudioFocus = Unit) 同样无申请/归还能力, 拨了等于没拨。
      */
     val audioFocusSupported: Boolean get() = false
 
@@ -417,10 +463,27 @@ interface PlatformCapabilities {
     val heapDumpRecordSupported: Boolean get() = false
 
     /**
+     * 关闭主窗口是否能缩小到系统托盘 (其他设置里"关闭窗口时缩小到托盘"开关 gate)。
+     *
+     * 仅桌面端有系统托盘概念; 其余端无窗口关闭语义, 该开关无法生效。
+     */
+    val closeToTraySupported: Boolean get() = false
+
+    /**
      * 是否平板设备（决定"平板/横屏双页" auto 分支是否启用双页，对照 app 端
      * `Context.isPad`；桌面默认 false，宽屏下由宽>高分支兜底）。
      */
     fun isTablet(): Boolean = false
+
+    /**
+     * 是否电视/机顶盒形态 (对照 app 端 `Context.isTv`: uiMode 为 TELEVISION)。
+     *
+     * 决定阅读页首启引导开哪种配置界面 (对照 app 端 BaseReadBookActivity 的
+     * `if (isTv) showCustomPageKeyConfig() else showClickRegionalConfig()`):
+     * 遥控器无"点击区域"概念, 电视机型引导配置翻页按键。
+     * 其余端无此形态, 默认 false。
+     */
+    fun isTelevision(): Boolean = false
 
     /** 获取 app 版本名 (对照 app 端 AppConst.appInfo.versionName), 供 AboutRoute 初始化 state */
     fun getAppVersionName(): String? = null
@@ -445,7 +508,14 @@ interface PlatformCapabilities {
     /** 切换"导出到 WebDav"开关 (对照 toggleExportWebDav) */
     fun toggleExportWebDav() = unsupported("切换 WebDav 导出")
 
-    /** 选择导出文件夹 (对照 selectExportFolderMenu / selectExportFolder) */
+    /**
+     * 选择导出文件夹 (对照 selectExportFolderMenu / selectExportFolder)。
+     *
+     * 选定结果落本机配置空间 [io.legado.app.help.config.rememberBookExportDir]
+     * (原版把同一个选择结果存在 ACache "exportBookPath" —— 缓存会被清理动作抹掉,
+     * 且选定的是本机目录/授权引用, 不能随备份走到别的设备); 导出流程在未选过时拉起本入口,
+     * 取值见 [io.legado.app.help.config.effectiveBookExportDir]。
+     */
     fun selectExportFolder(books: List<Book>) = unsupported("选择导出目录")
 
     /** 弹出导出配置对话框 (对照 showExportConfig) */
@@ -463,7 +533,10 @@ interface PlatformCapabilities {
     /** "导出替换"开关当前值 (对照 AppConfig.exportUseReplace) */
     fun exportUseReplace(): Boolean = false
 
-    /** "自定义导出"开关当前值 (对照 AppConfig.enableCustomExport) */
+    /**
+     * "自定义导出"开关当前值 (对照 AppConfig.enableCustomExport), 供菜单勾选态与翻转;
+     * 导出时先弹章节配置对话框的判定见 [io.legado.app.utils.enableCustomExport] (另含导出类型为 epub)。
+     */
     fun enableCustomExport(): Boolean = false
 
     /** "导出到 WebDav"开关当前值 (对照 AppConfig.exportToWebDav) */
@@ -490,8 +563,23 @@ interface PlatformCapabilities {
     /** 空消息可见 (对照 emptyMsgVisible) */
     fun importBookEmptyMsgVisible(): StateFlow<Boolean> = PlatformCapabilitiesDefaults.falseFlow
 
-    /** 初始化导入数据 (对照 onActivityCreated 内 initData) */
-    fun initImportBookData() = unsupported("初始化本地书籍导入")
+    /**
+     * 当前目录是否还有上级目录 (返回键据此逐级返回, 对照原版
+     * `setupBackPress { goBackDir() }`: 已在根目录才退出页面)。
+     */
+    fun importBookHasParentDir(): StateFlow<Boolean> = PlatformCapabilitiesDefaults.falseFlow
+
+    /**
+     * 初始化导入数据 (对照 onActivityCreated 内 initData)。
+     *
+     * @return true = 尚未有可用目录, 页面需拉起选目录选择器 (对照原版 initRootDoc 的
+     *   `selectFolder.launch()` 条件); 返回时初始化已结束 (含其中的选目录流程), 调用方
+     *   据此决定是否再拉一次, 不会出现两个选择器并存。
+     */
+    suspend fun initImportBookData(): Boolean = false
+
+    /** 离开导入页时的收尾 (对照原版 Activity 销毁即取消进行中的目录扫描); 默认无动作。 */
+    fun onImportBookPageCleared() = Unit
 
     /** 处理文件关联直接传入的文件路径或 URI；未实现的平台必须明确报告不支持。 */
     fun openImportFile(filePath: String) {
@@ -552,6 +640,29 @@ interface PlatformCapabilities {
 
     /** 校验选中书源 (对照 checkSource, 含 alert 输入关键词 + CheckSource.start) */
     fun checkBookSource(selection: List<BookSourcePart>) = unsupported("校验书源")
+
+    /**
+     * 弹"校验书源"对话框 (关键词输入 + 校验设置中性钮), 确认后调 [startCheckBookSource]。
+     *
+     * 各端共用同一个共享对话框 (overlay), 保证与 Android 逐字一致; 平台侧只需实现
+     * [startCheckBookSource] 这一个动作。Android 有自己的 alert 实现, 不调本方法。
+     */
+    fun showCheckBookSourceDialog(selection: List<BookSourcePart>) {
+        if (selection.isEmpty()) return
+        AppNavigatorProviders.get().showOverlay(
+            AppOverlay.Dialog(
+                key = "check_book_source",
+                payload = selection.joinToString(",") { it.bookSourceUrl },
+            )
+        )
+    }
+
+    /**
+     * 按书源 URL 启动校验 (各端平台实现: 桌面 [DesktopCheckSource] / iOS / 鸿蒙各自的 CheckSource 调度)。
+     *
+     * 关键词由对话框写回 [CheckSourceShared.keyword], 本方法只管启动。
+     */
+    fun startCheckBookSource(urls: List<String>) = unsupported("校验书源")
 
     // 书源编辑平台能力 (各端按需 override, 未实现端统一给出明确提示)
     // 对照 app 端 BookSourceEditActivity 同名方法
@@ -621,7 +732,12 @@ interface PlatformCapabilities {
     /** 写本地密码 (对照 app 端 LocalConfig.password = value, 写 "local" SharedPreferences) */
     fun setLocalPassword(password: String?) = unsupported("设置本地密码")
 
-    /** SAF 选书籍目录 (对照 app 端 localBookTreeSelect.launch DIR_SYS), 选中后回调 onSelected(uri) */
+    /**
+     * SAF 选书籍目录 (对照 app 端 localBookTreeSelect.launch DIR_SYS), 选中后回调 onSelected(uri)。
+     *
+     * 回调不保证在界面线程: 安卓在界面线程回调, 桌面/iOS/鸿蒙在后台线程回调;
+     * 调用方若要在回调里做界面动作需自行切主线程。
+     */
     fun pickBookTreeUri(onSelected: (String?) -> Unit) = unsupported("选择书籍目录")
 
     /**
@@ -635,9 +751,6 @@ interface PlatformCapabilities {
      * @param fileName 目标文件名 (调用方传 `book.originName`)
      */
     fun findBookFileInDir(dirUri: String, fileName: String): String? = null
-
-    /** 显示校验设置 Dialog (对照 app 端 showDialogFragment<CheckSourceConfig>), dismiss 后回调 onDismiss */
-    fun showCheckSourceConfigDialog(onDismiss: () -> Unit = {}) = unsupported("书源校验设置")
 
     /** 显示直链上传规则 Dialog (对照 app 端 showDialogFragment<DirectLinkUploadConfig>) */
     fun showDirectLinkUploadConfigDialog() = unsupported("直链上传配置")
@@ -666,6 +779,38 @@ object PlatformCapabilityProviders {
         ?: error("PlatformCapabilities must be registered by the system entry")
 
     fun getOrNull(): PlatformCapabilities? = provider
+}
+
+/**
+ * 拉起既有的"书籍保存位置"选择器 ([PlatformCapabilities.pickBookTreeUri]) 并等用户选定
+ * (与"其它设置 → 书籍保存位置"同一个选择器)。选择器是平台 UI, 在主线程拉起;
+ * 平台未实现该能力时按用户取消处理。
+ *
+ * @return 选定的目录标识; null = 用户取消
+ */
+private suspend fun awaitBookTreeUriSelection(): String? {
+    val result = CompletableDeferred<String?>()
+    withContext(mainDispatcher) {
+        runCatching {
+            PlatformCapabilityProviders.get().pickBookTreeUri { uri -> result.complete(uri) }
+        }.onFailure {
+            result.complete(null)
+        }
+    }
+    return result.await()
+}
+
+/**
+ * 确保"书籍保存位置"可用: 已设置时直接返回; 未设置时拉起既有选择器并记住选定目录
+ * ([PreferKey.defaultBookTreeUri])。
+ *
+ * @return true = 保存位置已可用 (原本已设置, 或本次已选定); false = 用户取消
+ */
+suspend fun ensureBookSaveDirSelected(): Boolean {
+    if (effectiveBookSaveDir() != null) return true
+    val uri = awaitBookTreeUriSelection()?.takeIf { it.isNotBlank() } ?: return false
+    PreferenceProviders.get().putString(PreferKey.defaultBookTreeUri, uri)
+    return true
 }
 
 // 平台能力默认 StateFlow 实例 (稳定引用, 避免每次调用返回新实例)

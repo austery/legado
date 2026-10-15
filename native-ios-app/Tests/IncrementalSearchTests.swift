@@ -17,7 +17,7 @@ final class IncrementalSearchTests: XCTestCase {
         let bookSourceType = 0
         let enabled = true
         let searchUrl: String
-        let ruleSearch: [String: String] = ["bookList": "tag.article", "name": "class.book@text", "author": "class.author@text", "bookUrl": "class.book@href", "hasMoreRule": "result.indexOf('data-more=' + String.fromCharCode(34) + 'true') >= 0"]
+        let ruleSearch: [String: String] = ["nextPageUrl": "class.next@href", "bookList": "tag.article", "name": "class.book@text", "author": "class.author@text", "bookUrl": "class.book@href", "hasMoreRule": "result.indexOf('data-more=' + String.fromCharCode(34) + 'true') >= 0"]
         let ruleBookInfo: [String: String] = ["canReName": "true", "name": "tag.h1@text", "author": "class.author@text", "intro": "class.intro@text", "tocUrl": "class.toc@href"]
         let ruleToc: [String: String] = ["chapterList": "class.chapter", "chapterName": "text", "chapterUrl": "href"]
         let ruleContent = ["content": "class.content@html"]
@@ -154,4 +154,33 @@ final class IncrementalSearchTests: XCTestCase {
         XCTAssertEqual(model.searchSources.first { $0.sourceId == base + "/fast" }?.page, 1)
         XCTAssertTrue(model.hasNextPage)
     }
+    func testContinuationUrlSurvivesRetryAndIsClearedByRestart() async throws {
+        let (model, base) = try await setup(["cursor"])
+        defer { model.cancel() }
+        model.searchScope = .selected
+        model.selectedSourceIDs = [base + "/cursor"]
+        model.query = "work"; model.search()
+        try await waitUntil { !model.searchRunning && model.results.count == 1 }
+        model.loadMoreSearch()
+        try await waitUntil { !model.searchRunning && !model.searchCommandPending && model.message != nil }
+        XCTAssertTrue(model.message?.contains("HTTP 503") == true)
+        XCTAssertEqual(model.results.count, 1)
+        model.retrySearchSource(base + "/cursor")
+        try await waitUntil { !model.searchRunning && !model.searchCommandPending && model.results.count == 2 }
+        XCTAssertNil(model.message)
+        XCTAssertFalse(model.hasNextPage)
+        model.restartSearchSource(base + "/cursor")
+        try await waitUntil { !model.searchRunning && !model.searchCommandPending && model.results.count == 1 }
+        XCTAssertEqual(model.results.first?.title, "Shared work")
+        XCTAssertTrue(model.hasNextPage)
+        model.loadMoreSearch()
+        try await waitUntil { !model.searchRunning && !model.searchCommandPending && model.results.count == 2 }
+        let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/stats")))
+        let counts = try JSONDecoder().decode([String: Int].self, from: data)
+        let namespace = try XCTUnwrap(URL(string: base)?.lastPathComponent)
+        XCTAssertEqual(counts[namespace + "/search/cursor/1"], 2)
+        XCTAssertEqual(counts[namespace + "/cursor/cursor/2"], 3)
+        XCTAssertNil(counts[namespace + "/search/cursor/2"])
+    }
+
 }

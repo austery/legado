@@ -15,11 +15,13 @@ import io.legado.app.ui.compose.component.AppTitleBar
 import io.legado.app.ui.book.manga.extension.MangaExtensionServiceProviders
 import io.legado.app.ui.book.tvbox.TvBoxServiceProviders
 import io.legado.app.ui.main.my.MyConfigScreen
+import io.legado.app.ui.debug.DialogPreviewLaunchers
 import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.ScreenModelStore
+import io.legado.app.web.WebServerPlatforms
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.copy_url
 import legado.ui.generated.resources.my
@@ -44,6 +46,9 @@ fun MyConfigRoute(
     screenModelStore: ScreenModelStore,
 ) {
     val caps = PlatformCapabilityProviders.get()
+    // 网络服务开关: 未注册 WebServerPlatform 的端 (iOS) 无此服务, 条目隐藏
+    // (与下方漫画/影视源服务同一判空门禁模式)
+    val webServiceSupported = WebServerPlatforms.getOrNull() != null
     // 漫画插件服务: 未注册端 (desktop 等) 为 null, 入口隐藏且不触发 init
     val mangaExtensionService = MangaExtensionServiceProviders.getOrNull()
     // 影视源服务同上: 未注册端入口隐藏
@@ -65,6 +70,7 @@ fun MyConfigRoute(
         MyConfigScreen(
             webServiceChecked = webServiceAddress.isNotEmpty(),
             webServiceSummary = webServiceAddress.ifEmpty { webServiceDesc },
+            showWebService = webServiceSupported,
             onThemeModeChange = {
                 PlatformCapabilityProviders.get().applyDayNight()
             },
@@ -96,6 +102,7 @@ fun MyConfigRoute(
             onReadRecord = { navigator.push(AppRoute.ReadRecord) },
             onSourceToolbox = { navigator.push(AppRoute.SourceToolbox) },
             onAbout = { navigator.push(AppRoute.About) },
+            onDialogPreview = DialogPreviewLaunchers.getOrNull(),
             // 原版 pref_main.xml 无 RSS 条目, 订阅入口在主界面底栏 tab, 此处不渲染
         )
     }

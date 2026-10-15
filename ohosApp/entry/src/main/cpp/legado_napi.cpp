@@ -29,6 +29,12 @@
  * 应用版本名注入 (ArkTS → Kotlin 同步推送, 同 FileDir 模式):
  * - registerAppVersion(name: string): void  → legado_register_app_version(const char*) (注入版本名)
  *
+ * 宿主层崩溃现场落盘 (ArkTS → Kotlin 同步推送, 同 FileDir 模式):
+ * - reportHostException(kind: string, detail: string): void
+ *                                           → legado_report_host_exception(const char*, const char*)
+ *                                             (系统崩溃事件 watcher 把 APP_CRASH 现场交给 KMP 落盘,
+ *                                              与 K/N 崩溃日志同目录)
+ *
  * legado:// deep link 投递 (ArkTS → Kotlin 同步推送, 无回调):
  * - handleDeepLink(uri: string): boolean    → legado_handle_deep_link(const char*) -> int
  *                                            (Kotlin LegadoDeepLinkHandler 解析后写 pending, Compose 侧消费)
@@ -133,6 +139,9 @@ static legado_cstr_void_fn g_register_cache_dir = nullptr;
 // dlsym 加载的函数指针 - 应用版本名注入 (ArkTS → Kotlin 同步推送, 同 FileDir 模式)
 static legado_cstr_void_fn g_register_app_version = nullptr;
 
+// 宿主层异常落盘 (legado_report_host_exception): 双字符串入参
+static legado_cstr_cstr_void_fn g_report_host_exception = nullptr;
+
 // dlsym 加载的函数指针 - 屏幕尺寸注入 (ArkTS → Kotlin 同步推送, 同 FileDir 模式)
 static legado_int_int_void_fn g_register_screen_size = nullptr;
 
@@ -221,6 +230,11 @@ static legado_void_cstr_fn g_build_markdown_viewer = nullptr;
 static legado_register_webview_dispatch_fn g_register_webview_fn = nullptr;
 static legado_int64_cstr_cstr_void_fn g_webview_callback = nullptr;
 
+// dlsym 加载的函数指针 - 前台 Web 控制器 tsfn 注入 + ArkTS → Kotlin 结果/事件回调
+// (可见 Web 组件, 与后台抓取 webview 链相互独立; 协议为单 JSON 字符串)
+static legado_register_dispatch_fn g_register_web_controller_fn = nullptr;
+static legado_int64_cstr_void_fn g_web_controller_callback = nullptr;
+
 // dlsym 加载的函数指针 - Window tsfn 注入 (KMP → ArkTS @ohos.window 窗口策略命令, 同 Toast 模式, fire-and-forget)
 static legado_register_dispatch_fn g_register_window_fn = nullptr;
 
@@ -247,6 +261,7 @@ static napi_threadsafe_function g_file_picker_tsfn = nullptr;
 static napi_threadsafe_function g_pasteboard_tsfn = nullptr;
 static napi_threadsafe_function g_text_codec_tsfn = nullptr;
 static napi_threadsafe_function g_webview_tsfn = nullptr;
+static napi_threadsafe_function g_web_controller_tsfn = nullptr;
 static napi_threadsafe_function g_window_tsfn = nullptr;
 static napi_threadsafe_function g_battery_tsfn = nullptr;
 static napi_threadsafe_function g_share_tsfn = nullptr;
@@ -289,6 +304,9 @@ static bool load_legado_shared() {
 
     // 解析 @CName 导出符号 - 应用版本名注入
     g_register_app_version = (legado_cstr_void_fn)dlsym(g_legado_so, "legado_register_app_version");
+
+    // 解析 @CName 导出符号 - 宿主层异常落盘
+    g_report_host_exception = (legado_cstr_cstr_void_fn)dlsym(g_legado_so, "legado_report_host_exception");
 
     // 解析 @CName 导出符号 - 屏幕尺寸注入
     g_register_screen_size = (legado_int_int_void_fn) dlsym(g_legado_so, "legado_register_screen_size");
@@ -363,6 +381,10 @@ static bool load_legado_shared() {
     // 解析 @CName 导出符号 - WebView tsfn 注入 + ArkTS → Kotlin 回调 (混合协议: 控制面 JSON + 数据面裸字符串)
     g_register_webview_fn = (legado_register_webview_dispatch_fn) dlsym(g_legado_so, "legado_register_webview_fn");
     g_webview_callback = (legado_int64_cstr_cstr_void_fn) dlsym(g_legado_so, "legado_webview_callback");
+
+    // 解析 @CName 导出符号 - 前台 Web 控制器 tsfn 注入 + ArkTS → Kotlin 结果/事件回调 (可见 Web 组件)
+    g_register_web_controller_fn = (legado_register_dispatch_fn) dlsym(g_legado_so, "legado_register_web_controller_fn");
+    g_web_controller_callback = (legado_int64_cstr_void_fn) dlsym(g_legado_so, "legado_web_controller_callback");
 
     // 解析 @CName 导出符号 - Markdown 查看器 tsfn 注入 + ArkTS → Kotlin 事件回调 (同 Toast/Media 模式)
     g_register_markdown_fn = (legado_register_dispatch_fn) dlsym(g_legado_so, "legado_register_markdown_fn");
@@ -641,6 +663,34 @@ static napi_value RegisterCacheDir(napi_env env, napi_callback_info info) {
     return ret;
 }
 
+// napi 包装: reportHostException(kind: string, detail: string): void
+// 系统崩溃事件 watcher 把 APP_CRASH 现场交给 KMP 落盘 (与 K/N 崩溃日志同目录同格式)
+static napi_value ReportHostException(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    auto readString = [env](napi_value value) -> char* {
+        size_t len = 0;
+        napi_get_value_string_utf8(env, value, nullptr, 0, &len);
+        char* buf = new char[len + 1];
+        napi_get_value_string_utf8(env, value, buf, len + 1, &len);
+        return buf;
+    };
+    char* kind = readString(args[0]);
+    char* detail = readString(args[1]);
+
+    if (load_legado_shared() && g_report_host_exception != nullptr) {
+        g_report_host_exception(kind, detail);
+    }
+    delete[] kind;
+    delete[] detail;
+
+    napi_value ret;
+    napi_get_undefined(env, &ret);
+    return ret;
+}
+
 // napi 包装: registerAppVersion(name: string): void  注入应用版本名 (ArkTS → Kotlin)
 // 调用方: EntryAbility.onCreate (读 bundleManager.getBundleInfoForSelfSync().versionName),
 // 供关于页显示/复制版本号; Kotlin/Native 无读取应用包信息的 API, 只能由 ArkTS 注入。
@@ -838,7 +888,7 @@ static void WindowCallJs(napi_env env, napi_value js_cb, void * /*context*/, voi
 }
 
 // ============ Register*Callback 通用宏 ============
-// 19 个注册函数 (Window/Toast/Notification/Markdown/Image/Media/Tts/Crypto/Http/WebView/OpenUrl/
+// 20 个注册函数 (Window/Toast/Notification/Markdown/Image/Media/Tts/Crypto/Http/WebView/WebController/OpenUrl/
 // FilePicker/Pasteboard/Network/TextCodec/Battery/Share/Keyboard/Permission) 结构完全同构:
 // 校验 argc → 释放旧 tsfn → napi_create_threadsafe_function 包装 ArkTS callback (XxxCallJs) →
 // 存入 g_xxx_tsfn → 经 g_register_xxx_fn 把 dispatch 函数指针注入 Kotlin OhosNativeBridge。
@@ -1435,6 +1485,78 @@ static napi_value WebViewCallback(napi_env env, napi_callback_info info) {
     return ret;
 }
 
+// ============ 前台 Web 控制器 tsfn 接线 (可见 Web 组件, 与后台 WebView 链相互独立) ============
+// 与 WebView tsfn 的分工:
+// - 后台 WebView (g_webview_tsfn): 隐藏 Web 组件 + 混合协议 (控制面 JSON + 数据面裸 HTML),
+//   服务书源 webView 规则抓取 (WebViewBridgeHandler.ets, 回送 webViewCallback);
+// - 前台 Web 控制器 (g_web_controller_tsfn, 本节): 可见 Web 组件直接挂在屏幕之上, 服务
+//   Compose WebView slot (WebViewRoute/ReadRssRoute/登录 Overlay), 单 JSON 字符串协议。
+// - KMP 通过 OhosVisibleWebViewBridge (loadUrl/runJavaScript/getCookies/show/hide 等) 发命令
+// - 请求经 C++ ohos_web_controller_dispatch → napi_call_threadsafe_function → ArkTS 主线程回调
+// - ArkTS 完成操作后通过 webControllerCallback(requestId, resultJson) (napi → @CName) 回送结果;
+//   requestId==0 时为主动页面事件 (onPageFinished/onUrlChanged/onReceivedTitle/onProgressChanged/onCloseWindow)
+
+// C++ dispatch 入口: 由 Kotlin lambda (注入到 OhosVisibleWebViewBridge.dispatch) 调用
+// 单 JSON 字符串协议 (与 Toast/Crypto/Pasteboard 同形): requestId/action/payload
+// (前台命令含页面快照, 但页面 HTML 也走 payload JSON —— 与后台抓取的大段 HTML 裸传不同,
+//  前台 html 是配置期一次性小字段, 无高频大传输, 保持单 JSON 协议更简单)
+extern "C" void ohos_web_controller_dispatch(const char* json) {
+    if (g_web_controller_tsfn == nullptr || json == nullptr) return;
+    size_t len = strlen(json) + 1;
+    char* json_dup = (char*)malloc(len);
+    if (json_dup == nullptr) return;
+    memcpy(json_dup, json, len);
+    napi_status status = napi_call_threadsafe_function(g_web_controller_tsfn, json_dup, napi_tsfn_nonblocking);
+    if (status != napi_ok) {
+        free(json_dup);
+    }
+}
+
+// tsfn call-js 回调: 在 ArkTS 主线程执行, 把 data (JSON 串) 包成 napi string 后调用 ArkTS 回调
+static void WebControllerCallJs(napi_env env, napi_value js_cb, void* /*context*/, void* data) {
+    if (js_cb == nullptr || data == nullptr) return;
+    char* json = static_cast<char*>(data);
+    napi_value json_arg;
+    napi_create_string_utf8(env, json, NAPI_AUTO_LENGTH, &json_arg);
+    napi_value undef;
+    napi_get_undefined(env, &undef);
+    napi_call_function(env, undef, js_cb, 1, &json_arg, nullptr);
+    free(json);
+}
+
+// napi 包装: registerWebControllerCallback(callback: (json: string) => void): void
+// ArkTS 注册前台 Web 控制器回调; C++ 创建 tsfn, 通过 legado_register_web_controller_fn 注入
+// ohos_web_controller_dispatch 到 Kotlin (OhosVisibleWebViewBridge.registerDispatch)
+REGISTER_TSFN_CALLBACK(WebController, WebControllerCallJs, g_web_controller_tsfn, g_register_web_controller_fn, ohos_web_controller_dispatch,
+    "registerWebControllerCallback: legado_register_web_controller_fn not resolved (KMP 前台 WebView 将降级)")
+
+// napi 包装: webControllerCallback(requestId: number, result: string): void
+// ArkTS → Kotlin 前台 Web 结果/事件回调 (命令响应 requestId>0; 主动页面事件 requestId==0)
+static napi_value WebControllerCallback(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    // args[0]: requestId (number, int64; 0 = 主动页面事件)
+    int64_t request_id = 0;
+    napi_get_value_int64(env, args[0], &request_id);
+
+    // args[1]: resultJson (string: 结果或事件 JSON)
+    size_t str_len = 0;
+    napi_get_value_string_utf8(env, args[1], nullptr, 0, &str_len);
+    char* buf = new char[str_len + 1];
+    napi_get_value_string_utf8(env, args[1], buf, str_len + 1, &str_len);
+
+    if (load_legado_shared() && g_web_controller_callback != nullptr) {
+        g_web_controller_callback(request_id, buf);
+    }
+    delete[] buf;
+
+    napi_value ret;
+    napi_get_undefined(env, &ret);
+    return ret;
+}
+
 // ============ OpenUrl tsfn 接线 (KP8+ 新增, 同 Toast 模式: fire-and-forget dispatch) ============
 // 设计与 Toast 完全一致 (fire-and-forget, 无需 ArkTS → Kotlin 结果回调):
 // - KMP 通过 OhosNativeBridge.openUrl 发 URL 打开请求
@@ -1982,6 +2104,8 @@ androidx_compose_ui_arkui_init(env, exports
         {"registerCacheDir", nullptr, RegisterCacheDir, nullptr, nullptr, nullptr, napi_default, nullptr},
         // 应用版本名注入 (ArkTS → Kotlin 同步推送, 同 FileDir 模式)
         {"registerAppVersion", nullptr, RegisterAppVersion, nullptr, nullptr, nullptr, napi_default, nullptr},
+        // 宿主层崩溃现场落盘 (ArkTS → Kotlin 同步推送, 同 FileDir 模式)
+        {"reportHostException", nullptr, ReportHostException, nullptr, nullptr, nullptr, napi_default, nullptr},
             // 屏幕尺寸注入 (ArkTS → Kotlin 同步推送, 同 FileDir 模式)
             {"registerScreenSize", nullptr, RegisterScreenSize, nullptr, nullptr, nullptr, napi_default, nullptr},
         // legado:// deep link 投递 (ArkTS → Kotlin 同步推送, 返回是否已识别)
@@ -2026,6 +2150,9 @@ androidx_compose_ui_arkui_init(env, exports
             // WebView tsfn 回调注册 + ArkTS → Kotlin 回调 (后台 WebView 抓取, 同 Http/Image 模式)
             {"registerWebViewCallback", nullptr, RegisterWebViewCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
             {"webViewCallback", nullptr, WebViewCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+            // 前台 Web 控制器 tsfn 回调注册 + ArkTS → Kotlin 结果/事件回调 (可见 Web 组件, 单 JSON 协议)
+            {"registerWebControllerCallback", nullptr, RegisterWebControllerCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+            {"webControllerCallback", nullptr, WebControllerCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
             // Markdown 查看器 tsfn 回调注册 + ArkTS → Kotlin 事件回调 (composeResources 直读 Web 渲染, 同 Toast/Media 模式)
             {"registerMarkdownCallback", nullptr, RegisterMarkdownCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
             {"markdownEvent", nullptr, MarkdownEvent, nullptr, nullptr, nullptr, napi_default, nullptr},

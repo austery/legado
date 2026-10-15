@@ -14,7 +14,9 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
+import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
+import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.IntentData
 import io.legado.app.help.book.BookHelpShared
@@ -28,7 +30,9 @@ import io.legado.app.help.book.isRss
 import io.legado.app.help.book.isVideo
 import io.legado.app.help.book.isWebFile
 import io.legado.app.help.book.removeType
+import io.legado.app.help.book.toggleBookshelfCore
 import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.showSourceLogin
 import io.legado.app.help.toast.Toasters
@@ -40,6 +44,10 @@ import io.legado.app.ui.book.info.BookInfoUiActions
 import io.legado.app.ui.book.info.BookInfoUiEvent
 import io.legado.app.ui.book.info.LocalBlurCoverBgSlot
 import io.legado.app.ui.book.info.LocalIntroImageSlot
+import io.legado.app.ui.book.manage.ShelfDeleteConfirmDialog
+import io.legado.app.ui.book.manage.ShelfDeleteRequest
+import io.legado.app.ui.book.manage.confirmShelfDelete
+import io.legado.app.ui.book.manage.startShelfDelete
 import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.root.AppNavigator
@@ -117,7 +125,7 @@ fun BookInfoRoute(
     // 一次性守卫放在 ScreenModel.bootStarted (不放在 remember): 从目录页/
     // 阅读页/编辑页 pop 回本页时本页会再组合一次, 只拿 bookUrl 当 key 会让整段
     // 落地加载每次返回都重跑 (多打一次回源); 且工作体在 scope 里 launch, 不归本 effect 管,
-    // 重跑就是并发双跑 + 竞写 bookSource, rss 书还会二次执行 url 换位把 bookUrl 写成 "data:"
+    // 重跑就是并发双跑 + 竞写 bookSource, RSS 书还会二次执行 url 处理
     LaunchedEffect(book.bookUrl) {
         if (screenModel.bootStarted) return@LaunchedEffect
         screenModel.bootStarted = true
@@ -143,53 +151,75 @@ fun BookInfoRoute(
             // 否则标记落在被丢弃对象上且 UI 会误显示书架书为"未在架"
             val curBook =
                 if (isSearchBook && dbBook?.origin == book.origin) dbBook else book
-            // rss 书 url 换位 (对照 upBook)
-            if (curBook.isRss) {
+            // RSS 书: tocUrl 空时补抓取地址 (详情/目录同一地址); 不改 bookUrl ——
+            // 主键换成常量 "data:" 会让多本 RSS 书挤在同一行
+            if (curBook.isRss && curBook.tocUrl.isEmpty()) {
                 curBook.tocUrl = curBook.bookUrl
-                curBook.bookUrl = "data:"
             }
-            // 换实例 (搜索书并回书架那本) 或 rss 原地换过 url: 都要重新展示一次书 —— ShowBook
+            // 换实例 (搜索书并回书架那本) 才要重新展示一次 —— ShowBook
             // 同时带最新章文案模板 (旧实现在此只 bump tick, 文案停在未套模板的初值)。
             // 未换实例的普通书不展示: 构造时的 initialBook 已是同一份快照, 多余 dispatch 只会
             // 整页重组一次 (旧实现它还顺带把 coverTick+1, 即闪封面的又一跳)
-            if (curBook !== book || curBook.isRss) {
+            if (curBook !== book) {
                 screenModel.dispatch(
                     BookInfoUiEvent.ShowBook(curBook, screenModel.lastedTitleOf(curBook))
                 )
             }
-            // 加载分组名 (对照 Activity upGroup: 空→no_group)
-            val groupName = try {
-                db.bookGroupDao.getGroupNames(curBook.group).joinToString(",")
-            } catch (e: Throwable) {
-                ""
-            }
-            screenModel.dispatch(BookInfoUiEvent.UpdateGroup(groupName.takeIf { it.isNotEmpty() }
-                ?: noGroupLabel))
-            // 字数信息 (对照 Activity upKinds: 字数 + 本地书文件大小, 逗号拼接; 后续刷新由 upShowBook 重算)
+            // 路由快照里已知的阅读进度/最新章先行上屏: 对照原版 upBook 同步置 curBook → showBook →
+            // tvLasted, 最新章文案在回源/查库之前就已写好 (进度为空时保留初值)
             screenModel.dispatch(
-                BookInfoUiEvent.UpdateWordCount(screenModel.wordCountTextOf(curBook))
+                BookInfoUiEvent.UpdateToc(
+                    tocText = curBook.durChapterTitle
+                        ?.takeIf { it.isNotBlank() }
+                        ?: screenModel.state.value.tocText,
+                    lastedTitle = screenModel.lastedTitleOf(curBook),                )
             )
-            // 自动加载书籍信息/目录 (对照 upBook 的 tocUrl 分支)
-            when {
-                curBook.tocUrl.isEmpty() -> screenModel.refresh(
-                    curBook, source, errorLoadTocLabel,
-                    runPreUpdateJs = inShelf, isSearchBook = isSearchBook,
+            // 以下三条链并行推进 (分组名 / 字数 / 自动加载目录): 原来是一条协程里顺序等完
+            // (分组→字数→目录), 目录链常含回源网络请求, 排在最后决定整页何时补齐。
+            // wordCountVersion 必须在任何链开工前记下 —— 下面任一链收尾都会 ShowBook 换代。
+            val wordCountVersion = screenModel.currentBookVersion()
+            launch {
+                // 加载分组名 (对照 Activity upGroup: 空→no_group)
+                val groupName = try {
+                    db.bookGroupDao.getGroupNames(curBook.group).joinToString(",")
+                } catch (e: Throwable) {
+                    ""
+                }
+                screenModel.dispatch(BookInfoUiEvent.UpdateGroup(groupName.takeIf { it.isNotEmpty() }
+                    ?: noGroupLabel))
+            }
+            launch {
+                // 字数信息 (对照 Activity upKinds: 字数 + 本地书文件大小, 逗号拼接; 后续刷新由 upShowBook 重算)
+                screenModel.dispatch(
+                    BookInfoUiEvent.UpdateWordCount(
+                        screenModel.wordCountTextOf(curBook),
+                        wordCountVersion,
+                    )
                 )
+            }
+            launch {
+                // 自动加载书籍信息/目录 (对照 upBook 的 tocUrl 分支)
+                when {
+                    curBook.tocUrl.isEmpty() -> screenModel.refresh(
+                        curBook, source, errorLoadTocLabel,
+                        runPreUpdateJs = inShelf, isSearchBook = isSearchBook,
+                    )
 
-                !inShelf || curBook.totalChapterNum == 0 ->
-                    screenModel.loadToc(curBook, source, errorLoadTocLabel)
-
-                else -> {
-                    val chapters = db.bookChapterDao.getChapterList(curBook.bookUrl)
-                    if (chapters.isEmpty()) {
+                    !inShelf || curBook.totalChapterNum == 0 ->
                         screenModel.loadToc(curBook, source, errorLoadTocLabel)
-                    } else {
-                        screenModel.dispatch(
-                            BookInfoUiEvent.UpdateToc(
-                                tocText = curBook.durChapterTitle.orEmpty(),
-                                lastedTitle = screenModel.lastedTitleOf(curBook),
+
+                    else -> {
+                        val chapters = db.bookChapterDao.getChapterList(curBook.bookUrl)
+                        if (chapters.isEmpty()) {
+                            screenModel.loadToc(curBook, source, errorLoadTocLabel)
+                        } else {
+                            screenModel.dispatch(
+                                BookInfoUiEvent.UpdateToc(
+                                    tocText = curBook.durChapterTitle.orEmpty(),
+                                    lastedTitle = screenModel.lastedTitleOf(curBook),
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -205,6 +235,15 @@ fun BookInfoRoute(
             screenModel.bootStarted = false
             throw e
         }
+    }
+
+    // 下架确认框待决请求 (确认框由本页弹时写入, 用户选完清空); 自带确认框的 Android 端不写入
+    var shelfDeleteRequest by remember { mutableStateOf<ShelfDeleteRequest?>(null) }
+
+    // 书架结果: null=下架成功 (书已删, 返回), true=已上架, false=失败
+    val onShelfResult: (Boolean?) -> Unit = { result ->
+        if (result == null) navigator.pop(RouteResultPayload.Deleted)
+        else screenModel.dispatch(BookInfoUiEvent.UpdateBookshelf(result))
     }
 
     val actions = object : BookInfoUiActions {
@@ -343,8 +382,11 @@ fun BookInfoRoute(
 
         // 评论: Android 恢复原版 BottomSheet 对话框 (全功能交互+提交), 其余平台回退共享列表页
         override fun onOpenCommentDialog() {
-            if (PlatformCapabilityProviders.get().showReviewListDialog(book, null, -1)) return
-            navigator.push(AppRoute.ReviewList(book.toRouteRef()))
+            // 用刷新后的 state.book (与 setSourceVariable/目录入口同口径),
+            // 不用进页时的路由快照 —— 搜索书进页会被换成库里那本
+            val b = state.book ?: book
+            if (PlatformCapabilityProviders.get().showReviewListDialog(b, null, -1)) return
+            navigator.push(AppRoute.ReviewList(b.toRouteRef()))
         }
 
         // 源变量: 委托平台弹窗 (需 BookSource 对象)
@@ -445,19 +487,23 @@ fun BookInfoRoute(
             )
         }
 
-        // 书架: 上架/下架, 委托平台 (含删除确认/webFile 弹窗)
+        // 书架: 上架/下架, 委托平台 (下架按两端分工: 确认框由能力面或本页弹)
         override fun onShelfClick() {
             val b = state.book ?: book
-            PlatformCapabilityProviders.get()
-                .toggleBookshelf(
-                    b, state.inBookshelf,
-                    onComplete = { result ->
-                        if (result == null) navigator.pop(RouteResultPayload.Deleted)
-                        else screenModel.dispatch(BookInfoUiEvent.UpdateBookshelf(result))
-                    },
+            val platform = PlatformCapabilityProviders.get()
+            if (!state.inBookshelf) {
+                platform.toggleBookshelf(
+                    b, inBookshelf = false,
+                    onComplete = onShelfResult,
                     onWaitDialog = { screenModel.upWaitDialog(it) },
                     onAction = { screenModel.postAction(it) },
+                    // 上架时把已装载的目录一并落库 (对照原 addToBookshelf), 否则进阅读页要回源再拉一次
+                    chapters = screenModel.loadedChapterList,
                 )
+                return
+            }
+            // 下架: 确认框与勾选值按端分工 (见 startShelfDelete)
+            shelfDeleteRequest = startShelfDelete(b, onShelfResult)
         }
 
         // 搜索作者: :: 探索直接用内存 bookSource (对照 master search(): IntentData.source =
@@ -549,16 +595,12 @@ fun BookInfoRoute(
                             ?: return@collect
                         val b = screenModel.state.value.book ?: book
                         b.group = groupId
-                        // 在书架: 直接更新; 不在书架且选了非"未分组": 去 notShelf 后入库
-                        // (对照 app 端 addToBookshelf → Book.save)
-                        if (screenModel.state.value.inBookshelf) {
-                            withContext(IoDispatcher) { AppDbProviders.get().bookDao.update(b) }
-                        } else if (groupId > 0) {
+                        // 上架/落库走统一核心 (对照原版 upGroup → viewModel.addToBookshelf):
+                        // 补 order、迁移同名书进度、去 notShelf 后 update/insert、目录入库。
+                        // 上一版在架分支只 update、不在架分支只换 type 位 → 排序与进度不迁移、目录不入库
+                        if (screenModel.state.value.inBookshelf || groupId > 0) {
                             withContext(IoDispatcher) {
-                                b.removeType(BookType.notShelf)
-                                val db = AppDbProviders.get()
-                                if (db.bookDao.has(b.bookUrl)) db.bookDao.update(b)
-                                else db.bookDao.insert(b)
+                                b.toggleBookshelfCore(inBookshelf = false, chapters = screenModel.loadedChapterList)
                             }
                             screenModel.dispatch(BookInfoUiEvent.UpdateBookshelf(true))
                         }
@@ -575,6 +617,25 @@ fun BookInfoRoute(
                             )
                         )
                     }
+            }
+            // "去设置目录"动作消费 (对照原版 observeLiveBus: actionLive == "selectBooksDir" →
+            // localBookTreeSelect.launch → 选中后写 AppConfig.defaultBookTreeUri)。
+            // webFile 导入/下载在"书籍保存位置未设置"时由能力面发出该动作
+            // (SharedPlatformCapabilities 与 AndroidPlatformCapabilities 共四处分支),
+            // 而本页此前只有生产者没有消费者 → 用户点"阅读"只会静默失败。
+            // 复用各端既有的选目录入口 (PlatformCapabilities.pickBookTreeUri, 与
+            // "其它设置 → 书籍保存位置"同一个入口) 与既有偏好键 PreferKey.defaultBookTreeUri,
+            // 不另造第二套选目录/落盘实现; 用户取消 (uri == null) 时不动已有配置, 也不报错。
+            // 选择器由各端能力实现自行调度 (Android 直接拉起 SAF, 其余端在自己的 scope 里),
+            // 本协程在组合主线程上调用, 满足各端的线程要求。
+            launch {
+                val pref = PreferenceProviders.get()
+                screenModel.actionLive.collect { action ->
+                    if (action != "selectBooksDir") return@collect
+                    PlatformCapabilityProviders.get().pickBookTreeUri { uri ->
+                        if (uri != null) pref.putString(PreferKey.defaultBookTreeUri, uri)
+                    }
+                }
             }
             // 对照 Activity observeLiveBus: EventBus.REFRESH_BOOK_INFO → refreshBook
             launch {
@@ -813,6 +874,16 @@ fun BookInfoRoute(
             onDismiss = { showChangeSourceDialog = false },
         )
     }
+
+    // 下架确认框 (对照原版 BookInfoActivity.deleteBook 的 alert; 本地书带"删除源文件"勾选)
+    ShelfDeleteConfirmDialog(
+        request = shelfDeleteRequest,
+        onConfirm = { target, deleteOriginal ->
+            shelfDeleteRequest = null
+            confirmShelfDelete(target, deleteOriginal, onShelfResult)
+        },
+        onDismiss = { shelfDeleteRequest = null },
+    )
 
     // 等待对话框 (对照 app 端 BookInfoActivity.upWaitDialogStatus, webFile 流程加载指示)
     val waitDialogVisible by screenModel.waitDialog.collectAsState()

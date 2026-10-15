@@ -16,19 +16,17 @@ package io.legado.app.ui.book.import.remote
 //   - ic_clear_all   (删除按钮)
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -42,12 +40,10 @@ import androidx.compose.ui.unit.dp
 import io.legado.app.data.entities.Server
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.AppRadioButton
 import io.legado.app.ui.compose.component.AppTextButton
-import io.legado.app.ui.compose.component.DialogTitleBar
-import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import legado.ui.generated.resources.Res
@@ -69,7 +65,7 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * 服务器列表选择对话框 (KMP 共享, app/desktop/iOS 复用)。
  *
- * 对照 app 端 [io.legado.app.ui.book.import.remote.ServersDialog] (BaseComposeDialogFragment):
+ * 对照 app 端 [io.legado.app.ui.book.import.remote.ServersDialog] (原命令式对话框基类(已删除)):
  * - 原版依赖 Fragment + viewModels + AppConfig.remoteServerId + activity Callback,
  *   含 Android 专属 API (Fragment / Context / DialogFragment)。
  * - 桌面/iOS 端无 Fragment 体系, 改为纯 @Composable + [Dialog], 由调用方注入数据与回调。
@@ -119,58 +115,47 @@ fun ServersDialog(
     // 待删除的服务器 (非 null 时弹出二次确认 alert, 与 app 端 deleteServer(server) 弹 alert 对齐)
     var deletingServer by remember { mutableStateOf<Server?>(null) }
 
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = stringResource(Res.string.server_config),
+        titleActions = {
+            IconButton(onClick = onAddServer) {
+                Icon(
+                    painter = painterResource(Res.drawable.ic_add),
+                    contentDescription = stringResource(Res.string.create),
+                    tint = colors.primaryText,
+                )
+            }
+        },
+        bottomBar = {
+            AppTextButton(
+                text = stringResource(Res.string.text_default),
+                onClick = onSelectDefault
+            )
+            Spacer(Modifier.weight(1f))
+            AppTextButton(
+                text = stringResource(Res.string.cancel),
+                color = colors.secondaryText,
+                onClick = onDismiss,
+            )
+            AppTextButton(
+                text = stringResource(Res.string.ok),
+                onClick = { onConfirm(selectServerId) })
+        },
+        contentPadding = PaddingValues(0.dp),
         properties = AppDialogSizes.properties(),
     ) {
-        Surface(
-            modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
+        LazyColumn(
+            modifier = Modifier.heightIn(max = AppDialogSizes.textAreaMaxHeight()),
         ) {
-            Column {
-                DialogTitleBar(
-                    title = stringResource(Res.string.server_config),
-                    onBack = onDismiss,
-                    actions = {
-                        IconButton(onClick = onAddServer) {
-                            Icon(
-                                painter = painterResource(Res.drawable.ic_add),
-                                contentDescription = stringResource(Res.string.create),
-                                tint = colors.primaryText,
-                            )
-                        }
-                    },
+            items(items = servers, key = { it.id }) { item ->
+                ServerItem(
+                    item = item,
+                    selected = item.id == selectServerId,
+                    onSelect = { selectServerId = item.id },
+                    onEdit = { onEditServer(item.id) },
+                    onDelete = { deletingServer = item },
                 )
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = AppDialogSizes.textAreaMaxHeight()),
-                ) {
-                    items(items = servers, key = { it.id }) { item ->
-                        ServerItem(
-                            item = item,
-                            selected = item.id == selectServerId,
-                            onSelect = { selectServerId = item.id },
-                            onEdit = { onEditServer(item.id) },
-                            onDelete = { deletingServer = item },
-                        )
-                    }
-                }
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = DesignTokens.spacingDefault),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AppTextButton(
-                        text = stringResource(Res.string.text_default),
-                        onClick = onSelectDefault
-                    )
-                    Spacer(Modifier.weight(1f))
-                    AppTextButton(text = stringResource(Res.string.cancel), onClick = onDismiss)
-                    AppTextButton(
-                        text = stringResource(Res.string.ok),
-                        onClick = { onConfirm(selectServerId) })
-                }
             }
         }
     }

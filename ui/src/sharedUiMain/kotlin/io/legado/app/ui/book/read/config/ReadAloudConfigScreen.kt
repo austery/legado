@@ -4,11 +4,9 @@ import androidx.compose.runtime.Composable
 import io.legado.app.constant.PreferKey
 import io.legado.app.ui.compose.preference.PreferenceScreen
 import io.legado.app.ui.compose.preference.preference
-import io.legado.app.ui.compose.preference.preferenceCategory
 import io.legado.app.ui.compose.preference.switchPreference
 import io.legado.app.ui.compose.theme.AppTheme
 import legado.ui.generated.resources.Res
-import legado.ui.generated.resources.aloud_config
 import legado.ui.generated.resources.pause_read_aloud_while_phone_calls_summary
 import legado.ui.generated.resources.pause_read_aloud_while_phone_calls_title
 import legado.ui.generated.resources.pref_media_button_per_next
@@ -22,8 +20,6 @@ import legado.ui.generated.resources.stream_read_aloud_audio
 import legado.ui.generated.resources.stream_read_aloud_audio_summary
 import legado.ui.generated.resources.sys_tts_config
 import legado.ui.generated.resources.sys_tts_config_summary
-import legado.ui.generated.resources.system_media_control_compatibility_change
-import legado.ui.generated.resources.system_media_control_compatibility_change_summary
 import org.jetbrains.compose.resources.stringResource
 
 /**
@@ -36,8 +32,8 @@ import org.jetbrains.compose.resources.stringResource
  * - `stringResource(R.string.xxx)` → `stringResource(Res.string.xxx)` (key-based, 跨平台)
  * - PreferenceScreen/preference/preferenceCategory/switchPreference 走 shared/sharedUiMain 的
  *   io.legado.app.ui.compose.preference 包, 内部通过 PreferenceProviders 单例读写 prefs
- * - 注意: 原 "systemMediaControlCompatibilityChange"/"mediaButtonPerNext" 为硬编码 key
- *   (不在 PreferKey 中), 保留原字面量字符串
+ * - 注意: 原 "mediaButtonPerNext" 为硬编码 key (不在 PreferKey 中), 保留原字面量字符串
+ * - "朗读设置"分类标题已提升为对话框标题栏 (2026-10-11 用户拍板), 本 Screen 只留条目
  */
 @Composable
 fun ReadAloudConfigScreen(
@@ -46,16 +42,11 @@ fun ReadAloudConfigScreen(
     onTtsEngine: () -> Unit,
     onSysTtsConfig: () -> Unit,
 ) {
-    val titleAloudConfig = stringResource(Res.string.aloud_config)
     val titlePausePhoneCalls = stringResource(Res.string.pause_read_aloud_while_phone_calls_title)
     val summaryPausePhoneCalls =
         stringResource(Res.string.pause_read_aloud_while_phone_calls_summary)
     val titleWakeLock = stringResource(Res.string.read_aloud_wake_lock)
     val summaryWakeLock = stringResource(Res.string.read_aloud_wake_lock_summary)
-    val titleMediaControlCompat =
-        stringResource(Res.string.system_media_control_compatibility_change)
-    val summaryMediaControlCompat =
-        stringResource(Res.string.system_media_control_compatibility_change_summary)
     val titleMediaButtonPerNext = stringResource(Res.string.pref_media_button_per_next)
     val summaryMediaButtonPerNext = stringResource(Res.string.pref_media_button_per_next_summary)
     val titleReadAloudByPage = stringResource(Res.string.read_aloud_by_page)
@@ -68,7 +59,6 @@ fun ReadAloudConfigScreen(
 
     AppTheme {
         PreferenceScreen {
-            preferenceCategory(titleAloudConfig)
             // "忽略音频焦点"不在此重复: 原版 pref_config_aloud.xml 与 pref_config_other.xml
             // 各挂一份同 key 开关, 2026-09-04 用户拍板只留其它设置那一处。
             // pauseReadAloudWhilePhoneCalls 仍按它的值联动 enabled (值由其它设置页改)
@@ -83,12 +73,6 @@ fun ReadAloudConfigScreen(
                 prefKey = PreferKey.readAloudWakeLock,
                 title = titleWakeLock,
                 summary = summaryWakeLock,
-                defaultValue = false,
-            )
-            switchPreference(
-                prefKey = "systemMediaControlCompatibilityChange",
-                title = titleMediaControlCompat,
-                summary = summaryMediaControlCompat,
                 defaultValue = false,
             )
             switchPreference(

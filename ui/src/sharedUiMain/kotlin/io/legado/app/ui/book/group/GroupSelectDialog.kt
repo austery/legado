@@ -1,7 +1,7 @@
 package io.legado.app.ui.book.group
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,9 +9,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -20,15 +20,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.BookGroup
+import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.ui.compose.component.AppCheckbox
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.AppTextButton
-import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.RuleManageScaffold
-import io.legado.app.ui.compose.component.appDialogSize
-import io.legado.app.ui.compose.reorderable.RuleItemScope
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import legado.ui.generated.resources.Res
@@ -38,8 +38,11 @@ import legado.ui.generated.resources.group_add
 import legado.ui.generated.resources.group_select
 import legado.ui.generated.resources.ic_add
 import legado.ui.generated.resources.ok
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
+import sh.calvin.reorderable.ReorderableCollectionItemScope
 
 /**
  * 分组选择对话框。
@@ -48,7 +51,6 @@ import org.jetbrains.compose.resources.stringResource
  */
 @Composable
 fun GroupSelectDialog(
-    groups: List<BookGroup>,
     initialGroupId: Long,
     onConfirm: (Long) -> Unit,
     onDismiss: () -> Unit,
@@ -58,93 +60,81 @@ fun GroupSelectDialog(
 ) {
     val colors = AppTheme.colors
     var groupId by remember(initialGroupId) { mutableLongStateOf(initialGroupId) }
+    // 分组数据由对话框自取 flowSelect (仅 groupId >= 0 的用户分组): 管理页的 flowAll 含
+    // "全部/本地/未分组/更新失败" 等负 id 行, 参与位掩码勾选会污染 groupId
+    var groups by remember { mutableStateOf<List<BookGroup>>(emptyList()) }
     var displayGroups by remember(groups) { mutableStateOf(groups) }
 
-    AppDialog(
+    LaunchedEffect(Unit) {
+        AppDbProviders.get().bookGroupDao.flowSelect().conflate().flowOn(IoDispatcher).collect {
+            groups = it
+        }
+    }
+
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = stringResource(Res.string.group_select),
+        titleActions = {
+            IconButton(onClick = onAddGroup) {
+                Icon(
+                    painter = painterResource(Res.drawable.ic_add),
+                    contentDescription = stringResource(Res.string.group_add),
+                    tint = colors.primaryText,
+                )
+            }
+        },
+        bottomBar = {
+            Spacer(Modifier.weight(1f))
+            AppTextButton(
+                text = stringResource(Res.string.cancel),
+                color = colors.secondaryText,
+                onClick = onDismiss,
+            )
+            AppTextButton(text = stringResource(Res.string.ok)) {
+                onConfirm(groupId)
+            }
+        },
+        contentPadding = PaddingValues(0.dp),
         properties = AppDialogSizes.properties(),
     ) {
-        // 内容不能套 fillMaxSize: 对话框 layer 的 boundsInWindow 按内容实测尺寸算,
-        // 撑满窗口会让整窗都算"框内", 点外部永远触发不了 dismiss。居中由 RootMeasurePolicy 负责。
-        Surface(
-            modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
-        ) {
-            Column {
-                RuleManageScaffold(
-                    items = displayGroups,
-                    itemKey = { it.groupId },
-                    fillMaxHeight = false,
-                    // 列表高度自适应内容: 分组少时对话框随内容收缩, 多时由 appDialogSize 的
-                    // heightIn(max=0.7×锚点高) 封顶且列表可滚动 (复刻原版 AutoShrinkLinearLayout 语义)
-                    wrapContentHeight = true,
-                    onMove = { from, to ->
-                        displayGroups = displayGroups.toMutableList().apply {
-                            add(to, removeAt(from))
-                        }
-                    },
-                    titleBar = {
-                        DialogTitleBar(
-                            title = stringResource(Res.string.group_select),
-                            onBack = onDismiss,
-                            actions = {
-                                IconButton(onClick = onAddGroup) {
-                                    Icon(
-                                        painter = painterResource(Res.drawable.ic_add),
-                                        contentDescription = stringResource(Res.string.group_add),
-                                        tint = colors.primaryText,
-                                    )
-                                }
-                            },
-                        )
-                    },
-                    actionBar = {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = DesignTokens.spacingDefault),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Spacer(Modifier.weight(1f))
-                            AppTextButton(
-                                text = stringResource(Res.string.cancel),
-                                color = colors.secondaryText,
-                                onClick = onDismiss,
-                            )
-                            AppTextButton(text = stringResource(Res.string.ok)) {
-                                onConfirm(groupId)
-                            }
-                        }
-                    },
-                ) { item ->
-                    GroupItem(
-                        item = item,
-                        checked = (groupId and item.groupId) > 0,
-                        onCheckedChange = { checked ->
-                            groupId = if (checked) {
-                                groupId or item.groupId
-                            } else {
-                                groupId and item.groupId.inv()
-                            }
-                        },
-                        onEdit = { onEditGroup(item) },
-                        onPersistOrder = {
-                            val ordered = displayGroups.mapIndexed { index, group ->
-                                group.copy(order = index + 1)
-                            }
-                            displayGroups = ordered
-                            onPersistOrder(ordered)
-                        },
-                    )
+        RuleManageScaffold(
+            items = displayGroups,
+            itemKey = { it.groupId },
+            fillMaxHeight = false,
+            // 列表高度自适应内容: 分组少时对话框随内容收缩, 多时由 appDialogSize 的
+            // heightIn(max=0.7×锚点高) 封顶且列表可滚动 (复刻原版 AutoShrinkLinearLayout 语义)
+            wrapContentHeight = true,
+            onMove = { from, to ->
+                displayGroups = displayGroups.toMutableList().apply {
+                    add(to, removeAt(from))
                 }
-            }
+            },
+        ) { item ->
+            GroupItem(
+                item = item,
+                checked = (groupId and item.groupId) > 0,
+                onCheckedChange = { checked ->
+                    groupId = if (checked) {
+                        groupId or item.groupId
+                    } else {
+                        groupId and item.groupId.inv()
+                    }
+                },
+                onEdit = { onEditGroup(item) },
+                onPersistOrder = {
+                    val ordered = displayGroups.mapIndexed { index, group ->
+                        group.copy(order = index + 1)
+                    }
+                    displayGroups = ordered
+                    onPersistOrder(ordered)
+                },
+            )
         }
     }
 }
 
 @Composable
-private fun RuleItemScope.GroupItem(
+private fun ReorderableCollectionItemScope.GroupItem(
     item: BookGroup,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,

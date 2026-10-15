@@ -125,6 +125,9 @@ class SearchModel(
     /** 每源下一页页码 (重搜后该源回到第 2 页; 新搜索清空) */
     private val nextPages = newConcurrentMap<String, Int>()
 
+    /** Continuation URLs belong to accepted pages in the current source generation. */
+    private val nextPageUrls = newConcurrentMap<String, String>()
+
     /** 本轮精准开关 (startSearch 时快照, 单源重搜沿用同一值) */
     private var precision = false
 
@@ -159,6 +162,7 @@ class SearchModel(
             failedSources.clear()
             sourceHasMore.clear()
             nextPages.clear()
+            nextPageUrls.clear()
             sourceLocks.clear()
             workingState.value = true
             val version = sessionVersion.value
@@ -249,6 +253,7 @@ class SearchModel(
                         pageExecutor(source, pageNumber) {
                             WebBook.getBookListAwait(
                                 source, searchKey, pageNumber,
+                                nextPageUrl = nextPageUrls[sourceUrl],
                                 filter = { name, author ->
                                     !precision || name.contains(searchKey) || author.contains(searchKey)
                                 },
@@ -304,6 +309,9 @@ class SearchModel(
             if (!isCurrent(url, result.generation, result.sessionVersion)) return
             currentCoroutineContext().ensureActive()
             nextPages[url] = result.pageNumber + 1
+            val nextPageUrl = result.page.nextPageUrl
+            if (nextPageUrl.isNullOrBlank()) nextPageUrls.remove(url)
+            else nextPageUrls[url] = nextPageUrl
             failedSources.remove(url)
             sourceHasMore[url] = result.page.hasNextPage
             if (result.page.hasNextPage) exhaustedSources.remove(url) else exhaustedSources.add(url)
@@ -349,6 +357,7 @@ class SearchModel(
                         searchGroupBooks.remove(sourceUrl)
                         searchGroupGenerations.remove(sourceUrl)
                         nextPages[sourceUrl] = 1
+                        nextPageUrls.remove(sourceUrl)
                     }
                     exhaustedSources.remove(sourceUrl)
                     failedSources.remove(sourceUrl)

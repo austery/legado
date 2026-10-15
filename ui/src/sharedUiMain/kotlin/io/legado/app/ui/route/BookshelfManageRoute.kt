@@ -1,12 +1,6 @@
 package io.legado.app.ui.route
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.selection.toggleable
-import androidx.compose.material.Text
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -17,7 +11,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
@@ -27,9 +20,8 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.getRealBookSort
 import io.legado.app.help.book.BookHelpShared
-import io.legado.app.help.book.BookStorageProviders
-import io.legado.app.help.book.LocalBookLocators
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.removeType
 import io.legado.app.help.config.AppConfigProviders
@@ -50,15 +42,11 @@ import io.legado.app.ui.book.manage.BookshelfManageScreenModel
 import io.legado.app.ui.book.manage.BookshelfManageState
 import io.legado.app.ui.book.manage.BookshelfManageUiEvent
 import io.legado.app.ui.book.manage.BookshelfManageViewModelShared
+import io.legado.app.ui.book.manage.DeleteConfirmDialog
 import io.legado.app.ui.book.manage.SourcePickerDialog
 import io.legado.app.ui.bookshelf.LocalBookCoverSlot
-import io.legado.app.ui.compose.component.AlertButton
-import io.legado.app.ui.compose.component.AppAlertDialog
-import io.legado.app.ui.compose.component.AppCheckbox
 import io.legado.app.ui.compose.component.SelectAction
 import io.legado.app.ui.compose.component.dragSelectable
-import io.legado.app.ui.compose.theme.AppTheme
-import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.PlatformCapabilityProviders
@@ -75,24 +63,19 @@ import kotlinx.coroutines.launch
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.add_to_group
 import legado.ui.generated.resources.allow_update
-import legado.ui.generated.resources.cancel
 import legado.ui.generated.resources.change_source_batch
 import legado.ui.generated.resources.check_selected_interval
 import legado.ui.generated.resources.clear_cache
 import legado.ui.generated.resources.clear_cache_success
 import legado.ui.generated.resources.delete
-import legado.ui.generated.resources.delete_book_file
 import legado.ui.generated.resources.disable_update
 import legado.ui.generated.resources.download_count
-import legado.ui.generated.resources.draw
 import legado.ui.generated.resources.export_all
 import legado.ui.generated.resources.export_bookshelf
 import legado.ui.generated.resources.loading
 import legado.ui.generated.resources.local_book
 import legado.ui.generated.resources.no_group
-import legado.ui.generated.resources.ok
 import legado.ui.generated.resources.screen
-import legado.ui.generated.resources.sure_del
 import org.jetbrains.compose.resources.stringResource
 
 /**
@@ -123,13 +106,14 @@ fun BookshelfManageRoute(
         BookshelfManageScreenModel(
             screenLabel = screenLabel,
             noGroupLabel = noGroupLabel,
-            // 对照 app 端 AppConfig.getBookSortByGroupId: 分组自定义排序 (bookSort>=0) 优先,
+            // 对照原版 AppConfig.getBookSortByGroupId: 分组自定义排序 (bookSort>=0) 优先,
             // 否则回退全局 bookshelfSort (3=手动排序可拖拽, canDrag 由 ScreenModel 解析)
             resolveBookSort = { groupId ->
-                val groupSort = runCatching {
-                    AppDbProviders.get().bookGroupDao.getByID(groupId)?.bookSort ?: -1
-                }.getOrDefault(-1)
-                if (groupSort >= 0) groupSort else AppConfigProviders.get().bookshelfSort
+                val group = runCatching {
+                    AppDbProviders.get().bookGroupDao.getByID(groupId)
+                }.getOrNull()
+                group?.getRealBookSort(AppConfigProviders.get().bookshelfSort)
+                    ?: AppConfigProviders.get().bookshelfSort
             },
             // 缓存文件扫描委托 shared VM (对照 app 端 viewModel.loadCacheFiles)
             loadCacheFiles = { books -> manageVm.loadCacheFiles(books) },
@@ -240,7 +224,7 @@ fun BookshelfManageRoute(
         }
     }
 
-    val listState = rememberLazyListState()
+    val listState = rememberLazyGridState()
 
     // 任务5: 分组名预计算 Map<groupId, String> (过滤 groupId>0, 对照原 groupName 语义),
     // 仅 groups 变化时重建; item 内 O(1) 直查/按位掩码过滤, 不再每 item 每次重组 O(分组数) 计算
@@ -409,7 +393,6 @@ fun BookshelfManageRoute(
     groupSelectTarget?.let { target ->
         val groupVm = remember(scope) { GroupViewModelShared(scope) }
         GroupSelectDialog(
-            groups = uiState.groups,
             initialGroupId = selectingGroupId,
             onConfirm = { groupId ->
                 handleGroupSelect(target, groupId, screenModel, scope)
@@ -454,7 +437,7 @@ fun BookshelfManageRoute(
             onConfirm = { deleteOriginal ->
                 // 对照 app alertDelSelection / deleteBook: 持久化 deleteBookOriginal 偏好
                 platform.setDeleteBookOriginal(deleteOriginal)
-                handleDelete(target, deleteOriginal, screenModel, scope)
+                handleDelete(target, deleteOriginal, manageVm, screenModel)
                 deleteTarget = null
             },
             onDismiss = { deleteTarget = null },
@@ -715,30 +698,15 @@ private fun handleGroupSelect(
 private fun handleDelete(
     target: DeleteTarget,
     deleteOriginal: Boolean,
+    manageVm: BookshelfManageViewModelShared,
     screenModel: BookshelfManageScreenModel,
-    scope: kotlinx.coroutines.CoroutineScope,
 ) {
     val books = when (target) {
         is DeleteTarget.Single -> listOf(target.book)
         DeleteTarget.Selection -> screenModel.selection()
     }
     if (books.isEmpty()) return
-    scope.launch(IoDispatcher) {
-        AppDbProviders.get().bookDao.delete(*books.toTypedArray())
-        // 对照 shared VM deleteBook / FileBook.deleteBook: 本地书始终清缓存+删封面,
-        // deleteOriginal 控制是否额外删源文件
-        books.filter { it.isLocal }.forEach { book ->
-            if (deleteOriginal) {
-                // LocalBookLocators.deleteBook 委托 FileBook.deleteBook(book, true):
-                // 清缓存 + 删封面 + 删源文件
-                LocalBookLocators.get().deleteBook(book)
-            } else {
-                // 对照 FileBook.deleteBook(book, false): 清缓存 + 删封面, 保留源文件
-                // (LocalBookLocators.deleteBook 硬编码 deleteOriginal=true, 不能用于此分支)
-                BookStorageProviders.get().clearCache(book)
-            }
-        }
-    }
+    manageVm.deleteBook(books, deleteOriginal)
 }
 
 // ---- 对话框状态类型 ----
@@ -766,49 +734,4 @@ private sealed class DeleteTarget {
             is Single -> book.isLocal
             Selection -> true
         }
-}
-
-// ---- 对话框 Composable ----
-
-/** 删除确认对话框 (对照 app 端 alert + DeleteFileCheckbox) */
-@Composable
-private fun DeleteConfirmDialog(
-    showCheckbox: Boolean,
-    initialDeleteOriginal: Boolean,
-    onConfirm: (Boolean) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    // 对照 app: 初始值取 LocalConfig.deleteBookOriginal
-    val deleteFile = remember { mutableStateOf(initialDeleteOriginal) }
-    AppAlertDialog(
-        onDismissRequest = onDismiss,
-        title = stringResource(Res.string.draw),
-        message = stringResource(Res.string.sure_del),
-        okButton = AlertButton(stringResource(Res.string.ok)) {
-            onConfirm(deleteFile.value)
-        },
-        cancelButton = AlertButton(stringResource(Res.string.cancel)) { onDismiss() },
-        content = if (showCheckbox) {
-            {
-                // "删除源文件"复选框 (对照 app 端 DeleteFileCheckbox)
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .toggleable(
-                            value = deleteFile.value,
-                            onValueChange = { deleteFile.value = it },
-                        )
-                        .padding(horizontal = DesignTokens.spacingDefault, vertical = DesignTokens.spacingDefault),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(DesignTokens.spacingMd),
-                ) {
-                    AppCheckbox(checked = deleteFile.value, onCheckedChange = null)
-                    Text(
-                        text = stringResource(Res.string.delete_book_file),
-                        color = AppTheme.colors.primaryText,
-                    )
-                }
-            }
-        } else null,
-    )
 }

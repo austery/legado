@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.legado.app.ui.compose.component.AppCheckbox
+import io.legado.app.ui.compose.component.AppDialogBar
 import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.FastScrollLazyColumn
@@ -33,6 +34,9 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * association 导入弹窗共享模板：标题栏(+菜单槽) + 加载/错误态 + 列表 + 底部(全选/取消/确定)。
  * 各 Import*Dialog 数据结构不同(allSources/allRules)，故列表项 label/state 与勾选状态回调由调用方提供。
+ *
+ * 底栏走 [AppDialogBar] (只排布不加内边距), 四周 8dp 由本骨架在行外给 (与
+ * [io.legado.app.ui.compose.component.AppDialogScaffold] 的底栏同口径)。
  *
  * 下沉 shared/sharedUiMain 后:
  * - `stringResource(R.string.xxx)` → `stringResource(Res.string.xxx)` (key-based, 跨平台)
@@ -80,7 +84,7 @@ fun ImportListScaffold(
                     modifier = Modifier.fillMaxWidth(),
                     // 内容自适应高度: 项少随内容收缩, 超出父容器约束封顶滚动
                     // (对照 master AutoShrinkLinearLayout 的 WRAP_CONTENT + maxHeight 语义;
-                    // 默认 fillMaxSize 会把对话框恒撑到 0.7 屏高, 与条目数无关)
+                    // 默认 fillMaxSize 会把对话框恒撑到 0.8 屏高, 与条目数无关)
                     wrapContentHeight = true,
                 ) {
                     itemsIndexed((0 until itemCount).toList()) { _, index ->
@@ -100,31 +104,27 @@ fun ImportListScaffold(
                         .align(Alignment.Center)
                         .size(36.dp),
                     color = colors.accent,
-                    strokeWidth = 2.dp,
                 )
             }
         }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = DesignTokens.spacingDefault),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 原 app 端用 stringResource(tpl, selectCount, itemCount) 走 Formatter 填充 %1$d/%2$d,
-            // 下沉后用 rememberString(tpl, selectCount, itemCount) 对齐行为
-            val tpl = if (isSelectAll) "select_cancel_count" else "select_all_count"
-            AppTextButton(
-                text = rememberString(tpl, selectCount, itemCount),
-                color = colors.secondaryText,
-                onClick = onToggleAll,
-            )
-            Spacer(Modifier.weight(1f))
-            AppTextButton(
-                text = stringResource(Res.string.cancel),
-                color = colors.secondaryText,
-                onClick = onCancel,
-            )
-            AppTextButton(text = stringResource(Res.string.ok), onClick = onOk)
+        Box(Modifier.padding(DesignTokens.spacingDefault)) {
+            AppDialogBar {
+                // 原 app 端用 stringResource(tpl, selectCount, itemCount) 走 Formatter 填充 %1$d/%2$d,
+                // 下沉后用 rememberString(tpl, selectCount, itemCount) 对齐行为
+                val tpl = if (isSelectAll) "select_cancel_count" else "select_all_count"
+                AppTextButton(
+                    text = rememberString(tpl, selectCount, itemCount),
+                    color = colors.secondaryText,
+                    onClick = onToggleAll,
+                )
+                Spacer(Modifier.weight(1f))
+                AppTextButton(
+                    text = stringResource(Res.string.cancel),
+                    color = colors.secondaryText,
+                    onClick = onCancel,
+                )
+                AppTextButton(text = stringResource(Res.string.ok), onClick = onOk)
+            }
         }
     }
 }
@@ -142,8 +142,9 @@ private fun ImportListItem(
         Modifier
             .fillMaxWidth()
             .clickable { onCheckedChange(!checked) }
-            // 对齐 item_source_import.xml 根容器 android:padding=8dp(四周)
-            .padding(horizontal = DesignTokens.spacingDefault, vertical = DesignTokens.spacingDefault),
+            // 垂直 padding 去掉: 行高由 Checkbox 48dp 交互区决定, 不叠留白
+            // (书源列表/分组选择行同款密度, 原版该布局为 40dp 触摸区 + 8×2 padding ≈ 56dp)
+            .padding(horizontal = DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AppCheckbox(checked = checked, onCheckedChange = onCheckedChange)

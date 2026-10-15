@@ -3,7 +3,7 @@ package io.legado.app.ui.config
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.Icon
-import androidx.compose.material.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,6 +32,7 @@ import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.image.BookImageLoaders
 import io.legado.app.help.toast.Toasters
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.model.BookCoverShared
 import io.legado.app.model.BookCoverShared.CoverRatio
 import io.legado.app.model.BookCoverShared.DefaultCoverEntry
@@ -42,12 +42,10 @@ import io.legado.app.model.coverOriginalDir
 import io.legado.app.model.defaultCoverDisplayPath
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.DefaultCoverNineImage
-import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.NinePatchImageOrImage
-import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.component.rememberResponsiveColumns
 import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.theme.AppTheme
@@ -81,6 +79,8 @@ import org.jetbrains.compose.resources.stringResource
  * 本对话框把该管理 UI 下沉 shared 供四端复用 (四端均经
  * [io.legado.app.ui.root.PlatformCapabilities.showDefaultCoverGallery] Overlay 弹出;
  * 原 app 端 DefaultCoverGalleryDialog Fragment 已随封面统一删除):
+ *
+ * 外壳走 [AppDialogScaffold] (全高): 标准顶栏 (标题 + 昼夜副标题) + 图集网格正文 + 无底栏。
  *
  * - 列表: [BookCoverShared.listDefaultCovers] 读 prefs (PreferKey.defaultCover / defaultCoverDark)
  * - 瓦片: 按 [io.legado.app.model.defaultCoverDisplayPath] 经 [BookImageLoaders] 加载烘焙图
@@ -117,57 +117,49 @@ fun DefaultCoverGalleryDialogHost(
     var pendingDelete by remember { mutableStateOf<DefaultCoverEntry?>(null) }
     var adding by remember { mutableStateOf(false) }
 
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = stringResource(Res.string.default_cover),
+        subtitle = stringResource(if (isNight) Res.string.night else Res.string.day),
         properties = AppDialogSizes.properties(),
+        contentPadding = PaddingValues(0.dp),
+        // 原 appDialogSize(fullHeight = true): 高度锁定 0.8 屏高
+        fullHeight = true,
     ) {
         AppTheme {
-            Surface(
-                shape = DesignTokens.dialogShape,
-                color = AppTheme.colors.fillet,
-                modifier = Modifier.appDialogSize(fullHeight = true),
+            LazyVerticalGrid(
+                columns = rememberResponsiveColumns(3),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(top = DesignTokens.spacingDefault),
             ) {
-                Column(Modifier.fillMaxSize()) {
-                    DialogTitleBar(
-                        title = stringResource(Res.string.default_cover),
-                        subtitle = stringResource(if (isNight) Res.string.night else Res.string.day),
-                        onBack = onDismiss,
-                    )
-                    LazyVerticalGrid(
-                        columns = rememberResponsiveColumns(3),
-                        modifier = Modifier
+                items(entries, key = { it.id }) { entry ->
+                    DefaultCoverTile(entry = entry) { pendingDelete = entry }
+                }
+                item(key = "__add__") {
+                    // + 按钮: 平台图片选择器 → 烘焙落盘 → 写 prefs (对照原版 onAddClick)
+                    Box(
+                        Modifier
                             .fillMaxWidth()
-                            .weight(1f)
-                            .padding(top = DesignTokens.spacingDefault),
+                            .padding(DesignTokens.spacingDefault)
+                            .aspectRatio(3f / 4f)
+                            .clip(DesignTokens.shapeDefault)
+                            .clickable(enabled = !adding) {
+                                adding = true
+                                scope.launch {
+                                    addDefaultCoverFromPicker(prefKey)
+                                    adding = false
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        items(entries, key = { it.id }) { entry ->
-                            DefaultCoverTile(entry = entry) { pendingDelete = entry }
-                        }
-                        item(key = "__add__") {
-                            // + 按钮: 平台图片选择器 → 烘焙落盘 → 写 prefs (对照原版 onAddClick)
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(DesignTokens.spacingDefault)
-                                    .aspectRatio(3f / 4f)
-                                    .clip(DesignTokens.shapeDefault)
-                                    .clickable(enabled = !adding) {
-                                        adding = true
-                                        scope.launch {
-                                            addDefaultCoverFromPicker(prefKey)
-                                            adding = false
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    painter = rememberPainter("ic_add"),
-                                    contentDescription = stringResource(Res.string.add),
-                                    tint = AppTheme.colors.primaryText,
-                                    modifier = Modifier.size(48.dp),
-                                )
-                            }
-                        }
+                        Icon(
+                            painter = rememberPainter("ic_add"),
+                            contentDescription = stringResource(Res.string.add),
+                            tint = AppTheme.colors.primaryText,
+                            modifier = Modifier.size(48.dp),
+                        )
                     }
                 }
             }
@@ -273,18 +265,21 @@ private suspend fun addDefaultCoverFromPicker(prefKey: String) {
     withContext(IoDispatcher) {
         runCatching {
             // 先烘焙 (失败中止, 不留孤儿原图/entry), 成功后再落图集原图
-            if (entry.ninePatch) {
-                val nineDest = FileUtilsCommon.getPath(coverOriginalDir(), "${entry.id}.9.png")
-                if (!FileUtilsCommon.exist(nineDest)) FileUtilsCommon.writeBytes(nineDest, bytes)
+            val dest = if (entry.ninePatch) {
+                FileUtilsCommon.getPath(coverOriginalDir(), "${entry.id}.9.png")
             } else {
                 if (!bakeCoverVariantsToCache(bytes, entry.id)) {
                     error("bake cover failed")
                 }
-                val dest = FileUtilsCommon.getPath(
+                FileUtilsCommon.getPath(
                     coverOriginalDir(),
                     "${entry.id}.${normalizeImageSuffix(path.substringAfterLast('.'))}"
                 )
-                if (!FileUtilsCommon.exist(dest)) FileUtilsCommon.writeBytes(dest, bytes)
+            }
+            // 已存在即复用 (同字节数=同内容); 落盘整份归位: 半截文件会被上面的存在性判定
+            // 当成有效封面, 之后就再也不会重新生成
+            if (!FileUtilsCommon.exist(dest) && !writeBytesAtomically(dest, bytes)) {
+                error("封面写入图集失败: $dest")
             }
         }
     }.onFailure {

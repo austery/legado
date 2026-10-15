@@ -69,8 +69,11 @@ class EpubParserTest {
             val book = parse(
                 manifest = """
                     <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
-                    <item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml" properties="cover-image"/>
+                    <item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>
+                    <item id="cover-image" href="Images/cover.jpg" media-type="image/jpeg"/>
                 """.trimIndent(),
+                version = "2.0",
+                guide = """<guide><reference type="cover" href="Text/cover.xhtml"/></guide>""",
                 files = mapOf(
                     "OEBPS/Text/cover.xhtml" to """<html><body>$image</body></html>""",
                     "OEBPS/Images/cover.jpg" to "jpg",
@@ -299,7 +302,14 @@ class EpubParserTest {
         val srcPaths = mutableListOf<String>()
         // 按顶层目录名分组: 每组作为一次 zipFiles 的源目录 (entry 前缀即该目录名)
         entries.entries.groupBy { it.key.substringBefore('/', "") }.forEach { (top, items) ->
-            if (top.isEmpty()) return@forEach
+            if (top.isEmpty()) {
+                items.forEach { (path, content) ->
+                    val target = root / path
+                    FileSystem.SYSTEM.write(target) { writeUtf8(content) }
+                    srcPaths += target.toString()
+                }
+                return@forEach
+            }
             val topDir = root / top
             FileSystem.SYSTEM.createDirectories(topDir)
             items.forEach { (path, content) ->

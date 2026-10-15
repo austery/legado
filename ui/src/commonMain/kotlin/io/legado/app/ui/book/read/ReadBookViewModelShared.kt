@@ -1,7 +1,6 @@
 package io.legado.app.ui.book.read
 
 import io.legado.app.constant.AppLog
-import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
@@ -10,18 +9,19 @@ import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.ReplaceRule
+import io.legado.app.exception.InvalidBooksDirException
 import io.legado.app.help.AppWebDavShared
 import io.legado.app.help.IntentData
 import io.legado.app.help.book.BookChapterLoader
+import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.BookStorageProviders
 import io.legado.app.help.book.ContentProcessorProviders
 import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.compose.platform.syncGetString
-import io.legado.app.help.book.addType
+import io.legado.app.help.book.delBookCore
 import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isLocal
-import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.toggleBookshelfCore
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
@@ -67,6 +67,7 @@ import io.legado.app.ui.book.read.page.provider.SimpleTextMeasurer
 import io.legado.app.ui.book.read.page.provider.TextMeasurerProviders
 import io.legado.app.ui.book.searchContent.SearchResult
 import io.legado.app.ui.root.PlatformCapabilityProviders
+import io.legado.app.ui.root.ensureBookSaveDirSelected
 import io.legado.app.ui.root.screenModelScope
 import io.legado.app.utils.isSecurityException
 import kotlinx.atomicfu.locks.SynchronizedObject
@@ -896,22 +897,33 @@ class ReadBookViewModelShared(
      * 失败时置消息页并把权限类异常上报为权限拒绝事件 (宿主据此弹选目录对话框)。
      * 内部是整书/解压级 IO (native 端接口 readBytes, 并可能解压或同步 WebDAV 下载),
      * 故由装载任务在 IO 线程上调用 (对照原版 initBook 在 `execute` 的 IO 协程内检查)。
+     *
+     * 保存位置未设置导致 WebDAV 下载落不了盘时, 先拉起既有"书籍保存位置"选择器
+     * (与"其它设置 → 书籍保存位置"同一入口、同一偏好键), 选定后重试一次 —— 下载落盘
+     * 即继续打开; 用户取消则按打开失败处理。
      */
-    private fun checkLocalBookFileExist(book: Book): Boolean {
-        return try {
-            FileBookProviders.get().getBookInputStream(book).close()
-            true
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            // 失败归属校验: 检查是整书级 IO, 期间切书/关书后旧书的失败不得污染当前阅读状态
-            if (readBook.book.value?.bookUrl == book.bookUrl) {
-                readBook.upMsg("打开本地书籍出错: ${e.message}")
-                if (e.isSecurityException() || e is FileNotFoundException) {
-                    postPermissionDenial(0, book)
+    private suspend fun checkLocalBookFileExist(book: Book): Boolean {
+        var ensuredSaveDir = false
+        while (true) {
+            try {
+                FileBookProviders.get().getBookInputStream(book).close()
+                return true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (e is InvalidBooksDirException && !ensuredSaveDir) {
+                    ensuredSaveDir = true
+                    if (ensureBookSaveDirSelected()) continue
                 }
+                // 失败归属校验: 检查是整书级 IO, 期间切书/关书后旧书的失败不得污染当前阅读状态
+                if (readBook.book.value?.bookUrl == book.bookUrl) {
+                    readBook.upMsg("打开本地书籍出错: ${e.message}")
+                    if (e.isSecurityException() || e is FileNotFoundException) {
+                        postPermissionDenial(0, book)
+                    }
+                }
+                return false
             }
-            false
         }
     }
 
@@ -1025,6 +1037,8 @@ class ReadBookViewModelShared(
                 AppDbProviders.get().bookSourceDao.getBookSource(book.origin)
             )
         }
+        // 书籍详情补全与来源对账归装载入口 ([BookChapterLoader.upBook]); 这里只负责目录装载,
+        // 因为手动"更新目录/权限失效找回"等路径不经装载入口。
         // 库里查目录（在架书路径；未入架书目录不落库，查不到）
         val dbList = AppDbProviders.get().bookChapterDao.getChapterList(book.bookUrl)
         if (dbList.firstOrNull()?.bookUrl == book.bookUrl) {
@@ -1147,6 +1161,9 @@ class ReadBookViewModelShared(
                     withContext(IoDispatcher) { checkLocalBookFileExist(book) }
                 }
             ) {
+                if (index == readBook.durChapterIndex.value && loadGuard.isCurrentJob(index, loadJob)) {
+                    showMessageChapter(readBook.msg ?: "Unable to open local book", index, readBook.chapterList.value.size)
+                }
                 return
             }
             val chapter = resolveChapter(book, index, readBook.chapterList.value) ?: return
@@ -1771,10 +1788,23 @@ class ReadBookViewModelShared(
      * 退出阅读界面时调用（唯一调用方 [io.legado.app.ui.book.read.ReaderScreenModel.onCleared]）：
      * 摘注册 + 取消在途任务 + 清理未入架书。
      *
+     * 朗读活跃期：[HeadlessReadAloud.takeOverFromPage] 先按当前内存状态把数据源交给进程级无头会话
+     * (原版 ReadBook 是进程级单例，页面销毁不影响它，朗读的通知/跨章/进度上传都靠它)，页面侧照常清理，
+     * 不再为朗读保活；临时书（未入架）的库残留也随之交给会话，否则此刻删会把朗读正在读的章节摘掉。
+     *
+     * [pageCleanup] 是页面侧与实例同寿命的收尾（摘注册表/补传进度/取消 UI scope）。
+     *
      * 落库上传不在这里做：[uploadProgress] 每次调用都是一次真实 WebDav PUT（无去重/节流，
      * 见 AppWebDavShared.uploadBookProgress），由宿主按"活跃期结束"调一次即可。
      */
-    fun onCleared() {
+    fun onCleared(pageCleanup: () -> Unit) {
+        val handedOver = if (ReadBookPlatforms.get().isReadAloudRun) {
+            HeadlessReadAloud.takeOverFromPage(readBook)
+        } else false
+        clearNow(pageCleanup, cleanUnshelved = !handedOver)
+    }
+
+    private fun clearNow(pageCleanup: () -> Unit, cleanUnshelved: Boolean) {
         ActiveReadBookRegistry.detachViewModel(this)
         ActiveReadAloudHostPorts.detach(readAloudOwner)
         loadGuard.clear()
@@ -1788,12 +1818,12 @@ class ReadBookViewModelShared(
         // `if (!ReadBook.inBookshelf && !isChangingConfigurations) removeFromBookshelf(null)` 兜底；
         // 走独立 scope，UI scope 取消不影响删除）。确定入架（已去 notShelf 标记）或已删除的书不重复处理。
         val book = readBook.book.value
-        if (book != null && book.isNotShelf) {
+        if (cleanUnshelved && book != null && book.isNotShelf) {
             progressSyncScope.launch {
-                AppDbProviders.get().bookDao.delete(book)
-                book.addType(BookType.notShelf)
+                book.delBookCore()
             }
         }
+        pageCleanup()
     }
     // endregion
 
@@ -2073,8 +2103,8 @@ class ReadBookViewModelShared(
     /**
      * 从书架删除当前书 (对照 app 端 ReadBookViewModel.removeFromBookshelf + Book.delete 扩展)。
      *
-     * 1:1 复刻 app 端 `Book.delete()` 行为: 删的是当前书则清 readBook.book 引用,
-     * 从数据库删除, 标记 notShelf 类型。
+     * 1:1 复刻 app 端 `Book.delete()` 行为: 删的是当前书则清 readBook.book 引用, 再走
+     * [delBookCore] (删章节 + 删库 + 标记 notShelf, 本地书不碰源文件)。
      */
     fun removeFromBookshelf(success: (() -> Unit)?) {
         val book = readBook.book.value ?: return
@@ -2083,8 +2113,7 @@ class ReadBookViewModelShared(
             if (readBook.book.value?.bookUrl == book.bookUrl) {
                 readBook.bookValue = null
             }
-            AppDbProviders.get().bookDao.delete(book)
-            book.addType(BookType.notShelf)
+            book.delBookCore()
             success?.invoke()
         }
     }
@@ -2219,6 +2248,7 @@ class ReadBookViewModelShared(
             textFullJustify = cfg.textFullJustify,
             viewWidth = cfg.viewWidth,
             textBottomJustify = cfg.textBottomJustify,
+            hangFirstPunctuation = cfg.hangFirstPunctuation,
             doublePage = cfg.doublePage,
             // 几何缩进宽度：对应 app 端 indentCharWidth = getDesiredWidth(paragraphIndent) / 长度
             indentCharWidth = cfg.paragraphIndent.takeIf { it.isNotEmpty() }?.let {
@@ -2758,6 +2788,8 @@ class ReadBookViewModelShared(
         val textFullJustify: Boolean = true,
         // 默认值与 ReadBookConfig 一致（textBottomJustify=true / titleMode=0）
         val textBottomJustify: Boolean = true,
+        /** 段首标点悬挂（默认 false，与全局开关 PreferKey.hangFirstPunctuation 同源） */
+        val hangFirstPunctuation: Boolean = false,
         /** 末页底部留白 px（原版为 20dp；DEFAULT 按 2x 密度折算 40px） */
         val endPadding: Int = 40,
         val titleMode: Int = 0,

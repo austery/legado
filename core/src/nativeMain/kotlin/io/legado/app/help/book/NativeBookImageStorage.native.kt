@@ -1,28 +1,20 @@
 package io.legado.app.help.book
 
-import io.ktor.client.HttpClient
-import io.ktor.client.request.get
-import io.ktor.client.statement.bodyAsBytes
-import io.ktor.http.isSuccess
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.utils.MD5Utils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import io.legado.app.utils.File
+import io.legado.app.utils.getUrlSuffix
 
 /**
- * [BookImageStorage] iOS/鸿蒙 (Native target) 共用真实实现
- * (基于 [kotlin.io.File] + Ktor HttpClient)。
+ * [BookImageStorage] iOS/鸿蒙 (Native target) 共用真实实现 (基于 [kotlin.io.File])。
  *
  * # 共用原因
- * iOS 与鸿蒙两端 BookImageStorage 主体逻辑完全一致 (图片缓存 I/O + Ktor CIO 并发下载),
- * 仅 iOS 端原用 NSFileManager + NSData, 鸿蒙端用 kotlin.io.File;
- * Kotlin/Native 在 iOS/linuxArm64 (鸿蒙) 上均支持 [kotlin.io.File],
- * 故统一改为 [kotlin.io.File] 实现下沉到 nativeMain 共用, 平台源集用 typealias 别名 + 各自 register 函数。
+ * iOS 与鸿蒙两端 BookImageStorage 主体逻辑完全一致 (图片缓存 I/O), 仅 iOS 端原用
+ * NSFileManager + NSData、鸿蒙端用 kotlin.io.File; Kotlin/Native 在 iOS/linuxArm64 (鸿蒙)
+ * 上均支持 [kotlin.io.File], 故统一改为 [kotlin.io.File] 实现下沉到 nativeMain 共用,
+ * iOS/鸿蒙宿主启动链各调一次 [registerNativeBookImageStorage]。
  *
  * # 目录结构
  * - cacheRootPath: `{AppFilesDirs.filesDir}/book_cache/` (与 [NativeBookStorage] 同源)
@@ -31,17 +23,16 @@ import io.legado.app.utils.File
  *   (与 Android 端 BookHelp.getImage 路径结构对齐, cacheImageFolderName = "images")
  *
  * # 行为对齐 jvmMain JvmBookImageStorage / 原 iOS IosBookImageStorage / 原 ohos OhosBookImageStorage
- * - [saveImage]: 字节头 magic number 校验 + [File.writeBytes]
- * - [getImagePath]/[isImageExist]: [File.exists]
+ * - [saveImage]/[writeImageBytes]: 字节头 magic number 校验 + 原子落盘 (同目录临时件 + 改名就位)
+ * - [getImagePath]/[isImageExist]: [File.exists] + 共享判据 [isCachedImageUsable] (存在且非空)
  * - [hasImageContent]: 目录存在 + 至少一个文件 (短路语义)
  * - [clearCache]: [File.deleteRecursively]
- * - [saveImages]: Ktor CIO 并发下载 (限制 8 并发, 与 JVM 桌面端对齐)
  *
  * # 与原 iOS 端差异 (统一为 kotlin.io.File 后)
  * - 文件 I/O: iOS 用 NSFileManager + NSData.writeToFile(atomically=true);
  *   统一后用 [kotlin.io.File] (mkdirs / writeBytes / exists / deleteRecursively)
  * - 图片有效性校验: 与两端完全一致 (字节头 magic number: JPEG/PNG/GIF/WebP/BMP)
- * - 后缀提取: 与两端完全一致 ([getImageSuffix] 简化版, 不依赖 CustomUrl)
+ * - 后缀提取: 与两端完全一致 ([getUrlSuffix])
  *
  * 模式参考 [io.legado.app.help.book.JvmBookImageStorage]。
  */
@@ -54,10 +45,7 @@ class NativeBookImageStorage(
         // 校验字节流是否为有效图, 失败返回 null
         if (!isValidImage(bytes)) return null
         val path = resolveImageFile(book, url)
-        val file = File(path)
-        // 父目录不存在则递归创建 (与 iOS createDirectoryAtPath 行为对齐)
-        file.parentFile?.mkdirs()
-        file.writeBytes(bytes)
+        if (!writeBytesAtomically(path, bytes)) return null
         // 返回解析时的路径字符串 (与 iOS 端 saveImage 返回 resolveImageFile 结果行为对齐,
         // 避免依赖 File.absolutePath 在不同 Kotlin/Native 版本下的归一化差异)
         return path
@@ -69,7 +57,7 @@ class NativeBookImageStorage(
     }
 
     override fun isImageExist(book: Book, chapter: BookChapter, url: String): Boolean {
-        return File(resolveImageFile(book, url)).exists()
+        return isCachedImageUsable(resolveImageFile(book, url))
     }
 
     override fun hasImageContent(book: Book): Boolean {
@@ -87,66 +75,23 @@ class NativeBookImageStorage(
         }
     }
 
-    override suspend fun saveImages(book: Book, chapter: BookChapter, urls: List<String>): Boolean = coroutineScope {
-        if (urls.isEmpty()) return@coroutineScope true
-        // 并发下载, 限制 8 并发 (与 JVM 桌面端 fixed 8 / iOS 端 async(Dispatchers.IO) 对齐,
-        // 避免依赖未注入的 AppConfig.threadCount)
-        val results = urls.map { url ->
-            async(Dispatchers.IO) {
-                try {
-                    // 已存在跳过 (与 Android BookHelp.saveImage 内 isImageExist 短路对齐)
-                    if (isImageExist(book, chapter, url)) return@async true
-                    val client = HttpClient()
-                    try {
-                        val response = client.get(url)
-                        if (!response.status.isSuccess()) {
-                            false
-                        } else {
-                            val bytes = response.bodyAsBytes()
-                            saveImage(book, chapter, url, bytes) != null
-                        }
-                    } finally {
-                        client.close()
-                    }
-                } catch (e: Exception) {
-                    // 网络 / IO 异常视为失败, 不中断其他下载 (与 Android BookHelp.saveImage 行为对齐)
-                    false
-                }
-            }
-        }.awaitAll()
-        results.all { it }
+    /** 校验字节流是否为有效图片 (字节头 magic number, 与本类 [saveImage] 校验同源)。 */
+    override fun checkImageBytes(bytes: ByteArray): Boolean = isValidImage(bytes)
+
+    /** 原始字节落盘 (不校验, 校验失败也照写, 与 Android BookHelp.writeImage 行为对齐)。 */
+    override fun writeImageBytes(book: Book, chapter: BookChapter, url: String, bytes: ByteArray) {
+        writeBytesAtomically(resolveImageFile(book, url), bytes)
     }
 
     /**
      * 解析图片缓存文件路径: `{cacheRoot}/{bookFolderName}/images/{md5(url)}.{suffix}`。
      *
-     * suffix 用 [getImageSuffix] 提取, 默认 "jpg" (与 Android BookHelp.getImageSuffix 对齐)。
+     * suffix 用 [getUrlSuffix] 提取, 默认 "jpg" (与 Android BookHelp.getImageSuffix 对齐)。
      */
     private fun resolveImageFile(book: Book, url: String): String {
-        val suffix = getImageSuffix(url, "jpg")
+        val suffix = getUrlSuffix(url, "jpg")
         val fileName = "${MD5Utils.md5Encode16(url)}.$suffix"
         return "$cacheRootPath/${book.getFolderName()}/$IMAGE_FOLDER_NAME/$fileName"
-    }
-
-    /**
-     * 从 URL 提取合法图片后缀 (简化版 [io.legado.app.utils.UrlUtil.getSuffix])。
-     *
-     * 与 jvmAndAndroidMain / iOS 端行为对齐:
-     * - 截取 URL 路径最后一段 `.` 后的部分 (排除 query/fragment)
-     * - 长度 > 5 或含非字母数字字符时返回 [default]
-     * - 不依赖 CustomUrl (避免引入额外 URL 规范化开销)
-     */
-    private fun getImageSuffix(url: String, default: String): String {
-        val suffix = url.substringAfterLast("/")
-            .substringBefore("?")
-            .substringBefore("#")
-            .substringAfterLast(".", "")
-        // 后缀合法性: 仅允许字母数字, 长度 <= 5 (与 jvmAndAndroidMain fileSuffixRegex 对齐)
-        return if (suffix.length in 1..5 && suffix.all { it.isLetterOrDigit() }) {
-            suffix.lowercase()
-        } else {
-            default
-        }
     }
 
     /**

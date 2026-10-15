@@ -90,6 +90,7 @@
     <string name="previous_chapter">Anterior</string>
     <string name="pt_hide_status_bar">Ocultar barra de estado</string>
     <string name="read_aloud">Voz</string>
+    <string name="channel_media_play">Reproducción multimedia</string>
     <string name="read_aloud_t">Hablando</string>
     <string name="read_aloud_s">Clic para abrir la lectura</string>
     <string name="audio_play">Reproducir</string>
@@ -587,6 +588,7 @@
     <string name="open_sys_dir_picker_error">打开系统文件夹选择器出错,自动打开应用文件夹选择器</string>
     <string name="book_tree_uri_t">书籍保存位置</string>
     <string name="book_tree_uri_s">从其它应用打开的书籍保存位置</string>
+    <string name="book_storage_help">Debido a las restricciones de acceso al almacenamiento de Android, no se pueden seleccionar la raíz del almacenamiento interno, la raíz de la tarjeta SD ni la propia carpeta Download (para usar Download, elige una subcarpeta como Download/Books).\nCualquier otra carpeta sí se puede seleccionar, incluidas las subcarpetas de la raíz del almacenamiento (por ejemplo /sdcard/books).\nSin una ubicación de guardado de libros, no funcionarán la copia ni la descarga de libros locales y WebDAV.</string>
     <string name="select_book_folder">选择保存书籍的文件夹</string>
     <string name="user_agent">用户代理</string>
     <string name="bg_alpha">背景透明度</string>
@@ -596,7 +598,6 @@
     <string name="timeout">超时</string>
     <string name="seconds">秒</string>
     <string name="less_than">小于</string>
-    <string name="check_source_config_summary">校验超时: %1$s秒\n校验项目:%2$s</string>
     <string name="record_debug_log">记录调试日志</string>
     <string name="sub_dir">子文件夹</string>
     <string name="general">全局</string>
@@ -655,6 +656,7 @@
     <string name="show_add_to_shelf_alert_title">返回时提示放入书架</string>
     <string name="show_add_to_shelf_alert_summary">阅读未放入书架的书籍在返回时提示放入书架</string>
     <string name="review">Review</string>
+    <string name="review_title_with_count">Review (%1$s)</string>
     <string name="rule_review_url">段评URL（reviewUrl）</string>
     <string name="rule_avatar">段评发布者头像（avatarRule）</string>
     <string name="rule_review_content">段评内容（contentRule）</string>
@@ -690,7 +692,6 @@
     <string name="audio_play_wake_lock">音频服务唤醒锁</string>
     <string name="copy_rule">拷贝规则</string>
     <string name="paste_rule">粘贴规则</string>
-    <string name="groups_or_source">多分组/书源</string>
     <string name="replace_state_change">替换(启用/禁用)</string>
     <string name="show_last_update_time">显示上次更新时间</string>
     <string name="refresh_list">刷新列表</string>
@@ -995,4 +996,16 @@
     <string name="keyword_highlight_exclude_scope">Rango excluido, nombre del libro o URL de la fuente opcional</string>
     <string name="video_lock">Bloquear</string>
     <string name="video_unlock">Desbloquear</string>
+    <string name="close_to_tray_title">Minimizar a la bandeja al cerrar</string>
+    <string name="close_to_tray_summary">La ventana se oculta y las tareas en segundo plano siguen; vuelve a abrirla desde el icono de la bandeja</string>
+    <string name="close_window">Cerrar ventana</string>
+    <string name="close_to_tray_prompt">¿Minimizar a la bandeja? La aplicación y sus tareas en segundo plano siguen en ejecución, y puedes volver a abrirla desde el icono de la bandeja.</string>
+    <string name="close_to_tray">Minimizar a la bandeja</string>
+    <string name="show_main_window">Mostrar ventana principal</string>
+    <string name="dialog_preview">Vista previa de diálogos</string>
+    <string name="dialog_preview_summary">Revisa uno por uno todos los diálogos y hojas (solo depuración; los datos son una copia)</string>
+    <string name="dialog_preview_group_alert">Avisos y confirmaciones</string>
+    <string name="dialog_preview_group_dialog">Diálogos</string>
+    <string name="dialog_preview_group_sheet">Hojas inferiores</string>
+    <string name="dialog_preview_group_base">Estructuras base</string>
 </resources>

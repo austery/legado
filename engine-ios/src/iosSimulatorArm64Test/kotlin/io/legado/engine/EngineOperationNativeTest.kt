@@ -33,6 +33,22 @@ import kotlin.test.assertFailsWith
 @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
 class EngineOperationNativeTest {
     @Test
+    fun uncaughtBridgeErrorRetainsItsTypedOperationFailure() = runBlocking {
+        registerNativeJsEngines(IosImageOps)
+        EngineHost.registerInteractionProviders()
+        val failure = assertFailsWith<EngineHostRejection> {
+            EngineHost.withOperation {
+                evaluate("java.startBrowser('https://fixture.invalid/login', 'Verify');")
+            }
+        }
+        assertEquals(EngineErrorCode.INTERACTION_REQUIRED, failure.failure.code)
+        EngineHost.withOperation {
+            assertNull(EngineHost.interactionFailure())
+            assertEquals("next operation", evaluate("'next operation'"))
+        }
+    }
+
+    @Test
     fun interactionInOneOperationDoesNotFailAnotherSuccessfulOperation() = runBlocking {
         withTimeout(15_000) {
             registerNativeJsEngines(IosImageOps)
@@ -45,7 +61,7 @@ class EngineOperationNativeTest {
                         EngineHost.withOperation {
                             peerStarted.await()
                             assertEquals("after-interaction", evaluate(
-                                "java.startBrowser('https://fixture.invalid/login', 'Verify'); 'after-interaction';"))
+                                "try { java.startBrowser('https://fixture.invalid/login', 'Verify'); } catch (error) {} 'after-interaction';"))
                             rejected.complete(Unit)
                             EngineHost.interactionFailure()
                         }
@@ -106,7 +122,7 @@ class EngineOperationNativeTest {
             EngineHost.registerInteractionProviders()
             EngineHost.withOperation {
                 assertEquals("outer value", evaluate(
-                    "java.startBrowser('https://fixture.invalid/login', 'Verify'); 'outer value';"))
+                    "try { java.startBrowser('https://fixture.invalid/login', 'Verify'); } catch (error) {} 'outer value';"))
                 assertEquals(EngineErrorCode.INTERACTION_REQUIRED, EngineHost.interactionFailure()?.code)
                 EngineHost.withOperation {
                     assertNull(EngineHost.interactionFailure())
@@ -164,7 +180,7 @@ class EngineOperationNativeTest {
             withContext(Dispatchers.Default) {
                 EngineHost.withOperation {
                     assertEquals("after-webview", evaluate(
-                        "java.webView(null,'https://fixture.invalid',null); 'after-webview';"))
+                        "try { java.webView(null,'https://fixture.invalid',null); } catch (error) {} 'after-webview';"))
                     assertEquals(EngineErrorCode.UNSUPPORTED, EngineHost.interactionFailure()?.code,
                         "A rejected cross-thread WebView helper must not become success")
                 }
@@ -178,7 +194,7 @@ class EngineOperationNativeTest {
         var result: String? = null
         override fun getCookie(tag: String): String {
             result = source.evalJS(
-                "java.startBrowser('https://fixture.invalid/login','Verify'); 'nested-value';") as? String
+                "try { java.startBrowser('https://fixture.invalid/login','Verify'); } catch (error) {} 'nested-value';") as? String
             return "nested-cookie"
         }
         override fun replaceCookie(tag: String, cookie: String): Unit =
@@ -200,7 +216,11 @@ class EngineOperationNativeTest {
             observations++
             error("Controlled observer failure")
         }) {
-            assertEquals("still usable", evaluate("cookie.getCookie('fail'); 'still usable';", cookie))
+            val failure = assertFailsWith<Exception> { evaluate("cookie.getCookie('fail');", cookie) }
+            assertTrue(NativeJsEngine.isJsException(failure))
+            assertTrue(failure.message.orEmpty().contains("Controlled host failure"))
+            assertFalse(failure.message.orEmpty().contains("Controlled observer failure"))
+            assertEquals("still usable", evaluate("'still usable';"))
         }
         assertEquals(1, observations)
     }

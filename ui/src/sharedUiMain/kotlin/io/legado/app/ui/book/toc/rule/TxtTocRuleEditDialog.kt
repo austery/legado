@@ -9,6 +9,7 @@
 //   "txt_toc_rule_edit_copy_success" to "已复制"
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -18,7 +19,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,15 +28,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.help.toast.Toasters
+import io.legado.app.ui.compose.component.AppDialogScaffold
+import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.AppUnderlineTextField
-import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.OverflowMenu
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.utils.GSON
+import io.legado.app.utils.RuleRegexes
 import io.legado.app.utils.toJson
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.action_save
@@ -56,7 +59,7 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * TXT 目录规则编辑对话框 (KMP 共享, app + desktop 复用)。
  *
- * 对应 app 端 `io.legado.app.ui.book.toc.rule.TxtTocRuleEditDialog` (BaseComposeDialogFragment),
+ * 对应 app 端 `io.legado.app.ui.book.toc.rule.TxtTocRuleEditDialog` (原命令式对话框基类(已删除)),
  * 但去掉对 Android Fragment / Bundle / viewModelScope / getClipText / sendToClip / toastOnUi 的依赖,
  * 改为纯 @Composable + 回调形式:
  * - 调用方传入 [rule] (null=新增), [onConfirm] / [onDismiss] 回调;
@@ -66,8 +69,9 @@ import org.jetbrains.compose.resources.stringResource
  * # 业务对齐 (对照 app 端原版)
  *
  * - 字段: 名称 (name) / 规则 (rule, 正则) / 示例 (example) 三个 EditEntity, 与原版完全一致;
- * - 保存校验: 名称不能为空 + 正则语法校验 (Pattern.MULTILINE 等价于 [RegexOption.MULTILINE]);
- * - 标题栏右侧: 保存 (ic_save) + OverflowMenu (复制规则 / 粘贴规则);
+ * - 保存校验: 名称不能为空 + 正则语法校验 (经 [RuleRegexes.validate], 多行语义与
+ *   `Pattern.MULTILINE` 对齐);
+ * - 顶栏 (标准): 标题 + 保存 (ic_save) + OverflowMenu (复制规则 / 粘贴规则);
  * - 粘贴规则: 委托 [TxtTocRuleEditViewModelShared.pasteRule], 内部走 [clipTextProvider] 取剪贴板,
  *   GSON.fromJsonObject<TxtTocRule>(text) 解析, 失败 toast "格式不对" (与 app 端一致);
  * - 复制规则: GSON.toJson(rule) + [clipTextSink] 写剪贴板 + toast "已复制" (app 端原版仅 sendToClip
@@ -134,7 +138,7 @@ fun TxtTocRuleEditDialog(
     /**
      * 校验并保存, 与 app 端 save() + checkValid() 完全等价:
      * - 名称非空校验;
-     * - 正则语法校验 (Pattern.MULTILINE 等价于 [RegexOption.MULTILINE]);
+     * - 正则语法校验 (经 [RuleRegexes.validate], 多行语义与 `Pattern.MULTILINE` 对齐);
      * - 校验通过回调 [onConfirm] + [onDismiss]。
      *
      * 正则错误用 AppLog.put(msg, ex, toast=true) 记录 (toast=true 触发宿主 toast, 与 app 端一致)。
@@ -145,13 +149,13 @@ fun TxtTocRuleEditDialog(
             Toasters.get().toast(nameRequiredText)
             return
         }
-        try {
-            // Pattern.compile(rule, Pattern.MULTILINE) 等价于 Regex(rule, RegexOption.MULTILINE)
-            Regex(tocRule.rule, RegexOption.MULTILINE)
-        } catch (ex: Exception) {
+        // 校验走 [RuleRegexes]: native 端 `Regex(pattern)` 的语法解析是递归下降且无栈保护,
+        // 畸形规则会直接爆栈闪退; 平台实现带编译深度/错误包装, 失败返回可展示的错误文本
+        val error = RuleRegexes.get().validate(tocRule.rule, multiline = true)
+        if (error != null) {
             AppLog.put(
-                "$regexErrorText：${ex.message}",
-                ex,
+                "$regexErrorText：$error",
+                null,
                 true,
             )
             return
@@ -160,88 +164,83 @@ fun TxtTocRuleEditDialog(
         onDismiss()
     }
 
-    Surface(
-        shape = DesignTokens.dialogShape,
-        color = colors.fillet,
-        modifier = Modifier.fillMaxWidth().padding(DesignTokens.spacingDefault),
-    ) {
-        Column(Modifier.fillMaxWidth()) {
-            DialogTitleBar(
-                title = titleText,
-                onBack = onDismiss,
-                actions = {
-                    IconButton(onClick = { saveAndDismiss() }) {
-                        Icon(
-                            painter = painterResource(Res.drawable.ic_save),
-                            contentDescription = saveDescText,
-                            tint = DesignTokens.arcoBlue6,
-                        )
-                    }
-                    OverflowMenu { dismissMenu ->
-                        // 复制规则: 仅当调用方提供 clipTextSink 时渲染 (与 app 端 sendToClip 等价)
-                        if (clipTextSink != null) {
-                            DropdownMenuItem(
-                                onClick = {
-                                    dismissMenu()
-                                    val json = GSON.toJson(getRuleFromView())
-                                    clipTextSink(json)
-                                    Toasters.get().toast(copySuccessText)
-                                },
-                            ) {
-                                Text(copyRuleText, color = colors.primaryText)
-                            }
-                        }
-                        DropdownMenuItem(
-                            onClick = {
-                                dismissMenu()
-                                shared.pasteRule { pasted ->
-                                    // 与 app 端 upRuleView 一致: 把粘贴的规则字段写回输入框
-                                    name = pasted.name
-                                    ruleContent = pasted.rule
-                                    example = pasted.example.orEmpty()
-                                }
-                            },
-                        ) {
-                            Text(pasteRuleText, color = colors.primaryText)
-                        }
-                    }
-                },
-            )
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(
-                        start = DesignTokens.spacingDefault,
-                        top = DesignTokens.spacingLg,
-                        end = DesignTokens.spacingDefault,
-                        bottom = DesignTokens.spacingDefault,
-                    ),
-            ) {
-                AppUnderlineTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = nameLabelText,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.heightIn(min = DesignTokens.spacingDefault))
-                AppUnderlineTextField(
-                    value = ruleContent,
-                    onValueChange = { ruleContent = it },
-                    label = ruleLabelText,
-                    singleLine = false,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.heightIn(min = DesignTokens.spacingDefault))
-                AppUnderlineTextField(
-                    value = example,
-                    onValueChange = { example = it },
-                    label = exampleLabelText,
-                    singleLine = false,
-                    modifier = Modifier.fillMaxWidth(),
+    AppDialogScaffold(
+        onDismissRequest = onDismiss,
+        title = titleText,
+        titleActions = {
+            IconButton(onClick = { saveAndDismiss() }) {
+                Icon(
+                    painter = painterResource(Res.drawable.ic_save),
+                    contentDescription = saveDescText,
+                    tint = AppTheme.colors.primaryText,
                 )
             }
+            OverflowMenu { dismissMenu ->
+                // 复制规则: 仅当调用方提供 clipTextSink 时渲染 (与 app 端 sendToClip 等价)
+                if (clipTextSink != null) {
+                    DropdownMenuItem(
+                        onClick = {
+                            dismissMenu()
+                            val json = GSON.toJson(getRuleFromView())
+                            clipTextSink(json)
+                            Toasters.get().toast(copySuccessText)
+                        },
+                    ) {
+                        Text(copyRuleText, color = colors.primaryText)
+                    }
+                }
+                DropdownMenuItem(
+                    onClick = {
+                        dismissMenu()
+                        shared.pasteRule { pasted ->
+                            // 与 app 端 upRuleView 一致: 把粘贴的规则字段写回输入框
+                            name = pasted.name
+                            ruleContent = pasted.rule
+                            example = pasted.example.orEmpty()
+                        }
+                    },
+                ) {
+                    Text(pasteRuleText, color = colors.primaryText)
+                }
+            }
+        },
+        contentPadding = PaddingValues(0.dp),
+        properties = AppDialogSizes.properties(),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(
+                    start = DesignTokens.spacingDefault,
+                    top = DesignTokens.spacingLg,
+                    end = DesignTokens.spacingDefault,
+                    bottom = DesignTokens.spacingDefault,
+                ),
+        ) {
+            AppUnderlineTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = nameLabelText,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.heightIn(min = DesignTokens.spacingDefault))
+            AppUnderlineTextField(
+                value = ruleContent,
+                onValueChange = { ruleContent = it },
+                label = ruleLabelText,
+                singleLine = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.heightIn(min = DesignTokens.spacingDefault))
+            AppUnderlineTextField(
+                value = example,
+                onValueChange = { example = it },
+                label = exampleLabelText,
+                singleLine = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

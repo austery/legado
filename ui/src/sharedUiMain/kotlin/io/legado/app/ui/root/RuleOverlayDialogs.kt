@@ -1,6 +1,5 @@
 package io.legado.app.ui.root
 
-import androidx.compose.material.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -8,7 +7,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.DictRule
 import io.legado.app.data.entities.SourceFilterRule
@@ -16,7 +14,6 @@ import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.source.SearchBookFilter
 import io.legado.app.help.storage.BackupFileOps
-import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.association.ImportDictRuleItemsVm
 import io.legado.app.ui.association.ImportDictRuleViewModelShared
 import io.legado.app.ui.association.ImportItemsDialog
@@ -28,11 +25,6 @@ import io.legado.app.ui.association.ImportTxtTocRuleViewModelShared
 import io.legado.app.ui.book.filter.SourceFilterEditDialog
 import io.legado.app.ui.book.filter.SourceFilterRuleListDialog
 import io.legado.app.ui.book.toc.rule.TxtTocRuleEditDialog
-import io.legado.app.ui.compose.component.AppDialog
-import io.legado.app.ui.compose.component.AppDialogSizes
-import io.legado.app.ui.compose.component.appDialogSize
-import io.legado.app.ui.compose.theme.AppTheme
-import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.dict.rule.DictRuleEditDialog
 import io.legado.app.ui.widget.dialog.HelpDialog
 import io.legado.app.ui.widget.dialog.OnlineImportUrlDialog
@@ -50,32 +42,11 @@ import legado.ui.generated.resources.wrong_format
 import org.jetbrains.compose.resources.stringResource
 
 /**
- * 规则类 Overlay Dialog 的渲染实现 (字典规则 / TXT 目录规则 / 屏蔽规则的编辑、导入、导出、帮助)。
+ * 规则类 Overlay Dialog 的渲染实现 (字典规则 / TXT 目录规则 / 筛选规则的编辑、导入、导出、帮助)。
  *
  * 由 LegadoApp 的 DialogOverlayContent 按 key 分流调用。落库后各页 ScreenModel 订阅的
  * DAO flow 自动回推, 故无需经 overlayResults 回传结果。
  */
-
-/**
- * 编辑类对话框的浮层容器。三个 Edit 对话框原是 BaseComposeDialogFragment 的 Content,
- * 只画 Surface 不含窗口, 走 Overlay 渲染时需要在此补 [Dialog] 外壳。
- */
-@Composable
-internal fun EditDialogHost(onDismiss: () -> Unit, content: @Composable () -> Unit) {
-    AppDialog(
-        onDismissRequest = onDismiss,
-        properties = AppDialogSizes.properties()
-    ) {
-        // 不能套 fillMaxSize: 撑满窗口会让整窗都算"框内", 点外部永远关不掉; 居中由 RootMeasurePolicy 负责。
-        Surface(
-            modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = AppTheme.colors.fillet,
-        ) {
-            content()
-        }
-    }
-}
 
 // 字典规则编辑 (key="dictRuleEdit", payload=规则 name, null=新增)
 @Composable
@@ -89,16 +60,14 @@ internal fun DictRuleEditDialogContent(overlay: AppOverlay.Dialog, navigator: Ap
         loaded = true
     }
     if (!loaded) return
-    EditDialogHost(onDismiss = { navigator.dismissOverlay(overlay.key) }) {
-        DictRuleEditDialog(
-            // save 由 DictRuleEditViewModelShared 内部完成 (delete 旧 + insert 新), 无需 onConfirm 落库
-            rule = rule,
-            onConfirm = {},
-            onDismiss = { navigator.dismissOverlay(overlay.key) },
-            clipTextProvider = { PlatformCapabilityProviders.get().getClipboardText() },
-            clipTextSink = { PlatformCapabilityProviders.get().copyToClipboard(it) },
-        )
-    }
+    DictRuleEditDialog(
+        // save 由 DictRuleEditViewModelShared 内部完成 (delete 旧 + insert 新), 无需 onConfirm 落库
+        rule = rule,
+        onConfirm = {},
+        onDismiss = { navigator.dismissOverlay(overlay.key) },
+        clipTextProvider = { PlatformCapabilityProviders.get().getClipboardText() },
+        clipTextSink = { PlatformCapabilityProviders.get().copyToClipboard(it) },
+    )
 }
 
 // TXT 目录规则编辑 (key="txtTocRuleEdit", payload=规则 id, null=新增)
@@ -114,21 +83,19 @@ internal fun TxtTocRuleEditDialogContent(overlay: AppOverlay.Dialog, navigator: 
         loaded = true
     }
     if (!loaded) return
-    EditDialogHost(onDismiss = { navigator.dismissOverlay(overlay.key) }) {
-        TxtTocRuleEditDialog(
-            rule = rule,
-            // 对照 app 端 TxtTocRuleActivity.saveTxtTocRule → viewModel.save (insert)
-            onConfirm = { saved ->
-                scope.launch(IoDispatcher) { AppDbProviders.get().txtTocRuleDao.insert(saved) }
-            },
-            onDismiss = { navigator.dismissOverlay(overlay.key) },
-            clipTextProvider = { PlatformCapabilityProviders.get().getClipboardText() },
-            clipTextSink = { PlatformCapabilityProviders.get().copyToClipboard(it) },
-        )
-    }
+    TxtTocRuleEditDialog(
+        rule = rule,
+        // 对照 app 端 TxtTocRuleActivity.saveTxtTocRule → viewModel.save (insert)
+        onConfirm = { saved ->
+            scope.launch(IoDispatcher) { AppDbProviders.get().txtTocRuleDao.insert(saved) }
+        },
+        onDismiss = { navigator.dismissOverlay(overlay.key) },
+        clipTextProvider = { PlatformCapabilityProviders.get().getClipboardText() },
+        clipTextSink = { PlatformCapabilityProviders.get().copyToClipboard(it) },
+    )
 }
 
-// 屏蔽规则编辑 (key="sourceFilterRuleEdit", payload=规则 id, null=新增)
+// 筛选规则编辑 (key="sourceFilterRuleEdit", payload=规则 id, null=新增)
 @Composable
 internal fun SourceFilterEditDialogContent(overlay: AppOverlay.Dialog, navigator: AppNavigator) {
     val scope = rememberCoroutineScope()
@@ -142,19 +109,17 @@ internal fun SourceFilterEditDialogContent(overlay: AppOverlay.Dialog, navigator
     }
     if (!loaded) return
     val isNew = overlay.payload == null
-    EditDialogHost(onDismiss = { navigator.dismissOverlay(overlay.key) }) {
-        SourceFilterEditDialog(
-            rule = rule,
-            // 对照 app 端 SourceFilterRuleActivity.onSourceFilterRuleSave
-            onConfirm = { saved ->
-                scope.launch(IoDispatcher) { SearchBookFilter.save(saved, isNew) }
-            },
-            onDismiss = { navigator.dismissOverlay(overlay.key) },
-        )
-    }
+    SourceFilterEditDialog(
+        rule = rule,
+        // 对照 app 端 SourceFilterRuleActivity.onSourceFilterRuleSave
+        onConfirm = { saved ->
+            scope.launch(IoDispatcher) { SearchBookFilter.save(saved, isNew) }
+        },
+        onDismiss = { navigator.dismissOverlay(overlay.key) },
+    )
 }
 
-// 屏蔽规则列表 (key="sourceFilterRuleList", payload=SearchScope 字符串)
+// 筛选规则列表 (key="sourceFilterRuleList", payload=SearchScope 字符串)
 @Composable
 internal fun SourceFilterRuleListDialogContent(
     overlay: AppOverlay.Dialog,

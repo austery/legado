@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,7 +20,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,20 +41,19 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.help.config.ManualThemeColorChangeProviders
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.ThemeConfigData
 import io.legado.app.help.config.ThemeConfigProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.model.commitBackgroundImage
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.AppRadioButton
 import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.AppSlider
 import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.AppUnderlineTextField
-import io.legado.app.ui.compose.component.DialogTitleBar
-import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.platform.LocalEventBusProvider
 import io.legado.app.ui.compose.preference.ColorPickerDialog
 import io.legado.app.ui.compose.theme.AppTheme
@@ -251,6 +250,9 @@ fun ThemeCustomizeDialog(
     }
 
     fun saveToPrefs() {
+        // 用户手动改色: 有跟随壁纸机制的端 (Android) 在此拆掉机关, 否则刚写入的颜色会被
+        // 下一次壁纸变化重写回壁纸色 (无该机制的端未注册, 直接跳过)
+        ManualThemeColorChangeProviders.getOrNull()?.onManualColorChange()
         if (isNight) {
             prefs.putInt(PreferKey.cNPrimary, bg)
             prefs.putInt(PreferKey.cNAccent, accent)
@@ -364,139 +366,127 @@ fun ThemeCustomizeDialog(
         }
     )
 
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = titleText,
+        bottomBar = {
+            Spacer(Modifier.weight(1f))
+            AppTextButton(
+                text = stringResource(Res.string.cancel),
+                color = colors.secondaryText,
+                onClick = onDismiss,
+            )
+            Spacer(Modifier.width(DesignTokens.spacingDefault))
+            AppTextButton(text = stringResource(Res.string.ok)) {
+                when (mode) {
+                    MODE_EDIT_PREFS -> saveToPrefs()
+                    MODE_EDIT_CONFIG -> saveToConfig()
+                    else -> saveAsNewConfig()
+                }
+            }
+        },
+        contentPadding = PaddingValues(0.dp),
         properties = AppDialogSizes.properties(),
     ) {
-        // 圆角/底色对齐 BaseComposeDialogFragment.filletBackground (AppDialog 窗口本身无背景,
-        // 不包 Surface 会整窗透明, 内容直接压在页面上 —— 同 ThemeListDialog 记过的坑)。
-        // 高度随内容 (上限 appDialogSize), 对齐 app 端 Column(fillMaxWidth) 的包裹语义
-        Surface(
-            modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = DesignTokens.spacingDefault),
         ) {
-            Column(Modifier.fillMaxWidth()) {
-                DialogTitleBar(
-                    title = titleText,
-                    onBack = onDismiss,
+            // 主题名字段: EDIT_CONFIG / NEW_CONFIG 显示, EDIT_PREFS 隐藏
+            if (mode != MODE_EDIT_PREFS) {
+                AppUnderlineTextField(
+                    value = themeName,
+                    onValueChange = { themeName = it },
+                    label = stringResource(Res.string.theme_name),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                Column(
+                // 日/夜切换单选组: EDIT_PREFS 是从设置页明确入口进的, 不显示
+                Row(Modifier.fillMaxWidth()) {
+                    ModeRadio(
+                        text = stringResource(Res.string.day),
+                        selected = !isNight,
+                        modifier = Modifier.weight(1f),
+                    ) { switchIsNight(false) }
+                    ModeRadio(
+                        text = stringResource(Res.string.night),
+                        selected = isNight,
+                        modifier = Modifier.weight(1f),
+                    ) { switchIsNight(true) }
+                }
+            }
+            ColorRow(
+                label = stringResource(Res.string.accent),
+                color = accent,
+            ) { pickerDialogId = DIALOG_ID_ACCENT }
+            ColorRow(
+                label = stringResource(Res.string.background_color),
+                color = bg,
+            ) { pickerDialogId = DIALOG_ID_BG }
+            ColorRow(
+                label = stringResource(Res.string.navbar_color),
+                color = bbg,
+            ) { pickerDialogId = DIALOG_ID_BBG }
+            // 背景图/模糊仅在 EDIT_PREFS 显示 (对照 app 端 showBgImage = mode == MODE_EDIT_PREFS,
+            // Config 模式不走色盘外字段; 背景图选图即导入私有目录, 保存时才写 pref)
+            if (mode == MODE_EDIT_PREFS) {
+                Row(
                     Modifier
                         .fillMaxWidth()
-                        .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = DesignTokens.spacingDefault),
+                        .heightIn(min = DesignTokens.viewHeightXl)
+                        .clickable(onClick = { pickBgImage() }),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 主题名字段: EDIT_CONFIG / NEW_CONFIG 显示, EDIT_PREFS 隐藏
-                    if (mode != MODE_EDIT_PREFS) {
-                        AppUnderlineTextField(
-                            value = themeName,
-                            onValueChange = { themeName = it },
-                            label = stringResource(Res.string.theme_name),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        // 日/夜切换单选组: EDIT_PREFS 是从设置页明确入口进的, 不显示
-                        Row(Modifier.fillMaxWidth()) {
-                            ModeRadio(
-                                text = stringResource(Res.string.day),
-                                selected = !isNight,
-                                modifier = Modifier.weight(1f),
-                            ) { switchIsNight(false) }
-                            ModeRadio(
-                                text = stringResource(Res.string.night),
-                                selected = isNight,
-                                modifier = Modifier.weight(1f),
-                            ) { switchIsNight(true) }
-                        }
-                    }
-                    ColorRow(
-                        label = stringResource(Res.string.accent),
-                        color = accent,
-                    ) { pickerDialogId = DIALOG_ID_ACCENT }
-                    ColorRow(
-                        label = stringResource(Res.string.background_color),
-                        color = bg,
-                    ) { pickerDialogId = DIALOG_ID_BG }
-                    ColorRow(
-                        label = stringResource(Res.string.navbar_color),
-                        color = bbg,
-                    ) { pickerDialogId = DIALOG_ID_BBG }
-                    // 背景图/模糊仅在 EDIT_PREFS 显示 (对照 app 端 showBgImage = mode == MODE_EDIT_PREFS,
-                    // Config 模式不走色盘外字段; 背景图选图即导入私有目录, 保存时才写 pref)
-                    if (mode == MODE_EDIT_PREFS) {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = DesignTokens.viewHeightXl)
-                                .clickable(onClick = { pickBgImage() }),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = stringResource(Res.string.background_image),
-                                color = AppTheme.colors.primaryText,
-                                fontSize = 15.sp,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                text = bgImagePath ?: stringResource(Res.string.select_image),
-                                color = AppTheme.colors.secondaryText,
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                // 路径长时从头部省略, 保留文件名 (对齐 app 端 ellipsize="start")
-                                overflow = TextOverflow.StartEllipsis,
-                                modifier = Modifier.widthIn(max = 180.dp),
-                            )
-                            if (bgImagePath != null) {
-                                IconButton(onClick = { bgImagePath = null }) {
-                                    Icon(
-                                        painter = painterResource(Res.drawable.ic_baseline_close),
-                                        contentDescription = stringResource(Res.string.delete),
-                                        tint = AppTheme.colors.secondaryText,
-                                    )
-                                }
-                            }
-                        }
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = stringResource(Res.string.background_image_blurring),
-                                color = AppTheme.colors.primaryText,
-                                fontSize = 15.sp,
-                            )
-                            AppSlider(
-                                value = bgBlur,
-                                max = 25,
-                                onValueChange = { bgBlur = it },
-                                modifier = Modifier.weight(1f).padding(start = DesignTokens.spacingDefault),
-                            )
-                            Text(
-                                text = bgBlur.toString(),
-                                color = AppTheme.colors.primaryText,
-                                fontSize = 15.sp,
-                                textAlign = TextAlign.End,
-                                modifier = Modifier.widthIn(min = 32.dp),
+                    Text(
+                        text = stringResource(Res.string.background_image),
+                        color = AppTheme.colors.primaryText,
+                        fontSize = 15.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = bgImagePath ?: stringResource(Res.string.select_image),
+                        color = AppTheme.colors.secondaryText,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        // 路径长时从头部省略, 保留文件名 (对齐 app 端 ellipsize="start")
+                        overflow = TextOverflow.StartEllipsis,
+                        modifier = Modifier.widthIn(max = 180.dp),
+                    )
+                    if (bgImagePath != null) {
+                        IconButton(onClick = { bgImagePath = null }) {
+                            Icon(
+                                painter = painterResource(Res.drawable.ic_baseline_close),
+                                contentDescription = stringResource(Res.string.delete),
+                                tint = AppTheme.colors.secondaryText,
                             )
                         }
                     }
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Spacer(Modifier.weight(1f))
-                        AppTextButton(text = stringResource(Res.string.cancel), onClick = onDismiss)
-                        Spacer(Modifier.width(DesignTokens.spacingDefault))
-                        AppTextButton(text = stringResource(Res.string.ok)) {
-                            when (mode) {
-                                MODE_EDIT_PREFS -> saveToPrefs()
-                                MODE_EDIT_CONFIG -> saveToConfig()
-                                else -> saveAsNewConfig()
-                            }
-                        }
-                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(Res.string.background_image_blurring),
+                        color = AppTheme.colors.primaryText,
+                        fontSize = 15.sp,
+                    )
+                    AppSlider(
+                        value = bgBlur,
+                        max = 25,
+                        onValueChange = { bgBlur = it },
+                        modifier = Modifier.weight(1f).padding(start = DesignTokens.spacingDefault),
+                    )
+                    Text(
+                        text = bgBlur.toString(),
+                        color = AppTheme.colors.primaryText,
+                        fontSize = 15.sp,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.widthIn(min = 32.dp),
+                    )
                 }
             }
         }
@@ -575,8 +565,7 @@ private fun ColorRow(label: String, color: Int, onClick: () -> Unit) {
 }
 
 /**
- * 读日/夜自定义色 pref, 未设置 (0) 回落默认色
- * (对照 app 端 ThemeConfig.readCustomTheme 的 getPrefInt 回落 readDefaultColors)。
+ * 读日/夜自定义色 pref, 未设置 (0) 回落默认色。
  */
 private fun readCustomColors(prefs: io.legado.app.help.config.PreferenceProvider, isNight: Boolean):
     Triple<Int, Int, Int> {

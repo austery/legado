@@ -6,27 +6,20 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
-import platform.posix.SIGABRT
-import platform.posix.SIGBUS
-import platform.posix.SIGFPE
-import platform.posix.SIGHUP
-import platform.posix.SIGILL
-import platform.posix.SIGSEGV
-import platform.posix.SIGTRAP
 import platform.posix.getcwd
-import platform.posix.signal
 
 /**
- * 鸿蒙端全局崩溃捕获 (对照 iOS 端 `IosCrashHandler` / 桌面端 `DesktopCrashHandler`)。
+ * 鸿蒙端崩溃捕获 (对照 iOS 端 `IosCrashHandler` / 桌面端 `DesktopCrashHandler`)。
  *
- * 本端只多一个 POSIX `signal()` 入口: 鸿蒙 UI 走 CPF 融合渲染 (ArkUI RenderNode),
- * 没有 iOS 的 ObjC 未捕获异常钩子; Kotlin/Native 未捕获异常钩子由
- * [installNativeUnhandledHook] 承担 (与 iOS 同源)。
+ * 只有一个入口: Kotlin/Native 未捕获异常钩子 ([installNativeUnhandledHook]), 写的是带函数名
+ * 的调用栈。
  *
- * 覆盖的信号与 iOS 端逐条一致 (SIGHUP/SIGILL/SIGTRAP/SIGABRT/SIGBUS/SIGFPE/SIGSEGV):
- * 渲染库与 native 桥的越界崩溃同样只走到这里。
+ * # 为什么不再自己捕获原生信号
+ * 信号处理器内不允许取调用栈 (展开器均不在 async-signal-safe 清单内), 落盘的现场只有裸地址
+ * 与参数头, 对定位零增量, 反而把用户引向一份读不懂的日志。原生崩溃与 ArkTS 崩溃统一改由
+ * **系统崩溃事件**承载: ArkTS 侧订阅 `hiAppEvent` 的 `APP_CRASH` (同时覆盖 JsError 与
+ * NativeCrash), 系统给的现场含全量线程调用栈与故障日志文件路径, 已符号化。
  */
 object OhosCrashHandler {
 
@@ -37,18 +30,7 @@ object OhosCrashHandler {
         if (installed) return
         installed = true
         installNativeUnhandledHook()
-        NativeCrashLogWriter.prepareSignalBuffer()
-        for (sig in HANDLED_SIGNALS) {
-            signal(sig, staticCFunction(::onSignal))
-        }
     }
-
-    private val HANDLED_SIGNALS = listOf(SIGHUP, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE, SIGSEGV)
-}
-
-/** 信号处理器: 顶层无捕获函数 (`staticCFunction` 禁止捕获环境, 写成成员会隐式捕获 this)。 */
-private fun onSignal(sig: Int) {
-    NativeCrashLogWriter.writeSignal(sig)
 }
 
 /** 当前工作目录 (POSIX `getcwd`; 取不到回落 ".")。 */

@@ -9,7 +9,6 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
-import io.legado.app.help.IntentData
 import io.legado.app.help.book.changeSourceTo
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.model.chapter.ChapterLoadState
@@ -21,6 +20,7 @@ import io.legado.app.ui.book.read.ReadBookEvents
 import io.legado.app.ui.book.read.config.ClickActionConfig
 import io.legado.app.ui.book.read.page.provider.ChapterContentParserShared
 import io.legado.app.ui.book.read.page.readClickActionConfig
+import io.legado.app.ui.root.BookRef
 import io.legado.app.ui.root.ScreenModel
 import io.legado.app.ui.root.screenModelScope
 import io.legado.app.utils.GSON
@@ -79,8 +79,11 @@ class MangaReaderScreenModel : ScreenModel {
         fun getBatteryLevel(): Int = 100
 
         /**
-         * 保存图片到本地 (对照 app 端 BaseReadViewModel.saveImage)。
-         * 平台先取得原始字节，再按实际格式生成文件名，最后调用平台文件选择器。
+         * 保存图片到本地 (对照 app 端 `BaseReadViewModel.saveImage`)。
+         *
+         * 字节只从图片缓存/本地书内嵌图取, 未命中就不保存 —— 保存把已经看过的图导出到用户手上,
+         * 不因导出重新下载; 命名与异常收口在 shared [saveCachedMangaImage], 本方法只提供本端落点
+         * 原语 (SAF 单文件 / 另存对话框 / 沙盒导出目录 / 目录记忆)。
          * 返回: true=保存成功, false=保存失败, null=用户取消选择 (静默不提示)。
          */
         suspend fun saveImage(
@@ -336,7 +339,6 @@ class MangaReaderScreenModel : ScreenModel {
         scope.launch {
             runCatching {
                 currentBook?.changeSourceTo(newBook, toc)
-                IntentData.book = newBook
                 // 目录先进内存: 未入书架的书没落库, 少了这步会再回源拉一次目录
                 shared.onSourceChanged(newBook, toc, source)
                 // 换源后内容整体重建, 按迁移后的进度重新定位 (对照原版换源后回到原阅读位置)
@@ -424,6 +426,16 @@ class MangaReaderScreenModel : ScreenModel {
             putInt(PreferKey.clickActionBR, config.br)
         }
         _state.update { it.copy(clickActionConfig = config) }
+    }
+
+    /**
+     * 从偏好重读点击区域配置到状态。
+     *
+     * 对话框关闭时的九宫格校验可能改写 MC (对照原版 AppConfig.detectClickArea), 而漫画点击
+     * 动作读的是 state 里的快照, 必须跟上 (原版每次点击现读 AppConfig.clickActionXX)。
+     */
+    fun refreshClickActionConfig() {
+        _state.update { it.copy(clickActionConfig = readClickActionConfig()) }
     }
 
     /** 菜单勾选的布尔开关直写 prefs (key 与 app 端 AppConfig 一致), 返回切换后的新值。 */
@@ -516,12 +528,11 @@ class MangaReaderScreenModel : ScreenModel {
     fun dispatch(event: MangaReaderUiEvent) {
         when (event) {
             is MangaReaderUiEvent.Init -> {
-                // shared.initData 从 IntentData.book 取书
-                IntentData.book = event.book
                 // 对照 app 端 applyBookmarkPosition: chapterIndex>=0 时跳转到指定章节位置。
                 // 定位请求在初始化成功后才发: 此刻 shared.book 已是从库里装载的权威进度,
                 // 用路由快照 (BookRef) 的 dur 字段会因快照过期定到错章
                 shared.initData(
+                    book = event.book,
                     overrideIndex = event.chapterIndex ?: -1,
                     overridePos = event.chapterPos ?: 0,
                     success = {
@@ -692,7 +703,7 @@ sealed interface MangaReaderUiEvent {
      * @param chapterPos 书签跳转目标章节位置, 仅 chapterIndex 非空时生效 (对应 app 端 intent chapterPos)
      */
     data class Init(
-        val book: Book,
+        val book: BookRef,
         val chapterIndex: Int? = null,
         val chapterPos: Int? = null,
     ) : MangaReaderUiEvent

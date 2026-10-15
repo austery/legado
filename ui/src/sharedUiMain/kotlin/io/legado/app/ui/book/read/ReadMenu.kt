@@ -83,7 +83,6 @@ import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -105,6 +104,10 @@ import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalTxt
 import io.legado.app.help.book.isNotShelf
+import io.legado.app.help.config.HelpVersion
+import io.legado.app.help.config.LocalConfigKeys
+import io.legado.app.help.config.LocalConfigProviders
+import io.legado.app.help.config.LocalConfigShared
 import io.legado.app.help.config.ThemeConfigProviders
 import io.legado.app.help.config.currentEInkMode
 import io.legado.app.help.config.currentNightTheme
@@ -113,6 +116,7 @@ import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.compose.component.AppDropdownMenu
 import io.legado.app.ui.compose.component.AppMenuCheckbox
 import io.legado.app.ui.compose.component.AppSlider
+import io.legado.app.ui.compose.component.blockInputWhile
 import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.platform.BackLayerHandler
 import io.legado.app.ui.compose.platform.platformNavigationBarPadding
@@ -200,6 +204,12 @@ interface ReadMenuState {
     val animate: Boolean
     val isVisible: Boolean
     val canShowMenu: Boolean
+
+    /**
+     * 收起菜单, [onMenuOutEnd] 在收起动画结束后执行 (对照原版 `ReadMenu.runMenuOut`)。
+     * 已收起状态立即执行: 收起态触发的菜单动作等不到动画结束回调。
+     */
+    fun runMenuOut(onMenuOutEnd: (() -> Unit)? = null)
 
     // ---- 沉浸式菜单色彩 ----
     val immersive: Boolean
@@ -390,6 +400,9 @@ open class BaseReadMenuState(
     override var isNightTheme: Boolean by mutableStateOf(currentNightTheme())
         protected set
 
+    /** 待执行的收起完成回调 (对照原版 ReadMenu.onMenuOutEnd) */
+    private var onMenuOutEnd: (() -> Unit)? = null
+
     open fun show() {
         animate = !currentEInkMode()
         refresh()
@@ -400,8 +413,49 @@ open class BaseReadMenuState(
         visibleState.targetState = false
     }
 
-    override fun onTransitionIdle(shown: Boolean) = Unit
-    override fun onBgClick() = hide()
+    /**
+     * 收起菜单, [onMenuOutEnd] 在收起动画结束后执行 (对照原版 ReadMenu.runMenuOut)。
+     *
+     * 已收起状态立即执行: MutableTransitionState 在 targetState 已为 false 时重复置值
+     * 不触发 onTransitionIdle, 收起态触发的菜单动作拿不到回调。
+     * 收起动画进行中早退, 不覆盖先前待执行的回调 (对照原版 isMenuOutAnimating 守卫)。
+     */
+    override fun runMenuOut(onMenuOutEnd: (() -> Unit)?) {
+        if (!visibleState.isIdle && !visibleState.targetState) return
+        this.onMenuOutEnd = onMenuOutEnd
+        if (!visibleState.isIdle || visibleState.targetState) {
+            // 入场中被打断/展开中: 反向滑出, 回调在 onTransitionIdle(false) 执行
+            hide()
+        } else {
+            this.onMenuOutEnd = null
+            onMenuOutEnd?.invoke()
+        }
+    }
+
+    override fun onTransitionIdle(shown: Boolean) {
+        if (shown) {
+            // 首启阅读菜单帮助 (对照原版 ReadMenu.menuInListener.onAnimationEnd:
+            // !LocalConfig.readMenuHelpVersionIsLast → callBack.showHelp())。
+            // 原版 E-Ink 无动画分支 (runMenuIn anim=false) 也手动调 onAnimationEnd, 同一时机。
+            // 版本标记由 isLastVersion 在判定时写入, 与原版同一点触发, 关闭后再开菜单不重弹
+            val local = LocalConfigProviders.get()
+            val isLastHelp = LocalConfigShared.isLastVersion(
+                lastVersion = HelpVersion.readMenuHelp,
+                versionKey = LocalConfigKeys.readMenuHelpVersion,
+                firstOpenKey = LocalConfigKeys.firstReadMenu,
+                getInt = local::getInt,
+                getBoolean = local::getBoolean,
+                putInt = local::putInt,
+            )
+            if (!isLastHelp) screenModel.postDialogEvent(ReaderDialogEvent.ReadMenuHelp)
+            return
+        }
+        val onEnd = onMenuOutEnd
+        onMenuOutEnd = null
+        onEnd?.invoke()
+    }
+
+    override fun onBgClick() = runMenuOut()
 
     override fun onChapterViewClick() {
         val book = screenModel.viewModel.book.value ?: return
@@ -461,16 +515,18 @@ open class BaseReadMenuState(
 
     override fun onTopMenuAction(action: ReadMenuAction) {
         when (action) {
-            // 弹对话框/翻配置前先收菜单 (对照原版各菜单项的 runMenuOut 语义)
+            // 弹对话框/翻配置前先收菜单, 收起动画播完后再弹 (对照原版各菜单项的 runMenuOut 语义)
             ReadMenuAction.CHANGE_SOURCE,
             ReadMenuAction.BOOK_CHANGE_SOURCE -> {
-                hide()
-                screenModel.postDialogEvent(ReaderDialogEvent.ChangeSource)
+                runMenuOut {
+                    screenModel.postDialogEvent(ReaderDialogEvent.ChangeSource)
+                }
             }
 
             ReadMenuAction.CHAPTER_CHANGE_SOURCE -> {
-                hide()
-                screenModel.postDialogEvent(ReaderDialogEvent.ChangeChapterSource)
+                runMenuOut {
+                    screenModel.postDialogEvent(ReaderDialogEvent.ChangeChapterSource)
+                }
             }
 
             ReadMenuAction.REFRESH_DUR -> screenModel.viewModel.refreshCurrentChapter()
@@ -556,21 +612,22 @@ open class BaseReadMenuState(
     }
 
     override fun clickSearch() {
-        // 对照原版 fabSearch 的 `runMenuOut { callBack.openSearchActivity(null) }`：先收菜单
+        // 对照原版 fabSearch 的 `runMenuOut { callBack.openSearchActivity(null) }`：收起动画播完
         // 再开搜索页。漏收时 menuState.isVisible 恒为 true，搜索页回传后搜索菜单与仍展开的
         // 阅读菜单同屏叠加，且方向键/音量键翻页被 isVisible 判定禁掉
-        hide()
-        val initialResults = screenModel.searchResultList
-            ?.takeIf { results -> results.firstOrNull()?.query == screenModel.searchContentQuery }
-        navigator.push(
-            AppRoute.SearchContent(
-                index = screenModel.searchResultIndex,
-                word = screenModel.searchContentQuery.takeIf { it.isNotEmpty() },
-                initialResults = initialResults,
-                book = screenModel.viewModel.book.value?.toRouteRef(),
-            ),
-            resultKey = RouteResults.SEARCH_CONTENT,
-        )
+        runMenuOut {
+            val initialResults = screenModel.searchResultList
+                ?.takeIf { results -> results.firstOrNull()?.query == screenModel.searchContentQuery }
+            navigator.push(
+                AppRoute.SearchContent(
+                    index = screenModel.searchResultIndex,
+                    word = screenModel.searchContentQuery.takeIf { it.isNotEmpty() },
+                    initialResults = initialResults,
+                    book = screenModel.viewModel.book.value?.toRouteRef(),
+                ),
+                resultKey = RouteResults.SEARCH_CONTENT,
+            )
+        }
     }
 
     override fun clickAutoPage() {
@@ -579,25 +636,25 @@ open class BaseReadMenuState(
     }
 
     /**
-     * 开启自动翻页后收菜单并弹控制面板。
+     * 开启自动翻页后收菜单并弹控制面板 (面板在收起动画播完后弹出)。
      *
      * 原版 `fabAutoPage` 走 `runMenuOut { callBack.autoPage() }`（只收菜单不弹面板，
-     * 面板要再点一下屏幕才从 `showActionMenu` 出来），而本处连菜单都没收，
-     * 菜单背景层吃掉点击后需两次点屏才能看到面板。此处一次做完：
-     * 收菜单 + 立即弹面板。
+     * 面板要再点一下屏幕才从 `showActionMenu` 出来），本处一次做完：收菜单 + 弹出面板。
      *
      * 顺序要求：调用前 [autoPage] 必须已置 true——ReaderRoute 的
      * `LaunchedEffect(autoPageActive)` 在 autoPage=false 时会立即 clearDialogEvent，
      * 先 post 后置位会把刚发的事件清掉。
      */
     protected fun showAutoPagePanel() {
-        hide()
-        screenModel.postDialogEvent(ReaderDialogEvent.AutoRead)
+        runMenuOut {
+            screenModel.postDialogEvent(ReaderDialogEvent.AutoRead)
+        }
     }
 
     override fun clickReplaceRule() {
-        hide()
-        screenModel.postDialogEvent(ReaderDialogEvent.EffectiveReplaces)
+        runMenuOut {
+            screenModel.postDialogEvent(ReaderDialogEvent.EffectiveReplaces)
+        }
     }
 
     override fun clickNightTheme() {
@@ -617,8 +674,9 @@ open class BaseReadMenuState(
     }
 
     override fun clickCatalog() {
-        hide()
-        screenModel.postDialogEvent(ReaderDialogEvent.Toc)
+        runMenuOut {
+            screenModel.postDialogEvent(ReaderDialogEvent.Toc)
+        }
     }
 
     override fun clickReadAloud() {
@@ -630,13 +688,15 @@ open class BaseReadMenuState(
     }
 
     override fun clickFont() {
-        hide()
-        screenModel.postDialogEvent(ReaderDialogEvent.ReadStyle)
+        runMenuOut {
+            screenModel.postDialogEvent(ReaderDialogEvent.ReadStyle)
+        }
     }
 
     override fun clickSetting() {
-        hide()
-        screenModel.postDialogEvent(ReaderDialogEvent.MoreConfig)
+        runMenuOut {
+            screenModel.postDialogEvent(ReaderDialogEvent.MoreConfig)
+        }
     }
 
     override fun onRefresh() {
@@ -719,7 +779,9 @@ fun ReadMenuOverlay(state: ReadMenuState) {
     BackLayerHandler(enabled = true) { state.onBgClick() }
     fun spec(duration: Int): FiniteAnimationSpec<IntOffset> =
         if (state.animate) tween(duration, easing = AccelerateDecelerateEasing) else snap()
-    Box(Modifier.fillMaxSize()) {
+    // 出入场动画期间整层不派生输入 (原版 menuOutListener.onAnimationStart 先置
+    // isMenuOutAnimating 并摘掉 vwMenuBg 点击监听, 动画结束才装回)
+    Box(Modifier.fillMaxSize().blockInputWhile(!vs.isIdle)) {
         // 原 vw_menu_bg：菜单期间全屏拦截触摸，点击(在允许时)收起菜单
         Box(
             Modifier
@@ -1124,7 +1186,7 @@ private fun ReadMenuBottom(state: ReadMenuState) {
                     if (state.autoPage) "auto_next_page_stop" else "auto_next_page"
                 ),
                 bg = bg, tint = text,
-            ) { state.clickAutoPage() }
+            ) { state.runMenuOut { state.clickAutoPage() } }
             Spacer(Modifier.weight(1f))
             ReadMenuFab(
                 iconKey = "ic_find_replace",
@@ -1186,8 +1248,14 @@ private fun ReadMenuBottom(state: ReadMenuState) {
                 }
                 BottomMenuItem(
                     "ic_read_aloud", "read_aloud", text, Modifier.weight(1f),
-                    onLongClick = { state.longClickReadAloud() },
-                ) { state.clickReadAloud() }
+                    // 短/长按均收菜单, 收起动画播完后才动作
+                    // (对照原版 llReadAloud 短/长按均包 runMenuOut)
+                    onLongClick = {
+                        state.runMenuOut { state.longClickReadAloud() }
+                    },
+                ) {
+                    state.runMenuOut { state.clickReadAloud() }
+                }
                 BottomMenuItem(
                     "ic_interface_setting",
                     "interface_setting",
@@ -1206,19 +1274,20 @@ private fun ReadMenuBottom(state: ReadMenuState) {
 
 @Composable
 private fun ReadSeekBar(state: ReadMenuState, modifier: Modifier = Modifier) {
-    // 拖动中仅移动滑块，抬手才跳转(原 SeekBarChangeListener 语义)；-1 表示未拖动
-    var dragValue by remember { mutableIntStateOf(-1) }
+    // 拖动中位置由滑条自己持有, 抬手才跳转(原 SeekBarChangeListener 语义)
+    var dragging by remember { mutableStateOf(false) }
     AppSlider(
-        value = if (dragValue >= 0) dragValue else state.seekValue,
+        value = state.seekValue,
         max = state.seekMax,
         onValueChange = {
-            if (dragValue < 0) state.onSeekDragStart()
-            dragValue = it
+            if (!dragging) {
+                dragging = true
+                state.onSeekDragStart()
+            }
         },
         onValueChangeFinished = {
-            val v = dragValue
-            dragValue = -1
-            if (v >= 0) state.onSeekStop(v)
+            dragging = false
+            state.onSeekStop(it)
         },
         modifier = modifier,
     )
@@ -1247,7 +1316,13 @@ private fun ChapterNavText(
     )
 }
 
-/** 复刻 mini FloatingActionButton：40dp 圆、底栏色底，按压用 Compose 默认指示 */
+/**
+ * 复刻 mini FloatingActionButton：40dp 圆、底栏色底，按压用 Compose 默认指示。
+ *
+ * @param focusable 是否参与方向键/TV 焦点搜索 ([listItemFocus])。阅读菜单与阅读内搜索覆盖层的
+ *   悬浮按钮需要; 搜索页的开始/停止按钮在原版是未设 `android:focusable` 的 Material FAB,
+ *   传 false 保持该行为。
+ */
 @Composable
 fun ReadMenuFab(
     iconKey: String,
@@ -1256,6 +1331,7 @@ fun ReadMenuFab(
     tint: Color,
     modifier: Modifier = Modifier,
     iconModifier: Modifier = Modifier,
+    focusable: Boolean = true,
     onClick: () -> Unit,
 ) {
     Box(
@@ -1265,7 +1341,7 @@ fun ReadMenuFab(
             .shadow(6.dp, CircleShape)
             .clip(CircleShape)
             .background(bg)
-            .listItemFocus()
+            .then(if (focusable) Modifier.listItemFocus() else Modifier)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

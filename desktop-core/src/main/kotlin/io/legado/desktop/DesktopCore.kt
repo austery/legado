@@ -6,23 +6,18 @@ import io.legado.app.data.AppDatabaseProviders
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.BundledDatabaseDriver
 import io.legado.app.data.DesktopAppDatabaseProvider
-import io.legado.app.help.AppWebDavShared
-import io.legado.app.help.RuleBigDataProviders
+import io.legado.app.help.AppVersionProvider
+import io.legado.app.help.AppVersionProviders
+import io.legado.app.help.StartupMaintenanceShared
 import io.legado.app.help.book.BookHelpProviders
-import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.book.BookStorageProviders
 import io.legado.app.help.book.JvmBookImageStorage
 import io.legado.app.help.book.JvmBookStorage
 import io.legado.app.help.book.JvmLocalBookLocator
 import io.legado.app.help.book.LocalBookLocators
-import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.OLD_COVERS_REF_SEGMENT
-import io.legado.app.help.config.LocalConfigKeys
-import io.legado.app.help.config.PreferenceProviders
-import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ReadBookConfigShared
-import io.legado.app.help.config.ThemeConfigProviders
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.file.desktopAppRootDir
 import io.legado.app.help.file.desktopResolveStoredRef
@@ -32,12 +27,12 @@ import io.legado.app.help.http.OkHttpClientProviders
 import io.legado.app.help.image.MangaPluginImageFetcherProviders
 import io.legado.app.help.notification.registerDesktopNotificationProgress
 import io.legado.app.help.registerComposeDefaultDataResourceProvider
+import io.legado.app.help.registerComposeResourceBytesProvider
 import io.legado.app.help.service.DesktopUpdateBookCallback
 import io.legado.app.help.service.UpdateBookCallbacks
 import io.legado.app.help.service.registerDesktopServiceLauncher
 import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.source.SourceHelpAccessors
-import io.legado.app.help.storage.BackupShared
 import io.legado.app.help.storage.registerJvmDataStorage
 import io.legado.app.help.toast.registerDesktopToaster
 import io.legado.app.help.tts.TtsEngineProvider
@@ -50,6 +45,7 @@ import io.legado.app.model.manga.SharedMangaExtensionPlatform
 import io.legado.app.model.manga.SharedMangaSourceConfig
 import io.legado.app.ui.book.changecover.CoverStorageServiceProviders
 import io.legado.app.ui.book.manga.extension.MangaExtensionServiceProviders
+import io.legado.app.ui.association.registerUiRuleSubAutoUpdateHook
 import io.legado.app.ui.compose.platform.registerComposeStringProviders
 import io.legado.app.web.registerDesktopWebServerPlatform
 import io.legado.app.web.utils.registerComposeWebAssetSource
@@ -60,6 +56,7 @@ import io.legado.desktop.DesktopCore.registerCoreProviders
 import io.legado.desktop.DesktopCore.registerSecondaryCoreProviders
 import io.legado.desktop.DesktopCore.startupBackgroundTasks
 import io.legado.desktop.config.registerDesktopConfig
+import io.legado.desktop.constant.DesktopAppInfo
 import io.legado.desktop.data.DesktopAppDbAccessor
 import io.legado.desktop.help.DesktopCrashHandler
 import io.legado.desktop.help.applyDesktopLanguagePref
@@ -93,7 +90,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 private const val TAG = "legado-desktop"
 
@@ -128,7 +124,7 @@ var restartMainClass: String = "io.legado.desktop.MainKt"
  * 1. [initRuntimeEnvironment] — 便携模式 + quickjs native 定位 (main 最前, 早于一切 provider)
  * 2. [DesktopCrashHandler.install] — 崩溃日志 (紧跟 1, 落盘目录依赖 legado.portable.root)
  * 3. [registerEarlyProviders] — 阶段1 同步注册核心子集 (原 application{} 内注册块)
- * 4. [registerRestProviders] — 阶段1 余下重注册 (HTTP/JS/Room/存储/封面)
+ * 4. [registerRestProviders] — 阶段1 余下重注册 (HTTP/JS/Room/存储/封面/Web 服务)
  * 5. [registerSecondaryCoreProviders] — 阶段3 异步注册核心子集 (原 registerSecondaryProviders)
  * 6. [startupBackgroundTasks] — 阶段3 尾部启动期异步任务 (adjustSortNumber/默认数据/清理/WebDav)
  */
@@ -152,12 +148,22 @@ object DesktopCore {
     fun initRuntimeEnvironment(portableDataRoot: File?, quickjsLibFile: File?) {
         // 1. 便携模式定位: 数据存 exe/启动目录同级 data/ (设置 legado.portable.root 系统属性)
         if (portableDataRoot != null) {
-            // 创建失败不静默: 失败后仍设属性, 后续 prefs/DB 会在首次访问时才炸, 现场离根因很远
-            if (!portableDataRoot.mkdirs() && !portableDataRoot.isDirectory) {
-                AppLog.put("portable 数据目录创建失败: ${portableDataRoot.absolutePath}", tag = TAG)
+            // 已经显式指定的数据根优先级更高 (弹窗预览用启动参数带来的调试数据根): 覆盖它会让
+            // "以为在副本上、实际写正式数据"成真
+            val explicit = System.getProperty("legado.portable.root")
+            if (!explicit.isNullOrEmpty()) {
+                AppLog.put(
+                    "已显式指定数据根, 便携模式推导值不生效: $explicit (忽略 ${portableDataRoot.absolutePath})",
+                    tag = TAG,
+                )
+            } else {
+                // 创建失败不静默: 失败后仍设属性, 后续 prefs/DB 会在首次访问时才炸, 现场离根因很远
+                if (!portableDataRoot.mkdirs() && !portableDataRoot.isDirectory) {
+                    AppLog.put("portable 数据目录创建失败: ${portableDataRoot.absolutePath}", tag = TAG)
+                }
+                System.setProperty("legado.portable.root", portableDataRoot.absolutePath)
+                AppLog.put("portable 模式, dataDir = ${portableDataRoot.absolutePath}", tag = TAG)
             }
-            System.setProperty("legado.portable.root", portableDataRoot.absolutePath)
-            AppLog.put("portable 模式, dataDir = ${portableDataRoot.absolutePath}", tag = TAG)
         }
         // 2. native 库定位: 有文件即设属性, 让 quickjs 模块 Platform.kt 候选1 System.load 加载
         if (quickjsLibFile != null && quickjsLibFile.isFile) {
@@ -210,12 +216,19 @@ object DesktopCore {
      *   headless 不消费该返回值, 但注册本身必须执行 (备份格式兼容性补齐))。
      */
     fun registerEarlyProviders(): ReadBookConfigShared {
+        // 注册当前版本号 provider (供下沉的启动期默认数据补齐按版本推进; 桌面端取
+        // DesktopAppInfo.versionCode, 与下沉前 DesktopDefaultDataInit 内的取值同源)
+        AppVersionProviders.register(object : AppVersionProvider {
+            override val versionCode: Long get() = DesktopAppInfo.versionCode
+        })
         // 注册桌面端 Host 类 provider (启动期最早, 让 shared commonMain 调用 AppLog/appString 时有输出)
         // - AppLogHost: 桥接到 println, 未注册时 AppLog 副作用 (write/toast/debugPrint) 静默 no-op
         registerDesktopAppLogHost()
         // 字符串通道 (syncGetString 与 appString, 同源同一份实现): 未注册时两者均 fallback
         // 返回 key 名, 故须先于任何取值调用; 桌面与 headless 两条入口共用本函数
         registerComposeStringProviders()
+        // 规则订阅每日自动更新的导入实现 (复用 :ui 的导入链, 见 RuleSubAutoUpdateHook)
+        registerUiRuleSubAutoUpdateHook()
         // 注入机器标识到 AndroidIdHolder (对照 app 端 JsEnginesAndroid 注入 ANDROID_ID)。
         // 默认值 "null" 只有 4 字符, BaseSource 登录信息 AES 密钥取前 16 字节会越界被吞,
         // 表现为桌面端书源登录信息无法持久化; 必须在任何 getLoginInfo/putLoginInfo 之前注入
@@ -281,6 +294,9 @@ object DesktopCore {
         // (首次建库 dbCallback.onCreate → DefaultData.keyboardAssists → DefaultDataResourceProviders
         // .get().readResource("keyboardAssists.json")), 否则首次建库时 keyboardAssists 表无默认数据
         registerComposeDefaultDataResourceProvider()
+        // 注册打包资源字节原语 (:ui 的 ComposeResourceBytesProvider, 经 Res.readBytes 取数):
+        // TVBox JS 引导脚本读取 (数据层契约 PackagedResourceBytesProviders) 依赖它已注册
+        registerComposeResourceBytesProvider()
         // 注册桌面端 AppDatabase provider (BundledDatabaseDriver 用 Room.databaseBuilder +
         // BundledSQLiteDriver 构造 AppDatabase, 同一实例经 AppDatabaseProviders 共享)
         val dbDriver = BundledDatabaseDriver()
@@ -308,7 +324,23 @@ object DesktopCore {
         PluginSourceDelegates.register(MangaSourceDelegateImpl)
         PluginSourceDelegates.register(VideoSourceDelegateImpl)
         MangaPluginImageFetcherProviders.register(JvmMangaPluginImageFetcher())
-        MangaExtensionServiceProviders.register(SharedMangaExtensionPlatform(SharedMangaSourceConfig(Context())))
+        // 插件服务构造期即启动一份长命状态收集器 (SharedMangaExtensionPlatform.init), 重复注册会
+        // 留下第二份永不取消的收集器; 与 app 端进程级单例同语义: 已有实例就不再新建
+        if (MangaExtensionServiceProviders.getOrNull() == null) {
+            MangaExtensionServiceProviders.register(
+                SharedMangaExtensionPlatform(SharedMangaSourceConfig(Context()))
+            )
+        }
+        // Web 服务 provider (NanoHTTPD 独立, 不依赖其他 provider):
+        // - WebServerPlatform: HttpServer+WebSocketServer 起停 (JvmWebServerPlatform 共用逻辑)
+        // - WebAssetSource: composeResources 读 commonMain/composeResources/files/web/ 静态资源
+        // - WebStrings: 硬编码中文文案 (后续接入 i18n 资源后替换)
+        // 「我的」页网络服务开关的显隐判据就是 WebServerPlatforms.getOrNull(), 与同一页的漫画/
+        // 影视源服务入口一样必须同步注册 (挂到阶段3异步注册会让启动后立刻进该页看不到开关);
+        // 开关一旦可见马上就会被点到, 故三项都要在任何 WebServerManager.start()/stop() 之前就绪
+        registerDesktopWebServerPlatform()
+        registerComposeWebAssetSource()
+        registerDesktopWebStrings()
         // Room 开库预热 (与首帧组合并行; 上一轮我误删了它, 实测把 273ms 开库成本又退回主链路上)。
         // 实测: 注册 provider 只要 1~2ms, 真正开库 (加载 sqliteJni 原生库 + 建/打开 db 与 -wal/-shm
         // + Room schema 校验 + InvalidationTracker 启动) 要 224~282ms, 而它拖到首次 DAO 访问 ——
@@ -380,14 +412,8 @@ object DesktopCore {
             SourceHelpAccessors.register(DesktopSourceHelpAccessor())
             // 8. 服务启动器 (依赖 AppDbProviders + BookHelpProviders + BookStorageProviders, 已同步注册)
             registerDesktopServiceLauncher()
-            // 8b. Web 服务 provider (NanoHTTPD 独立, 不依赖其他 provider)
-            // - WebServerPlatform: HttpServer+WebSocketServer 起停 (JvmWebServerPlatform 共用逻辑)
-            // - WebAssetSource: composeResources 读 commonMain/composeResources/files/web/ 静态资源
-            // - WebStrings: 硬编码中文文案 (后续接入 i18n 资源后替换)
-            // 须在任何 WebServerManager.start()/stop() 之前注册 (MyScreen Web 服务开关触发时)
-            registerDesktopWebServerPlatform()
-            registerComposeWebAssetSource()
-            registerDesktopWebStrings()
+            // 8b. Web 服务 provider 已提前到阶段1同步注册 (开关显隐判据须首组合前就绪, 见
+            //     registerRestProviders)
             // 9. CacheBook 回调 (依赖 ServiceLauncher 已注册)
             DesktopCacheBook.registerCallback()
             // 10. Source 扩展 provider (依赖 PreferenceProviders, in-memory 实现)
@@ -424,8 +450,13 @@ object DesktopCore {
     /**
      * 阶段3 尾部: 启动期异步任务 (对照 app 端 App.kt onCreate 的 Coroutine.async 块)。
      *
-     * 与 :desktop registerSecondaryProviders 尾部逐行等价; [initDefaultData] 单独暴露,
-     * 供只想要默认数据补齐的入口复用 (headless 与桌面共用同一时序: 注册完成后调用本函数)。
+     * 四项维护动作的编排本体已下沉 :data commonMain ([StartupMaintenanceShared]), 本函数只负责
+     * "注册完成后按同一天序调用" —— 与 :desktop registerSecondaryProviders 尾部逐行等价;
+     * [initDefaultData] 单独暴露, 供只想要默认数据补齐的入口复用。
+     *
+     * 注: "云端有新备份"提示 ([StartupMaintenanceShared.checkNewWebDavBackup]) 不在本函数: 它的
+     * 确认框渠道 DesktopDialogs 在 :desktop 模块内 (本模块看不到), 且本函数也被无 UI 的
+     * :headless 入口调用。桌面端的接线在 :desktop 的 DesktopDialogHost (启动首帧自取)。
      */
     suspend fun startupBackgroundTasks() {
         withContext(Dispatchers.Default) {
@@ -439,45 +470,24 @@ object DesktopCore {
                 }
             }
             // LogUtils.init 为 Android 专属, desktop 用 registerDesktopAppLogHost 替代
-            // 对照 app 端 App.kt:144 DefaultData.upVersion() + dbCallback.onCreate 预置数据:
+            // 对照 app 端 App.kt DefaultData.upVersion() + dbCallback.onCreate 预置数据:
             // 桌面端 Room KMP 无 Callback, 首启/升级的默认数据统一在这里幂等补齐
+            // (编排已下沉 StartupMaintenanceShared, 四端共用同一份)
             initDesktopDefaultData()
             // 15b. 旧数据封面引用修复: 绝对路径改存 oldCovers/ 相对引用 (幂等)
             Coroutine.async { repairLegacyStoredCoverRefs() }
             // 16. 启动期缓存清理 + WebDav 进度同步
-            // (对照 app 端 App.kt onCreate 的两个 Coroutine.async 块:
+            // (对照 app 端 App.onCreate 的两个 Coroutine.async 块:
             //  - 缓存清理: 距上次清理超过 1 天才执行, 清 cacheDao 过期条目 + 无效书籍缓存 +
-            //    备份/阅读背景/主题背景缓存;
-            //  - 进度同步: syncBookProgress 开启时从 WebDav 拉取所有书籍进度写回本地)
+            //    备份/阅读背景/主题背景缓存; 节流 key 是专用的 lastCacheCleanup, 见下沉件说明;
+            //  - 进度同步: syncBookProgress 开启时确保 WebDav 认证后拉取所有书籍进度写回本地)
+            // cacheExtraMayHaveWork=false: 桌面/headless 注册的 BookHelpAccessor.clearCacheExtra
+            // 是空实现, 故"书架空 + 缓存目录空"可安全早退 (与下沉前 hasInvalidCacheWork 的判据等价)
             Coroutine.async {
-                val prefs = PreferenceProviders.get()
-                // 节流读专用的 lastCacheCleanup: 原写法读 lastBackup, 但那个 key 只在用户真备份/恢复
-                // 时写入, 从不备份的用户恒为 0 → 条件恒成立 → 每次启动都全跑一遍清理族
-                val lastCleanup = prefs.getLong(LocalConfigKeys.lastCacheCleanup, 0L)
-                if (lastCleanup + TimeUnit.DAYS.toMillis(1) < System.currentTimeMillis()) {
-                    runCatching {
-                        AppDbProviders.get().cacheDao.clearDeadline(System.currentTimeMillis())
-                        // 书架无书且缓存目录无残留时 clearInvalidCache 必然空转: 它删的就是
-                        // "书架之外的 book_cache / ruleData 子目录", 三者全空则无物可删
-                        if (hasInvalidCacheWork()) {
-                            BookHelpShared.clearInvalidCache()
-                        }
-                        BackupShared.clearCache()
-                        ReadBookConfigProviders.get().clearBgAndCache()
-                        ThemeConfigProviders.get().clearBg()
-                    }.onSuccess {
-                        // 只在整段跑完才写时间戳: 中途抛错就不写, 下次启动重试,
-                        // 否则一次失败会被当成"今天已经清过"静默节流掉
-                        prefs.putLong(LocalConfigKeys.lastCacheCleanup, System.currentTimeMillis())
-                    }.onFailure {
-                        AppLog.put("启动期缓存清理失败\n${it.message}", it)
-                    }
-                }
+                StartupMaintenanceShared.clearInvalidCacheIfDue(cacheExtraMayHaveWork = false)
             }
             Coroutine.async {
-                if (AppConfigProviders.get().syncBookProgress) {
-                    AppWebDavShared.downloadAllBookProgress()
-                }
+                StartupMaintenanceShared.syncBookProgressOnStartup()
             }
         }
     }
@@ -514,37 +524,11 @@ object DesktopCore {
     /**
      * 首启 / 升级时的默认数据补齐 (对照 app 端 DefaultData.upVersion + dbCallback.onCreate):
      * 预置书架分组 / 键盘助手 / httpTTS / txtTocRule / dictRule, 幂等可重复调用。
+     *
+     * 编排本体已下沉 :data commonMain ([StartupMaintenanceShared.initDefaultData]), 本函数保留
+     * 桌面命名以便 headless 与桌面两条入口继续复用同一时机。
      */
     suspend fun initDefaultData() = initDesktopDefaultData()
-
-    /**
-     * [BookHelpShared.clearInvalidCache] 是否还有活可干 (调用点早退判据)。
-     *
-     * 判据必须比被它省掉的活便宜: 1 条 COUNT(*) + 2 次单层目录 list, 换掉
-     * "全表读 name/bookUrl + book_cache 子目录逐个扫描 + ruleData 子目录逐个扫描"。
-     *
-     * 不漏清的依据: clearInvalidCache 共四步 —— ①② 按书架删 book_cache 失效目录与漫画超量淘汰
-     * (根目录空 → 无可删对象), ③ 按书架删 RuleBigData 大变量目录 (impl 未注册时本来就是 no-op),
-     * ④ clearCacheExtra (桌面/headless 共用的 DesktopBookHelpAccessor 为空实现)。
-     * 书架 0 行 + ①③ 两类目录都空时四步全为空转, 故本判定与原行为等价。
-     */
-    private suspend fun hasInvalidCacheWork(): Boolean {
-        if (AppDbProviders.get().bookDao.allBookCount() > 0) return true
-        if (!dirAbsentOrEmpty(File(BookStorageProviders.get().rootPath))) return true
-        val ruleDirs = RuleBigDataProviders.impl?.listBookDataDirs().orEmpty()
-        return ruleDirs.any { !dirAbsentOrEmpty(File(it)) }
-    }
-
-    /**
-     * 单层目录是否"不存在或为空" (只 list 一层, 不递归)。
-     *
-     * File.list() 在"是目录但读目录出错"时也返回 null, 这种情况按非空处理让清理照原样跑,
-     * 不用空判掩盖 IO 错误造成漏清。
-     */
-    private fun dirAbsentOrEmpty(dir: File): Boolean {
-        val entries = dir.list()
-        return if (entries == null) !dir.isDirectory else entries.isEmpty()
-    }
 }
 
 /**

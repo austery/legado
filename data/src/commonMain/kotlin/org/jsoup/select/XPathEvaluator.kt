@@ -215,12 +215,15 @@ class XPathEvaluator {
             is PathPart.Current -> listOf(element)
             is PathPart.AllChildren ->
                 if (descendants) collectAllDescendants(element) else element.children()
-            is PathPart.Tag -> element.getElementsByTag(part.name)
+            is PathPart.Tag -> if (descendants) {
+                element.getElementsByTag(part.name).filter { it !== element }
+            } else element.children().filter { it.tagName() == part.name }
             is PathPart.TagWithPredicate -> {
                 val elements = if (part.tag.isEmpty()) {
                     if (descendants) collectAllDescendants(element) else element.children()
                 } else {
-                    element.getElementsByTag(part.tag)
+                    if (descendants) element.getElementsByTag(part.tag).filter { it !== element }
+                    else element.children().filter { it.tagName() == part.tag }
                 }
                 filterByPredicate(elements, part.predicates)
             }
@@ -472,7 +475,7 @@ class XPathEvaluator {
 
         private fun parseUnary(): PredExpr {
             val t = toks.getOrNull(pos) ?: throw NoStackTraceException(unsupported(src))
-            if (t is PTok.Kw && t.word == "not") {
+            if ((t is PTok.Kw && t.word == "not") || (t is PTok.Func && t.name == "not")) {
                 pos++
                 expect(PTok.Open)
                 val inner = parseExpression()
@@ -495,7 +498,12 @@ class XPathEvaluator {
                 is NumberLiteral -> PredExpr { e -> positionEquals(e, operand.value) }
                 //裸属性 = 存在性测试: 规范里属性节点集非空即为真, 与属性值是不是空串无关
                 is AttrOperand -> PredExpr { e -> e.hasAttr(operand.name) }
-                else -> PredExpr { e -> operand.of(e).bool() }
+                else -> PredExpr { e ->
+                    when (val value = operand.of(e)) {
+                        is PV.Num -> positionEquals(e, value.v)
+                        else -> value.bool()
+                    }
+                }
             }
         }
 

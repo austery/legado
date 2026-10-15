@@ -14,6 +14,7 @@ import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.exception.NoStackTraceException
+import io.legado.app.help.book.BookChapterLoader
 import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.book.BookStorageProviders
@@ -55,6 +56,7 @@ import io.legado.app.utils.isTrue
 import io.legado.app.utils.mapParallelSafe
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.systemCurrentTimeMillis
+import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -173,6 +175,19 @@ interface ReaderPlatformProvider {
      */
     fun autoPageStop(screenModel: ReaderScreenModel) {}
 
+    /**
+     * 页面离开可见期但仍在栈内时挂起自动翻页 (退到后台 / 被别的页面盖住)。
+     *
+     * 默认按原语义停止 (未实现挂起的端行为不变); 桌面端覆写为挂起: 开关保持, 只停推进,
+     * 回到可见期由 [autoPageResume] 接着推进。真正离开阅读页仍走 [autoPageStop]。
+     */
+    fun autoPagePause(screenModel: ReaderScreenModel) {
+        autoPageStop(screenModel)
+    }
+
+    /** 页面重新可见时恢复自动翻页 (仅与 [autoPagePause] 成对; 未实现挂起的端 no-op)。 */
+    fun autoPageResume(screenModel: ReaderScreenModel) {}
+
     /** 自动翻页滑条抬手后同步 TTS 语速 (对照原版 AutoReadDialog upTtsSpeechRate) */
     fun upTtsSpeechRate(screenModel: ReaderScreenModel) {}
 
@@ -180,7 +195,10 @@ interface ReaderPlatformProvider {
      * 朗读控制桥：驱动长按朗读弹出的共享面板
      * [io.legado.app.ui.book.read.config.ReadAloudDialog]。
      *
-     * 返回 null 表示该端没有朗读实现，路由不弹面板（iOS/鸿蒙）。
+     * 四端 (app/desktop/iOS/鸿蒙) 都已实现本方法, 各自把面板动作落到本端朗读宿主
+     * (AndroidReadAloudControls / DesktopReadAloudControls / IosReadAloudControls /
+     * OhosReadAloudControls); 返回 null 只出现在未覆写本方法 (接口默认实现) 的平台上,
+     * 此时路由不弹面板、直接销事件。
      */
     fun readAloudControls(
         navigator: io.legado.app.ui.root.AppNavigator,
@@ -648,11 +666,20 @@ class ReaderScreenModel(
      * 初始化书籍并装载章节（对照 app 端 ReadBookViewModel.initData + applyBookmarkPosition）。
      * chapterIndex + chapterPos 来自书签跳转入口（对照 app 端 intent extra chapterIndex/chapterPos）。
      *
+     * @param isSearchBook 书来自搜索/发现列表 (路由的 BookRef.Search) → 装载入口做来源对账,
+     *   在架时换成库里那本 (对照 archive upBook)
+     *
+     * 装载 (来源对账 + 详情补全 + 目录) 统一走 [BookChapterLoader.upBook], 与音/视/漫/RSS 同一条链。
      * 装载完成后按原版 initBook 语义补两件事：
      * - 云进度同步（仅同书 + 朗读运行中跳过）
      * - 无书源时自动换源（而非静默失败）
      */
-    fun initBook(book: Book, chapterIndex: Int?, chapterPos: Int? = null) {
+    fun initBook(
+        book: Book,
+        chapterIndex: Int?,
+        chapterPos: Int? = null,
+        isSearchBook: Boolean = false,
+    ) {
         // 整段在可取消任务内按序执行: [ReadBookShared.loadBook] 读章节总数会同步查库,
         // 组合期直接调用会在 UI 线程上做 DB IO (对照原版 initData 在 execute 的 IO 协程内)。
         // 顺序不变: 装载书籍状态 → 存跳转前进度快照 → 装载目标章 → 云进度/自动换源。
@@ -662,8 +689,23 @@ class ReaderScreenModel(
         // 只有当前任务有权落装载/进度/换源。
         initBookJob?.cancel()
         initBookJob = scope.launch(IoDispatcher) {
-            val isSameBook = readBook.book.value?.bookUrl == book.bookUrl
-            readBook.loadBook(book)
+            // 装载 (对照 archive BaseReadViewModel.upBook): 在架且来自搜索/发现列表的书换成
+            // 库里那本、tocUrl 空先回源取详情、目录按 内存→库→回源。失败 (书源不存在/网络)
+            // 降级到阅读器自己的目录链: 那里有目录失败态与权限拒绝上报, 会给出真正的原因
+            val loaded = runCatching {
+                BookChapterLoader.upBook(book, isSearchBook = isSearchBook)
+            }.onFailure {
+                AppLog.put("装载书籍失败\n${it.message}", it)
+            }.getOrNull()
+            val target = loaded?.book ?: book
+            val isSameBook = readBook.book.value?.bookUrl == target.bookUrl
+            readBook.loadBook(target)
+            if (loaded != null) {
+                readBook.updateBookSource(loaded.source)
+                if (loaded.chapterList.isNotEmpty()) {
+                    readBook.updateChapterList(loaded.chapterList)
+                }
+            }
             ensureActive()
             // 对照原版 applyBookmarkPosition: 带跳转目标且目标位置与当前进度不同时, 先存
             // 跳转前进度快照再跳 (返回键可恢复跳转前进度; 位置相同/无定位参数的重装不触发,
@@ -677,17 +719,17 @@ class ReaderScreenModel(
             // 对照 app 端 applyBookmarkPosition: chapterIndex 有效时跳转到指定 chapterPos。
             // 位置随 loadChapter 传入, 由装载任务在装载前落位 (对照原版先写 durChapterPos 再 loadContent)
             viewModel.loadChapter(
-                chapterIndex ?: book.durChapterIndex,
+                chapterIndex ?: target.durChapterIndex,
                 chapterPos = chapterPos?.takeIf { chapterIndex != null },
                 keepScrollOffset = false,
             )
             ensureActive()
             // 对照原版 initBook: 打开书即同步云进度 (原版每次 initBook 都 syncProgress,
             // 仅同书 + 朗读运行中跳过; 书签跳转等入口同样触发, 与原版 chapterChanged 之外的行为一致)
-            viewModel.syncProgressOnBookOpen(book, isSameBook)
+            viewModel.syncProgressOnBookOpen(target, isSameBook)
             // 对照原版 initBook: 非本地书且无书源时自动换源, 不再静默失败
-            if (!book.isLocal && readBook.bookSource.value == null) {
-                autoChangeSource(book.name, book.author)
+            if (!target.isLocal && readBook.bookSource.value == null) {
+                autoChangeSource(target.name, target.author)
             }
         }
     }
@@ -698,6 +740,9 @@ class ReaderScreenModel(
      * 对照 app 端 `BaseReadBookActivity` 的 `selectBookFolderResult` 回调:
      * 按 `book.originName` 在所选目录里找到文件 → 改 `book.bookUrl` → 落库 → 重载目录。
      * 找不到/未选中时给出与原版同口径的提示。
+     *
+     * 书籍记录已不在书架时不新建、不改内存书址, 只如实提示 —— 与原版 `book.save()`
+     * (记录不在即新建) 的差别。
      *
      * @param book 需要重新定位的本地书 (调用方传阅读器现行书籍)
      * @param dirUri 用户选定的目录 ([PlatformCapabilities.findBookFileInDir] 的入参形态)
@@ -710,12 +755,18 @@ class ReaderScreenModel(
                 return@launch
             }
             val oldUrl = book.bookUrl
+            // 记录已不在书架: 不新建也不改内存书址 (定位动作不产生书籍记录)
+            val exists = runCatching { AppDbProviders.get().bookDao.has(oldUrl) }
+                .onFailure { AppLog.put("重新定位本地书失败\n${it.message}", it) }
+                .getOrNull() ?: return@launch
+            if (!exists) {
+                readBook.upMsg("书籍已不在书架，未更新地址")
+                return@launch
+            }
             book.bookUrl = newUrl
-            // 主键变了, 按 bookUrl 的 update 会匹配不到旧行, 必须删旧插新 (对照原版 book.save)
+            // 主键变了, 按 bookUrl 的 update 会匹配不到旧行, 必须删旧插新
             runCatching {
-                val dao = AppDbProviders.get().bookDao
-                if (dao.has(oldUrl)) dao.replace(book.copy(bookUrl = oldUrl), book)
-                else dao.insert(book)
+                AppDbProviders.get().bookDao.replace(book.copy(bookUrl = oldUrl), book)
             }.onFailure {
                 AppLog.put("重新定位本地书失败\n${it.message}", it)
             }
@@ -843,15 +894,29 @@ class ReaderScreenModel(
     }
 
     // region 对话框事件 (书签/正文编辑/日志, 由 AndroidReaderMenuState 触发, ReaderRoute 渲染)
-    private val _dialogEvent = MutableStateFlow<ReaderDialogEvent?>(null)
-    val dialogEvent: StateFlow<ReaderDialogEvent?> = _dialogEvent.asStateFlow()
+    /**
+     * 对话框槽位值: [event] 待渲染的对话框, [token] 本轮打开的代次。
+     *
+     * 面板关闭回调 (退出动画结束、异步落库完成) 与下一轮打开存在竞态: 到达时槽里可能已是
+     * 别的面板, 同类面板重开时事件值又完全相同, 分得清两轮的标识只有打开时的 [token]。
+     */
+    data class DialogSlot(val event: ReaderDialogEvent, val token: Long)
 
+    /** 打开代次来源 (原子自增: post 可能来自平台回调线程) */
+    private val dialogTokenSeq = atomic(0L)
+    private val _dialogSlot = MutableStateFlow<DialogSlot?>(null)
+    /** 当前待渲染的对话框 (null = 无) */
+    val dialogSlot: StateFlow<DialogSlot?> = _dialogSlot.asStateFlow()
+
+    /** 打开对话框; 该对话框已在显示时不重开 (代次只在真正打开时递增) */
     fun postDialogEvent(event: ReaderDialogEvent) {
-        _dialogEvent.value = event
+        if (_dialogSlot.value?.event == event) return
+        _dialogSlot.value = DialogSlot(event, dialogTokenSeq.incrementAndGet())
     }
 
-    fun clearDialogEvent() {
-        _dialogEvent.value = null
+    /** 关闭 [token] 那一轮打开的对话框; 槽里已是别的轮次时本次调用不改动槽位 */
+    fun clearDialogEvent(token: Long) {
+        if (_dialogSlot.value?.token == token) _dialogSlot.value = null
     }
     // endregion
 
@@ -890,14 +955,17 @@ class ReaderScreenModel(
     }
 
     override fun onCleared() {
-        ActiveReadBookRegistry.detach(readBook)
-        // 对照原版 ReadBookActivity.onDestroy: 立即结束阅读计时 (不等待 end 的延迟结算)
+        // 对照原版 ReadBookActivity.onDestroy: 立即结束阅读计时 (不等待 end 的延迟结算)。
+        // 阅读计时与朗读计时独立 (朗读期由朗读侧另记 READ_ALOUD), 朗读豁免期同样立即结束,
+        // 避免页面退出后阅读时长虚增
         ReadTimeRecorder.endImmediately(ReadTimeRecorder.Source.READ_BOOK)
-        // 活跃期已上传过就不再上传: 每次 uploadProgress 都是一次真实 WebDav PUT。
-        // 宿主整体销毁等没走 [onPause] 的路径在此补一次, 不丢进度
-        if (!progressUploaded) viewModel.uploadProgress()
-        viewModel.onCleared()
-        scope.cancel()
+        viewModel.onCleared(pageCleanup = {
+            ActiveReadBookRegistry.detach(readBook)
+            // 活跃期已上传过就不再上传: 每次 uploadProgress 都是一次真实 WebDav PUT。
+            // 宿主整体销毁等没走 [onPause] 的路径在此补一次, 不丢进度
+            if (!progressUploaded) viewModel.uploadProgress()
+            scope.cancel()
+        })
     }
 
     /**
@@ -1182,9 +1250,9 @@ class ReaderScreenModel(
         }
     }
 
-    /** 确认跳章 (ChapterJumpConfirm 确认回调): 记住选择 + 存跳转前快照 + 跳章 */
-    fun confirmChapterJump(progress: Int) {
-        clearDialogEvent()
+    /** 确认跳章 (ChapterJumpConfirm 确认回调): 关本轮对话框 + 记住选择 + 存跳转前快照 + 跳章 */
+    fun confirmChapterJump(progress: Int, token: Long) {
+        clearDialogEvent(token)
         confirmSkipToChapter = true
         saveCurrentBookProgress()
         viewModel.loadChapter(progress, null, false)
@@ -1206,6 +1274,9 @@ sealed interface ReaderDialogEvent {
 
     /** 朗读控制面板 (对照原版 ReadMenu 朗读按钮长按 → showReadAloudDialog) */
     object ReadAloud : ReaderDialogEvent
+
+    /** 首启阅读菜单帮助 (对照原版 ReadMenu.menuInListener.onAnimationEnd → ReadBookActivity.showHelp("readMenuHelp")) */
+    object ReadMenuHelp : ReaderDialogEvent
 
     /** 更多设置 (对照原版 设置按钮 → MoreConfigDialog) */
     object MoreConfig : ReaderDialogEvent

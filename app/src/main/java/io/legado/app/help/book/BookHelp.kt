@@ -4,7 +4,6 @@ import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import io.legado.app.App
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -13,42 +12,31 @@ import io.legado.app.help.book.BookHelp.clearCacheExtra
 import io.legado.app.help.book.BookHelp.clearInvalidCache
 import io.legado.app.help.book.BookHelp.getCacheFile
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.image.MangaPluginImageFetcherProviders
-import io.legado.app.help.image.PluginImageUrl
-import io.legado.app.model.analyzeRule.AnalyzeUrl
-import io.legado.app.model.script.runScriptWithContext
+import io.legado.app.help.writeBytesAtomically
+import io.legado.app.help.writeTextAtomically
 import io.legado.app.ui.book.read.page.provider.ChapterContentParserShared
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileUtils
-import io.legado.app.utils.ImageUtils
 import io.legado.app.utils.SvgUtils
-import io.legado.app.utils.createFileIfNotExist
 import io.legado.app.utils.exists
 import io.legado.app.utils.externalFiles
 import io.legado.app.utils.getFile
 import io.legado.app.utils.isContentScheme
-import io.legado.app.utils.onEachParallel
+import io.legado.app.utils.parseToUri
 import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
 
 @Suppress("unused", "ConstPropertyName")
 object BookHelp {
     private val downloadDir: File = App.instance.externalFiles
     private const val cacheFolderName = "book_cache"
     private const val cacheImageFolderName = "images"
-    private val downloadImages = ConcurrentHashMap<String, Mutex>()
 
     val cachePath = FileUtils.getPath(downloadDir, cacheFolderName)
 
@@ -129,84 +117,45 @@ object BookHelp {
         content: String
     ) {
         if (content.isEmpty()) return
-        //保存文本
-        FileUtils.createFileIfNotExist(
+        //保存文本 (整份落盘: 阅读页会与本次写入并发整读同一章节文件, 覆盖写会留半截正文)
+        val path = FileUtils.getPath(
             downloadDir,
             cacheFolderName,
             book.getFolderName(),
             bookChapter.getFileName(),
-        ).writeText(content)
+        )
+        if (!writeTextAtomically(path, content)) {
+            throw IOException("章节正文写入失败: $path")
+        }
         BookHelpShared.upWordCount(book, bookChapter, content)
     }
 
+    /**
+     * 提取正文图片 src 流, 编排下沉 [BookImageDownloadShared.flowImages]。
+     */
     fun flowImages(bookChapter: BookChapter, content: String): Flow<String> {
-        return flow {
-            val imgList = ChapterContentParserShared.extractImages(content)
-            for (i in imgList) {
-                if (i.src.isBlank()) continue
-                emit(i.src)
-            }
-        }
+        return BookImageDownloadShared.flowImages(bookChapter, content)
     }
 
+    /** 批量下载章节图片, 编排下沉 [BookImageDownloadShared.saveImages] (并发取 threadCount 语义)。 */
     suspend fun saveImages(
         bookSource: BookSource,
         book: Book,
         bookChapter: BookChapter,
         content: String,
         concurrency: Int = AppConfig.threadCount
-    ) = coroutineScope {
-        flowImages(bookChapter, content).onEachParallel(concurrency) { mSrc ->
-            saveImage(bookSource, book, mSrc, bookChapter)
-        }.collect()
+    ) {
+        BookImageDownloadShared.saveImages(bookSource, book, bookChapter, content, concurrency)
     }
 
+    /** 下载并缓存单张图片, 编排下沉 [BookImageDownloadShared.saveImage]。 */
     suspend fun saveImage(
         bookSource: BookSource?,
         book: Book,
         src: String,
         chapter: BookChapter? = null
     ) {
-        if (isImageExist(book, src)) {
-            return
-        }
-        val mutex = downloadImages.computeIfAbsent(src) { Mutex() }
-        mutex.lock()
-        try {
-            if (isImageExist(book, src)) {
-                return
-            }
-            // 插件源图片: 内部协议形态 → 委托扩展自身 client (拦截器还原), 与
-            // MangaImageBytesLoader 插件分支同构; 失败抛异常走下方统一 catch
-            val bytes = PluginImageUrl.parse(src)?.let { (sourceId, encodedUrl) ->
-                MangaPluginImageFetcherProviders.getOrNull()
-                    ?.fetchImage(sourceId, encodedUrl)
-                    ?: throw RuntimeException("插件源图片下载失败: $src")
-            } ?: AnalyzeUrl(
-                src, source = bookSource, coroutineContext = currentCoroutineContext()
-            ).getByteArrayAwait()
-            //某些图片被加密，需要进一步解密
-            runScriptWithContext {
-                ImageUtils.decode(
-                    src, bytes, isCover = false, bookSource, book
-                )
-            }?.let {
-                if (!checkImage(it)) {
-                    // 如果部分图片失效，每次进入正文都会花很长时间再次获取图片数据
-                    // 所以无论如何都要将数据写入到文件里
-                    // throw NoStackTraceException("数据异常")
-                    AppLog.put("${book.name} ${chapter?.title} 图片 $src 下载错误 数据异常")
-                }
-                writeImage(book, src, it)
-            }
-        } catch (e: Exception) {
-            currentCoroutineContext().ensureActive()
-            val msg = "${book.name} ${chapter?.title} 图片 $src 下载失败\n${e.localizedMessage}"
-            AppLog.put(msg, e)
-        } finally {
-            downloadImages.remove(src)
-            mutex.unlock()
-        }
+        BookImageDownloadShared.saveImage(bookSource, book, src, chapter)
     }
 
     fun getImage(book: Book, src: String): File {
@@ -219,11 +168,15 @@ object BookHelp {
     }
 
     fun writeImage(book: Book, src: String, bytes: ByteArray) {
-        getImage(book, src).createFileIfNotExist().writeBytes(bytes)
+        val path = getImage(book, src).absolutePath
+        // 落盘失败不能静默: 调用方按“已写入”继续走会拿着一个不存在的路径 (原实现由 writeBytes 抛 IOException)
+        if (!writeBytesAtomically(path, bytes)) {
+            throw IOException("图片缓存写入失败: $path")
+        }
     }
 
     fun isImageExist(book: Book, src: String): Boolean {
-        return getImage(book, src).exists()
+        return isCachedImageUsable(getImage(book, src).absolutePath)
     }
 
     fun getImageSuffix(src: String): String =
@@ -263,7 +216,8 @@ object BookHelp {
                 handler
             )
         }
-        val uri = book.getLocalUri()
+        val ref = LocalBookLocators.get().getReadableFileRef(book) ?: book.bookUrl
+        val uri = ref.parseToUri()
         return if (uri.isContentScheme()) {
             App.instance.contentResolver.openFileDescriptor(uri, "r")
         } else {
@@ -349,7 +303,7 @@ object BookHelp {
         return ret
     }
 
-    private fun checkImage(bytes: ByteArray): Boolean {
+    internal fun checkImage(bytes: ByteArray): Boolean {
         val op = BitmapFactory.Options()
         op.inJustDecodeBounds = true
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, op)

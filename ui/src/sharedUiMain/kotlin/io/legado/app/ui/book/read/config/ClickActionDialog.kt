@@ -1,22 +1,10 @@
-// I18N KEYS (新增, 待 ResourceProvider.jvm.kt 补全桌面端字面量):
-// - click_regional_config: "点击区域设置"
-// - select_action: "选择动作"
-// - close: "关闭" (与 EffectiveReplacesDialog 复用, 已存在 jvmMain)
-// - menu: "菜单"
-// - next_page: "下一页"
-// - prev_page: "上一页"
-// - next_chapter: "下一章" (已存在 jvmMain)
-// - previous_chapter: "上一章" (已存在 jvmMain)
-// - read_aloud_prev_paragraph: "朗读上一段"
-// - read_aloud_next_paragraph: "朗读下一段"
-// - bookmark_add: "添加书签"
-// - replace_state_change: "替换状态切换"
-// - chapter_list: "目录" (已存在 jvmMain)
-// - search_content: "全文搜索" (已存在 jvmMain)
-// - read_aloud_pause_resume: "朗读暂停/继续"
-//
-// PAINTER KEYS (新增, 待 ResourceProvider.jvm.kt 补全桌面端图标):
-// - ic_baseline_close: 关闭按钮 (已存在 jvmMain)
+// 本 Dialog 引用的字符串/图标均取自 Compose Resources 按 key 索引的映射表
+// (ui/src/commonMain/composeResources 为四端单一数据源, 无需各端补字面量):
+// 字符串: click_regional_config / select_action / close / menu / next_page / prev_page /
+//         next_chapter / previous_chapter / read_aloud_prev_paragraph / read_aloud_next_paragraph /
+//         bookmark_add / replace_state_change / chapter_list / search_content /
+//         read_aloud_pause_resume
+// 图标: ic_baseline_close
 
 package io.legado.app.ui.book.read.config
 
@@ -28,7 +16,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Icon
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
@@ -43,7 +30,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.legado.app.ui.book.read.page.detectClickArea
+import io.legado.app.ui.book.read.page.readClickActionConfig
+import io.legado.app.ui.book.read.page.writeClickActionConfig
 import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogSizing
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.AppSelectorDialog
 import io.legado.app.ui.compose.theme.AppTheme
@@ -110,7 +101,7 @@ data class ClickActionConfig(
  * # 样式 (对照原版 dialog_click_action_config.xml 全屏半透明覆盖层)
  *
  * - 全屏对话框: 内容 fillMaxSize, 背景 #99343434 半透明 (原版 @color/translucent)
- * - 3x3 网格铺满全屏: 每格 1dp 间隔 + 3dp 圆角半透明卡片 + 白色动作名 (原版 shape_translucent_card)
+ * - 3x3 网格铺满全屏: 每格 1dp 间隔 + shapeSm(4dp) 圆角半透明卡片 + 白色动作名 (原版 shape_translucent_card 3dp)
  * - 底部栏: 原版 LinearLayout (margin arco_spacing_lg, 半透明卡片, 标题 + 关闭按钮)
  *
  * @param clickActionConfig 9 个区域当前动作值
@@ -124,9 +115,9 @@ fun ClickActionDialog(
     onDismiss: () -> Unit,
 ) {
     val colors = AppTheme.colors
-    // 原版 @color/translucent (#99343434) / @color/white；卡片圆角 3dp（shape_translucent_card）
+    // 原版 @color/translucent (#99343434) / @color/white；卡片圆角对齐 shapeSm (原版 shape_translucent_card 3dp)
     val translucent = Color(0x99343434)
-    val cardShape = RoundedCornerShape(3.dp)
+    val cardShape = DesignTokens.shapeSm
 
     // 13 个可选动作 (key=动作值, value=动作名), 顺序与原版 actions linkedMapOf 完全一致
     // rememberString 是 @Composable, 不能在 remember{} 内调用, 直接每次重组时构建
@@ -176,6 +167,8 @@ fun ClickActionDialog(
     AppDialog(
         onDismissRequest = onDismiss,
         properties = AppDialogSizes.properties(),
+        // 对照原版 dialog_click_action_config.xml: 窗口 MATCH_PARENT, 故不套对话框尺寸
+        sizing = AppDialogSizing.Unconstrained,
     ) {
         // 对照原版 dialog_click_action_config.xml: FrameLayout match_parent (translucent 背景)
         // 内叠两个子组件 —— GridLayout 铺满全屏 (3x3 九宫格覆盖整个点击区),
@@ -276,7 +269,7 @@ fun ClickActionDialog(
             onItemSelected = { i ->
                 val newValue = actionValues[i]
                 states[targetIndex].intValue = newValue
-                // 即时回传更新后的配置 (与原版 AppConfig.clickActionXX = it + onDestroy detectClickArea 对齐)
+                // 即时回传更新后的配置 (对照原版每格选完即 putPrefInt(PreferKey.clickActionXX))
                 onConfirm(
                     ClickActionConfig(
                         tl = states[0].intValue,
@@ -293,4 +286,29 @@ fun ClickActionDialog(
             },
         )
     }
+}
+
+/**
+ * 点击区域配置对话框宿主: 9 个区域动作 → [ClickActionDialog] → 每次改格即时落盘, 关闭时九宫格校验。
+ *
+ * 由阅读菜单"更多设置"的点击区域入口、阅读页首启引导与漫画阅读菜单共用, 三处是同一份配置与同一写入口径。
+ *
+ * @param config 当前 9 个区域动作 (默认从偏好读一次: 对照原版 ClickActionConfigDialog 在 onFragmentCreated 取一次)
+ * @param onConfigChange 改格回写 (默认写偏好, 对照原版 putPrefInt(PreferKey.clickActionXX))
+ */
+@Composable
+fun ClickRegionalConfigDialogHost(
+    onDismiss: () -> Unit,
+    config: ClickActionConfig = remember { readClickActionConfig() },
+    onConfigChange: (ClickActionConfig) -> Unit = { writeClickActionConfig(it) },
+) {
+    ClickActionDialog(
+        clickActionConfig = config,
+        onConfirm = onConfigChange,
+        onDismiss = {
+            // 校验时机对照原版 ClickActionConfigDialog.onDestroy: 对话框销毁时按已落盘的 9 格校验一次
+            detectClickArea()
+            onDismiss()
+        },
+    )
 }

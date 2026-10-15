@@ -1,6 +1,5 @@
 package io.legado.app.model.fileBook
 
-import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
@@ -9,27 +8,31 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.exception.NoStackTraceException
+import io.legado.app.exception.SecurityException
+import io.legado.app.help.book.BookStorageProviders
+import io.legado.app.help.book.LocalBookLocators
 import io.legado.app.help.book.addType
-import io.legado.app.help.book.archiveName
-import io.legado.app.help.book.getRemoteUrl
-import io.legado.app.help.book.isArchive
 import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isPdf
+import io.legado.app.help.book.requireBookSaveDir
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
-import io.legado.app.model.analyzeRule.CustomUrl
 import io.legado.app.ui.compose.platform.syncGetString
+import io.legado.app.utils.File
 import io.legado.app.utils.InputStream
 import io.legado.app.utils.MD5Utils
+import io.legado.app.utils.atomicWriteTempPath
 import io.legado.app.utils.inputStream
 import io.legado.app.utils.toInputStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
-import io.legado.app.utils.File
+import okio.FileSystem
+import okio.IOException
+import okio.Path.Companion.toPath
 
 /**
  * native 端 (iOS/鸿蒙) [FileBookAccessor] 实现, 对照 desktop DesktopFileBookAccessor。
@@ -39,20 +42,22 @@ import io.legado.app.utils.File
  *   (commonMain TextFileCore); PDF/CBZ 解析器未下沉, 走 [UnsupportedFileBook] 抛明确异常, 不静默空返回
  * - zip 解析用 commonMain [RemoteZipCore] + [ZipEntryReader] (无 java.util.zip)
  * - bookUrl 用 `file://` + 绝对路径 (与 NativeLocalBookLocator.parseLocalPath 对齐)
- * - saveBookFile(str) 网络路径用 AnalyzeUrlCore.getByteArrayAwait (native 响应体本就整块进内存,
- *   走 getInputStreamAwait 无额外收益)
- * - importRemoteBook 的 zip 分支用 WebDav.readRange + RemoteZipCore (与 desktop RemoteZipWrapper 语义一致)
+ * - saveBookFile(str) 的 webDav 分支与 "下载到本地" / "刷新远端更新" 链路共用同一流式入口
+ *   [saveBookFileFromWebDav] (内部走既有 WebDav.downloadTo 直接写盘, 不经 InputStream 整份读入内存);
+ *   网络路径用 AnalyzeUrlCore.getByteArrayAwait
+ *   (native 响应体本就整块进内存, 走 getInputStreamAwait 无额外收益)
  */
 class NativeFileBookAccessor : FileBookAccessor {
 
     /** 封面缓存目录: `{filesDir}/covers` (对齐 app 端 `externalFiles/covers`)。 */
     private val coversDir: String get() = AppFilesDirs.get().filesDir + "/covers"
 
-    /** 本地书保存目录: `{filesDir}/books` (对齐 desktop `{root}/books`)。 */
-    private val booksDir: String get() = AppFilesDirs.get().filesDir + "/books"
-
-    /** 合法文件后缀 (与 UrlUtil.fileSuffixRegex 一致, 该 regex 未下沉 commonMain 故此处内联)。 */
-    private val fileSuffixRegex = Regex("^[a-z\\d]+$", RegexOption.IGNORE_CASE)
+    /**
+     * 有效书籍保存目录 (用户在"其它设置 → 书籍保存位置"选定)。
+     * 未设置时 [requireBookSaveDir] 抛原版同款异常, 由调用链既有的"去设置目录"出口
+     * 拉起目录选择器。
+     */
+    private fun bookSaveDir(): String = requireBookSaveDir()
 
     override fun getCoverPath(bookUrl: String): String {
         // 与 app 端 FileBookAccessorImpl.getCoverPath 一致: md516(bookUrl).jpg
@@ -61,7 +66,7 @@ class NativeFileBookAccessor : FileBookAccessor {
 
     override fun getHandler(book: Book): BaseFileBook {
         // 逐字对齐 app 端 FileBookAccessorImpl.getHandler (即 archive 原版 Book.getHandler):
-        // isPdf -> PdfFile / isEpub -> EpubFile /
+        // isPdf -> UnsupportedFileBook (PDF 解析器未下沉) / isEpub -> EpubFile /
         // isLocal && (originName 以 .cbz 结尾 || (originName 以 .zip 结尾 && isImage)) -> CbzFile /
         // else -> TextFile。
         // 注意 .cbz 分支不要求 isImage —— 导入时已由 importLocalFile 按后缀置为 image 类型,
@@ -80,7 +85,10 @@ class NativeFileBookAccessor : FileBookAccessor {
     override fun getBookInputStream(book: Book): InputStream {
         // 流式打开 (不整书读入内存); 调用方负责 close。
         // 打开失败抛 okio IOException 族 (ENOENT 为 FileNotFoundException, 其余含权限不足为普通 IOException)。
-        return resolveLocalFile(book.bookUrl).inputStream()
+        // 引用取当前可用的那个 (引用失效时按文件名在书籍保存位置/导入目录找回, 与桌面端 openLocalFile 同口径);
+        // 解析不到时按 bookUrl 原样打开, 由调用方按异常处理
+        val path = LocalBookLocators.get().getReadableFileRef(book)
+        return (if (path != null) File(path) else resolveLocalFile(book.bookUrl)).inputStream()
     }
 
     override fun getLastModified(book: Book): Result<Long> {
@@ -126,83 +134,66 @@ class NativeFileBookAccessor : FileBookAccessor {
         return books
     }
 
-    override fun importLocalFile(uriStr: String): Book {
+    /**
+     * 导入本地文件 (原 `FileBook.importLocalFile(FileDoc)`)。
+     *
+     * 判型 / 构造 Book / 落库在 [FileBookLocalImportShared] (四端唯一一份), 此处只取平台文件信息
+     * 与压缩包能力 ([archiveHasBookFile])。
+     */
+    override fun importLocalFile(uriStr: String): Book = runBlocking {
         val file = resolveLocalFile(uriStr)
-        val fileName = file.name
-        if (file.length() == 0L) throw NoStackTraceException("Unexpected empty File")
-        val (name, author) = analyzeNameAuthor(fileName)
-        var type = BookType.text or BookType.local
-        when {
-            fileName.endsWith(".cbz", true) -> type = BookType.image or BookType.local
-            AppPattern.archiveFileRegex.matches(fileName) -> {
-                // zip 压缩包: 检查内含书籍文件, 有则解压导入第一个 (与 desktop 一致)
-                if (fileName.endsWith(".zip", true)) {
-                    val bytes = file.readBytes()
-                    val zip = RemoteZipCore(bytesRangedSource(bytes), fileName, bytes.size.toLong())
-                    try {
-                        val meta = zip.ensureMeta().values.firstOrNull {
-                            !it.entry.name.endsWith("/") && FileBook.isBookFile(it.entry.name)
-                        }
-                        if (meta != null) {
-                            val savedUri = saveBookFile(
-                                zip.readDecompressed(meta).toInputStream(),
-                                meta.entry.name.substringAfterLast('/')
-                            )
-                            return importLocalFile(savedUri)
-                        }
-                    } finally {
-                        zip.close()
-                    }
-                }
-                throw NoStackTraceException("iOS/鸿蒙端仅支持 zip/cbz 压缩包, 不支持 $fileName")
-            }
-        }
-        val bookUrl = "file://" + file.absolutePath
-        return importBook(
-            Book(
-                bookUrl = bookUrl,
-                name = name,
-                author = author,
-                originName = fileName,
-                latestChapterTime = file.lastModified(),
-                order = runBlocking { AppDbProviders.get().bookDao.minOrder() } - 1,
-                origin = bookUrl,
-                type = type
-            )
+        FileBookLocalImportShared.importLocalFile(
+            accessor = this@NativeFileBookAccessor,
+            ref = uriStr,
+            fileName = file.name,
+            size = file.length(),
+            lastModified = file.lastModified(),
+            storedRef = "file://" + file.absolutePath,
+            archiveHasBookFile = ::archiveHasBookFile,
         )
     }
 
-    /** 统一导入逻辑 (对齐 app 端 FileBookAccessorImpl.importBook / desktop 版, runBlocking 适配 suspend DAO)。 */
-    private fun importBook(book: Book): Book {
-        val bookDao = AppDbProviders.get().bookDao
-        val dbBook = runBlocking { bookDao.getBook(book.bookUrl) }
-        return if (dbBook == null) {
-            book.apply {
-                FileBook.upBookInfo(this)
-                runBlocking { bookDao.insert(this@apply) }
+    /**
+     * 压缩包内是否含书籍文件: native 端无 libarchive, 只有 zip 解包器, 其余压缩包格式在此报明确异常
+     * (不静默当作文本书导入)。cbz 已在判型里归为图片书, 不到此处。
+     */
+    private fun archiveHasBookFile(archiveRef: String): Boolean {
+        val archiveFile = resolveLocalFile(archiveRef)
+        if (!archiveFile.name.endsWith(".zip", true)) {
+            throw NoStackTraceException("iOS/鸿蒙端仅支持 zip/cbz 压缩包, 不支持 ${archiveFile.name}")
+        }
+        val bytes = archiveFile.readBytes()
+        val zip = RemoteZipCore(bytesRangedSource(bytes), archiveFile.name, bytes.size.toLong())
+        return try {
+            zip.ensureMeta().values.any {
+                !it.entry.name.endsWith("/") && FileBook.isBookFile(it.entry.name)
             }
-        } else {
-            deleteBook(dbBook, false)
-            dbBook.apply {
-                this.name = book.name
-                this.author = book.author
-                this.originName = book.originName
-                this.origin = book.origin
-                this.latestChapterTime = 0
-                FileBook.upBookInfo(this)
-                runBlocking { bookDao.update(this@apply) }
-            }
+        } finally {
+            zip.close()
         }
     }
 
     override fun deleteBook(book: Book, deleteOriginal: Boolean) {
-        // 与 desktop 一致: 删封面 + (可选) 原文件
+        // 与 app/desktop 同一口径: 章节缓存与封面在应用私有区, 删不掉不影响用户的源文件,
+        // 尽力而为即可; 源文件删不掉则抛出原因, 由上层如实提示 (见 [deleteSourceFile])。
         runCatching {
+            BookStorageProviders.get().clearCache(book)
             book.coverUrl?.takeIf { it.isNotBlank() }?.let { File(it).delete() }
-            if (deleteOriginal) {
-                resolveLocalFile(book.bookUrl).delete()
-            }
         }
+        if (!deleteOriginal) return
+        deleteSourceFile(book)
+    }
+
+    /**
+     * 删除本地书源文件, 删不掉时抛出原因: 库里的记录已删、文件还在磁盘上, 上层据此提示书名与原因。
+     * 文件本就不在时删除意图已达成, 不抛。
+     */
+    private fun deleteSourceFile(book: Book) {
+        val ref = book.bookUrl
+        if (ref.isBlank()) throw IOException("未能删除源文件: 书籍文件引用为空")
+        val file = resolveLocalFile(ref)
+        if (file.delete()) return
+        if (file.exists()) throw IOException("未能删除源文件: ${file.absolutePath}")
     }
 
     override suspend fun saveBookFile(
@@ -210,64 +201,89 @@ class NativeFileBookAccessor : FileBookAccessor {
         fileName: String,
         source: BaseSource?
     ): String {
-        // webDav 走 WebDav 下载流; 网络 URL 走 AnalyzeUrlCore 取字节
+        // 网络 URL 走 AnalyzeUrlCore 取字节
         // (native 响应体本就整块进内存, getByteArrayAwait 与流式等价)
-        val inputStream = if (!str.startsWith(BookType.webDavTag)) {
-            AnalyzeUrlCore(
-                str, source = source, callTimeout = 0,
-                coroutineContext = currentCoroutineContext()
-            ).getByteArrayAwait().toInputStream()
-        } else {
-            WebDav.fromPath(str.substring(BookType.webDavTag.length)).downloadInputStream()
+        if (str.startsWith(BookType.webDavTag)) {
+            // webDav 整书下载与 "下载到本地" / "刷新远端更新" 链路共用同一流式入口
+            // (见 [saveBookFileFromWebDav]; 旧实现直接内联 downloadTo, 两份等价实现归一)
+            return saveBookFileFromWebDav(
+                WebDav.fromPath(str.substring(BookType.webDavTag.length)), fileName
+            )
         }
-        return saveBookFile(inputStream, fileName)
+        val bytes = AnalyzeUrlCore(
+            str, source = source, callTimeout = 0,
+            coroutineContext = currentCoroutineContext()
+        ).getByteArrayAwait()
+        return saveBookFile(bytes.toInputStream(), fileName)
+    }
+
+    /**
+     * 流式保存 WebDav 远端书籍文件 ("下载到本地" / "刷新远端更新" 链路)。
+     *
+     * native 端无 SAF: 交给既有的 [WebDav.downloadTo] (savedPath, replaceExisting)
+     * 边下边写有效书籍保存目录下的 `{fileName}` (用户在"书籍保存位置"选定),
+     * 不再经 [saveBookFile] (inputStream 重载) 的 `readFully()` 把整份文件读进内存 ——
+     * 峰值内存与文件大小无关。
+     *
+     * replaceExisting=true: 保持 [saveBookFile] (inputStream 重载) 的覆盖写语义
+     * (downloadTo 在 replaceExisting=false 且文件已存在时直接返回, 不覆盖)。
+     *
+     * 传输中途失败 (含取消) 时目标名上不会留下半截书: downloadTo 边下边写的是目标同目录的
+     * 临时件 (共享整份写入契约), 整份写完才改名就位 —— 目标要么是原有的完整内容, 要么是
+     * 完整的新内容 (或不存在)。
+     *
+     * 异常口径与 app 端一致: 保存位置未设置时抛 [io.legado.app.exception.InvalidBooksDirException];
+     * 已设置但写不进去 (目录被删/无写权限) 按 app 端文件路径分支的口径
+     * 报 `SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e")` (喂给
+     * `Throwable.isSecurityException()` 的"去设置目录"出口), 其余异常 (含网络/传输) 照旧透传。
+     *
+     * 返回引用形式 (`file://` + 绝对路径) 与 [saveBookFile] (inputStream 重载) 一致。
+     */
+    override suspend fun saveBookFileFromWebDav(webDav: WebDav, fileName: String): String {
+        val dir = bookSaveDir()
+        val file = File("$dir/$fileName")
+        // 分辨"保存位置不可用"与网络/传输异常: 前者按 app 端 FileBook.saveBookFile 文件路径分支的
+        // 口径给出权限类提示, 后者原样透传 (与 desktop 端同一口径)。落盘要在目标目录里建临时件
+        // 再改名, 所以探的是"能否在目标目录里建出临时件" (名字用共享契约生成, 探完即删);
+        // 探目标文件本身会在下载失败时留下 0 字节的同名文件。
+        val probe = File(atomicWriteTempPath(file.path))
+        try {
+            File(dir).mkdirs()
+            FileSystem.SYSTEM.write(probe.path.toPath()) { }
+        } catch (e: Exception) {
+            throw SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e").apply {
+                addSuppressed(e)
+            }
+        } finally {
+            probe.delete()
+        }
+        webDav.downloadTo(file.path, true)
+        return "file://" + file.absolutePath
     }
 
     override fun saveBookFile(inputStream: InputStream, fileName: String): String {
-        // native 端无 SAF, 写入 {filesDir}/books (app 端走 defaultBookTreeUri + DocumentFile)
-        File(booksDir).mkdirs()
-        val file = File("$booksDir/$fileName")
+        // native 端无 SAF, 写入有效书籍保存目录 (用户在"书籍保存位置"选定;
+        // app 端走 defaultBookTreeUri + DocumentFile; 未设置时 requireBookSaveDir 抛异常,
+        // 由调用链既有的"去设置目录"出口拉起目录选择器)
+        //
+        // 异常口径与 app 端 FileBook.saveBookFile 文件路径分支逐字一致: 写不进去 (目录被删/
+        // 无写权限/磁盘满) 转 `SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e")`,
+        // 让 `Throwable.isSecurityException()` (native actual 匹配 io.legado.app.exception.SecurityException)
+        // 的调用方 (RemoteBookViewModelShared 的 onPermissionDenied / ReaderScreenModel 的权限请求链)
+        // 拉起"去设置目录"出口; 原版该分支同样 `catch (e: Exception)` 包住整段写。
+        val dir = bookSaveDir()
+        val file = File("$dir/$fileName")
         try {
+            File(dir).mkdirs()
             file.writeBytes(inputStream.readFully())
+        } catch (e: Exception) {
+            throw SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e").apply {
+                addSuppressed(e)
+            }
         } finally {
             inputStream.close()
         }
         return "file://" + file.absolutePath
-    }
-
-    override fun downloadRemoteBook(book: Book): Boolean {
-        // 与 desktop 一致: saveBookFile(str) + importFromArchive + bookDao.update
-        val webDavUrl = book.getRemoteUrl()
-            ?: throw NoStackTraceException("Book file is not webDav File")
-        val fileName = if (book.isArchive) book.archiveName else book.originName
-        val fileUriStr = runBlocking { saveBookFile(webDavUrl, fileName, null) }
-        if (book.isArchive) {
-            val newBook = importFromArchive(fileUriStr, book.originName) { name ->
-                name.contains(book.originName)
-            }.firstOrNull() ?: throw NoStackTraceException("Archive contains no matching book file")
-            book.origin = newBook.origin
-            book.bookUrl = newBook.bookUrl
-        } else {
-            book.bookUrl = fileUriStr
-        }
-        runBlocking { AppDbProviders.get().bookDao.update(book) }
-        return true
-    }
-
-    override fun mergeBook(localBook: Book, onLineBook: Book?): Book {
-        // 与 app 端一致: onLineBook 为 null 时返回 localBook; 字段合并 + bookDao.update 替代 Book.save()
-        onLineBook ?: return localBook
-        localBook.name = onLineBook.name.ifBlank { localBook.name }
-        localBook.author = onLineBook.author.ifBlank { localBook.author }
-        localBook.coverUrl = onLineBook.coverUrl
-        if (!onLineBook.intro.isNullOrBlank()) {
-            localBook.intro = onLineBook.intro
-        }
-        val bookDao = AppDbProviders.get().bookDao
-        runBlocking {
-            if (bookDao.has(localBook.bookUrl)) bookDao.update(localBook) else bookDao.insert(localBook)
-        }
-        return localBook
     }
 
     override fun analyzeNameAuthor(fileName: String): Pair<String, String> {
@@ -278,104 +294,7 @@ class NativeFileBookAccessor : FileBookAccessor {
         return BookNameAuthorAnalyzer.analyzeNameAuthor(fileName, importFileNameJs)
     }
 
-    override suspend fun importRemoteBook(
-        webDav: WebDav,
-        serverID: Long?,
-        name: String,
-        path: String,
-        size: Long,
-        lastModify: Long,
-        downloadFile: Boolean
-    ): Book {
-        val bookDao = AppDbProviders.get().bookDao
-        val origin = BookType.webDavTag + CustomUrl(path).putAttribute("serverID", serverID).toString()
-
-        suspend fun importAsImage(): Book {
-            val bookUrl = if (downloadFile && size <= 30 * 1024 * 1024) saveBookFile(origin, name, null) else origin
-            return importBook(
-                Book(
-                    bookUrl = bookUrl,
-                    name = name.substringBeforeLast("."),
-                    author = "",
-                    originName = name,
-                    latestChapterTime = lastModify,
-                    order = bookDao.minOrder() - 1,
-                    origin = origin,
-                    type = BookType.image or BookType.local
-                ).apply { variable = "cbz:${0L},${0L},${size}" }
-            )
-        }
-
-        suspend fun importAsEpub(): Book {
-            val bookUrl = if (downloadFile && size <= 30 * 1024 * 1024) saveBookFile(origin, name, null) else origin
-            return importBook(
-                Book(
-                    bookUrl = bookUrl,
-                    name = name.substringBeforeLast("."),
-                    author = "",
-                    originName = name,
-                    latestChapterTime = lastModify,
-                    order = bookDao.minOrder() - 1,
-                    origin = origin,
-                    type = BookType.text or BookType.local
-                ).apply { variable = "epub:${0L},${0L},${size},0" }
-            )
-        }
-
-        return when {
-            name.endsWith(".cbz", true) -> importAsImage()
-            name.endsWith(".epub", true) -> importAsEpub()
-            name.endsWith(".zip", true) -> {
-                // Range 读远程 zip 目录 (与 desktop RemoteZipWrapper 语义一致, 复用 commonMain RemoteZipCore)
-                val remoteZip = RemoteZipCore(
-                    RangedSource { offset, length, fileSize -> webDav.readRange(offset, length, fileSize) },
-                    name, size
-                )
-                try {
-                    val metas = remoteZip.ensureMeta().values
-                    val hasBookFile = metas.any { !it.entry.name.endsWith("/") && FileBook.isBookFile(it.entry.name) }
-                    val hasImageFile = metas.any { !it.entry.name.endsWith("/") && AppPattern.imgFileRegex.matches(it.entry.name) }
-                    when {
-                        hasImageFile -> importAsImage()
-                        hasBookFile -> {
-                            val meta = metas.first { !it.entry.name.endsWith("/") && FileBook.isBookFile(it.entry.name) }
-                            val uriStr = saveBookFile(
-                                remoteZip.readDecompressed(meta).toInputStream(),
-                                meta.entry.name.substringAfterLast('/')
-                            )
-                            importLocalFile(uriStr).apply {
-                                this.origin = origin
-                                addType(BookType.archive)
-                                runBlocking { bookDao.update(this@apply) }
-                            }
-                        }
-                        else -> throw NoStackTraceException("不支持的压缩包格式")
-                    }
-                } finally {
-                    remoteZip.close()
-                }
-            }
-            else -> importLocalFile(saveBookFile(origin, name, null)).apply {
-                this.origin = origin
-                runBlocking { bookDao.update(this@apply) }
-            }
-        }
-    }
-
-    override fun getUrlSuffix(name: String): String {
-        // 对齐 UrlUtil.getSuffix 原版语义: 不带点 + 合法性校验 + "ext" 兜底
-        val suffix = CustomUrl(name).getUrl()
-            .substringAfterLast("/")
-            .substringBefore("?")
-            .substringBefore("#")
-            .substringAfterLast(".", "")
-        return if (suffix.length > 5 || !suffix.matches(fileSuffixRegex)) {
-            AppLog.put("Cannot find legal suffix:\n target: $name\n suffix: $suffix")
-            "ext"
-        } else {
-            suffix
-        }
-    }
+    override fun getUrlSuffix(name: String): String = io.legado.app.utils.getUrlSuffix(name, null)
 
     /** 解析 bookUrl 为 [File] (与 NativeLocalBookLocator.parseLocalPath 剥离规则一致);
      *  internal 供同模块 iOS 授权装饰器取文件路径包租约。 */
@@ -415,6 +334,22 @@ class NativeFileBookAccessor : FileBookAccessor {
         }
         return out
     }
+}
+
+/**
+ * 压缩包子书回退: 子书文件读不到时按压缩包名找回原压缩包, 重新解压后打开同名书
+ * (对照原版 `BaseFileBook.getBookInputStream` 的 `Book.getArchiveUri` 回退分支与桌面端
+ * `DesktopFileBookAccessor.getBookInputStream`)。
+ *
+ * 由 iOS/鸿蒙两端的目录授权装饰器各自调用 —— 回退过程中的压缩包读取与再打开都要回到自己那份
+ * 装饰器 (`importFromArchive` / `getBookInputStream`), 授权才挂在本次真正会读写的路径上。
+ *
+ * @return 打开成功返回输入流; 没有对应的原压缩包或包内没有同名书返回 null (调用方按原先的失败如实上报)
+ */
+internal fun FileBookAccessor.reopenFromArchive(book: Book): InputStream? {
+    val archiveRef = LocalBookLocators.get().getReadableArchiveRef(book) ?: return null
+    return importFromArchive(archiveRef, book.originName) { it.contains(book.originName) }
+        .firstOrNull()?.let { getBookInputStream(it) }
 }
 
 /**

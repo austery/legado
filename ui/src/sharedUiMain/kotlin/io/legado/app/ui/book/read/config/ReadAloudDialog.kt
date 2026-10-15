@@ -34,7 +34,6 @@
 package io.legado.app.ui.book.read.config
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -42,15 +41,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Icon
-import androidx.compose.material.Slider
-import androidx.compose.material.SliderDefaults
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,9 +55,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
-import io.legado.app.ui.compose.component.AppDialogSizes
-import io.legado.app.ui.compose.component.AppDropdownMenu
+import io.legado.app.ui.compose.component.AppSelectorDialog
+import io.legado.app.ui.compose.component.AppSheetSurface
+import io.legado.app.ui.compose.component.AppSlider
 import io.legado.app.ui.compose.component.AppSwitch
+import io.legado.app.ui.compose.component.LocalSheetDismissRequest
 import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.platform.rememberString
 import io.legado.app.ui.compose.theme.AppTheme
@@ -127,6 +123,7 @@ fun ReadAloudDialog(
     initialTimer: Int = 0,
     initialSpeechRate: Int = 5,
     initialFollowSys: Boolean = false,
+    dismissed: Boolean = false,
     onPlayPause: () -> Unit,
     onStop: () -> Unit,
     onPrev: () -> Unit,
@@ -150,18 +147,16 @@ fun ReadAloudDialog(
     var followSys by remember(initialFollowSys) { mutableStateOf(initialFollowSys) }
     // 定时弹窗展开状态 (与原版 context.selector 单弹窗对齐)
     var timerMenuExpanded by remember { mutableStateOf(false) }
-    // 拖动中的语速预览值 (与原版 AppSlider 拖动语义对齐: 拖动中仅刷新显示, 抬手回调)
-    var draggingSpeed by remember { mutableFloatStateOf(-1f) }
+    // 内容侧带动画收起 (对照原版 dismissAllowingStateLoss 的动画语义; 不在弹层内时兜底直关)
+    val requestDismiss = LocalSheetDismissRequest.current ?: onDismiss
 
-    // 底部弹层 (对照原版 BaseBottomDialogFragment: 窗口 MATCH_PARENT 全宽贴底 +
-    // filletBackground 8dp 圆角; 内容 8dp 间距由下方 Column padding 提供)
+    // 底部弹层 (对照原版 BaseBottomDialogFragment: 窗口 MATCH_PARENT 全宽贴底;
+    // 内容 8dp 间距由下方 Column padding 提供)
     AppBottomSheetDialog(
         onDismissRequest = onDismiss,
-        properties = AppDialogSizes.properties(),
+        dismissed = dismissed,
     ) {
-        Surface(
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
+        AppSheetSurface(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
@@ -201,7 +196,7 @@ fun ReadAloudDialog(
                         tint = colors.primaryText,
                         onClick = {
                             onStop()
-                            onDismiss()
+                            requestDismiss()
                         },
                     )
                     AloudIcon(
@@ -235,47 +230,23 @@ fun ReadAloudDialog(
                         tint = colors.primaryText,
                         onClick = { onSetTimer(timer) },
                     )
-                    // 滑条 0..180 分钟 (与原版 AppSlider(value=timer, max=180) 对齐)
-                    // 用 material.Slider (Float) 替代 AppSlider (Int), 因为 AppSlider 没有 Float 重载
-                    // 拖动中只刷显示, 抬手才落定时 (与原版 onValueChangeFinished 一致, 免每帧重启计时器)
-                    Slider(
-                        value = timer.toFloat(),
-                        onValueChange = { timer = it.toInt().coerceIn(0, 180) },
-                        onValueChangeFinished = { onSetTimer(timer) },
-                        valueRange = 0f..180f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = DesignTokens.arcoBlue6,
-                            activeTrackColor = DesignTokens.arcoBlue6,
-                            inactiveTrackColor = DesignTokens.arcoBlue6.copy(alpha = 0.2f),
-                        ),
+                    // 滑条 0..180 分钟 (与原版 seek_timer max=180 对齐)
+                    // 拖动中即刷新分钟文本, 抬手才落定定时 (与原版 onProgressChanged/onStopTrackingTouch 一致)
+                    AppSlider(
+                        value = timer,
+                        max = 180,
+                        onValueChange = { timer = it },
+                        onValueChangeFinished = { onSetTimer(it) },
+                        color = DesignTokens.arcoBlue6,
+                        trackColor = DesignTokens.arcoBlue6.copy(alpha = 0.2f),
                         modifier = Modifier.weight(1f),
                     )
-                    // 当前时间显示 + 点击弹选时菜单 (与原版 Text(timer_m) + context.selector 对齐)
-                    Box {
-                        Text(
-                            text = stringResource(Res.string.timer_m, timer.coerceAtLeast(0)),
-                            color = colors.primaryText,
-                            modifier = Modifier.clickable { timerMenuExpanded = true },
-                        )
-                        // 定时选项菜单 (与原版 context.selector + intArrayOf(0,5,10,15,30,60,90,180) 对齐)
-                        AppDropdownMenu(
-                            expanded = timerMenuExpanded,
-                            onDismissRequest = { timerMenuExpanded = false },
-                        ) {
-                            val times = intArrayOf(0, 5, 10, 15, 30, 60, 90, 180)
-                            times.forEach { t ->
-                                DropdownMenuItem(
-                                    onClick = {
-                                        timerMenuExpanded = false
-                                        timer = t
-                                        onSetTimer(t)
-                                    },
-                                ) {
-                                    Text(stringResource(Res.string.timer_m, t))
-                                }
-                            }
-                        }
-                    }
+                    // 当前时间显示 + 点击弹选择对话框 (对照原版 Text(timer_m) + context.selector)
+                    Text(
+                        text = stringResource(Res.string.timer_m, timer.coerceAtLeast(0)),
+                        color = colors.primaryText,
+                        modifier = Modifier.clickable { timerMenuExpanded = true },
+                    )
                 }
 
                 // 语速标题行: 标题 + 当前值 + 跟随系统开关 (与原版 Row + Text(speed) + Text(value) + Text(flow_sys) + AppSwitch 对齐)
@@ -330,25 +301,15 @@ fun ReadAloudDialog(
                             onAdjustSpeed((speechRate + 5) / 10f)
                         },
                     )
-                    Slider(
-                        value = (if (draggingSpeed >= 0) draggingSpeed else speechRate.toFloat()),
-                        onValueChange = {
-                            draggingSpeed = it
-                        },
-                        onValueChangeFinished = {
-                            if (draggingSpeed >= 0) {
-                                speechRate = draggingSpeed.toInt().coerceIn(0, 45)
-                                draggingSpeed = -1f
-                                onAdjustSpeed((speechRate + 5) / 10f)
-                            }
-                        },
-                        valueRange = 0f..45f,
+                    // 语速滑条: 拖动中即刷新倍率文本 (对照原版 upTtsSpeechRateText), 抬手才落定语速
+                    AppSlider(
+                        value = speechRate,
+                        max = 45,
                         enabled = !followSys,
-                        colors = SliderDefaults.colors(
-                            thumbColor = DesignTokens.arcoBlue6,
-                            activeTrackColor = DesignTokens.arcoBlue6,
-                            inactiveTrackColor = DesignTokens.arcoBlue6.copy(alpha = 0.2f),
-                        ),
+                        onValueChange = { speechRate = it },
+                        onValueChangeFinished = { onAdjustSpeed((it + 5) / 10f) },
+                        color = DesignTokens.arcoBlue6,
+                        trackColor = DesignTokens.arcoBlue6.copy(alpha = 0.2f),
                         modifier = Modifier.weight(1f),
                     )
                     AloudIcon(
@@ -379,7 +340,7 @@ fun ReadAloudDialog(
                         label = stringResource(Res.string.main_menu),
                         onClick = {
                             onShowMenuBar()
-                            onDismiss()
+                            requestDismiss()
                         },
                     )
                     Spacer(Modifier.weight(2f))
@@ -397,6 +358,23 @@ fun ReadAloudDialog(
                 }
             }
         }
+    }
+
+    // 定时档位选择 (对照原版 tvTimer 的 context.selector("设定时间", timeKeys)):
+    // 居中窄对话框, 不撑满屏幕宽度 —— 与其它选择型对话框同形
+    if (timerMenuExpanded) {
+        val times = intArrayOf(0, 5, 10, 15, 30, 60, 90, 180)
+        AppSelectorDialog(
+            onDismissRequest = { timerMenuExpanded = false },
+            title = stringResource(Res.string.set_timer),
+            items = times.map { stringResource(Res.string.timer_m, it) },
+            onItemSelected = { index ->
+                val t = times[index]
+                timerMenuExpanded = false
+                timer = t
+                onSetTimer(t)
+            },
+        )
     }
 }
 

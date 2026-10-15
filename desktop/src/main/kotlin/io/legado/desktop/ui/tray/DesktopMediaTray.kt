@@ -14,8 +14,10 @@ import io.legado.app.service.ReadAloudControllerShared
 import io.legado.app.service.ReadAloudControllerShared.ReadAloudState
 import io.legado.app.ui.compose.platform.syncGetString
 import io.legado.app.ui.root.AppNavigatorProviders
+import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.toReadRoute
 import io.legado.app.utils.FlowBus
+import io.legado.desktop.ui.DesktopWindowChrome
 import io.legado.desktop.ui.tray.DesktopMediaTray.syncVisibility
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,7 +68,43 @@ class ReadAloudTrayBinding(
 )
 
 /**
- * 桌面端系统托盘: 播放/朗读状态展示 + 右键控制菜单 (听书时最小化仍可控)。
+ * 导出侧接入托盘所需的最小绑定: 导出期间托盘图标常驻显示当前书名与剩余待导本数
+ * (对照 app 端 ExportBookService 的常驻导出通知), 右键菜单可取消, 左键回书架管理页。
+ *
+ * 逐本导出时由 [DesktopPlatformCapabilities] 重建并重写本绑定 (值变化即推送, 触发刷新)。
+ */
+class ExportTrayBinding(
+    /** 当前正在导出的书名。 */
+    val bookName: String,
+    /** 队列里还剩几本待导出 (不含当前这本, 口径同 app 端 `waitExportBooks.size`)。 */
+    val remaining: Int,
+    /** 取消本次导出 (对照 app 端通知的取消 action / IntentAction.stop)。 */
+    val cancel: () -> Unit,
+)
+
+/**
+ * 缓存书籍 / 书源校验侧接入托盘所需的最小绑定: 任务期间托盘图标常驻显示标题与进度正文
+ * (对照 app 端 CacheBookService / CheckSourceService 的常驻通知), 右键菜单可取消, 左键跳对应页。
+ *
+ * 进度每变一次由宿主重建本绑定 (值变化即推送, 触发刷新)。
+ */
+class ProgressTrayBinding(
+    /** 通知标题 (对照 app 端 setContentTitle: offline_cache / check_book_source)。 */
+    val title: String,
+    /** 通知正文 (对照 app 端 setContentText: 缓存摘要 / 校验进度文案)。 */
+    val content: String,
+    /** 取消本任务 (对照 app 端通知的取消 action / IntentAction.stop)。 */
+    val cancel: () -> Unit,
+    /**
+     * 左键点击跳转的页面 (原版通知 contentIntent 的桌面等价)。
+     *
+     * null = 原版该通知没有 contentIntent (缓存书籍通知的 setContentIntent 在原版是注释掉的)。
+     */
+    val route: AppRoute? = null,
+)
+
+/**
+ * 桌面端系统托盘: 播放/朗读/导出/缓存/校验状态展示 + 右键控制菜单 (听书、导出或后台任务时最小化仍可控)。
  *
  * # 托盘所有权
  * 全进程唯一 [TrayIcon] 由本对象持有。`Toaster.jvm.kt` 原先自建蓝色圆点 TrayIcon 发通知,
@@ -103,6 +141,11 @@ class ReadAloudTrayBinding(
  * tooltip 与菜单项对照 app 端 `AudioPlayService.createNotification` /
  * `BaseReadAloudService` 的媒体通知: 标题"正在播放/播放暂停|正在朗读/朗读暂停: 书名",
  * 副标题为章节名, action 集为 上一章 / 播放暂停 / 下一章 / 停止 (定时器桌面端未接, 不造)。
+ * 导出链对照 `ExportBookService.upExportNotification`: tooltip 为"导出书籍"+"正在导出(书名),
+ * 还有 N 本待导出", action 集为取消 (对应通知的取消 action)。
+ * 缓存链对照 `CacheBookService` 的常驻通知 (标题 offline_cache + 正文 downloadSummary),
+ * 校验链对照 `CheckSourceService` 的常驻通知 (标题 check_book_source + 正文 progress_show),
+ * 两条的 action 集同为取消 (对应通知上的 IntentAction.stop)。
  */
 object DesktopMediaTray {
 
@@ -131,6 +174,33 @@ object DesktopMediaTray {
         get() = readAloudBinding.value
         set(value) {
             readAloudBinding.value = value
+        }
+
+    private val exportBinding = MutableStateFlow<ExportTrayBinding?>(null)
+
+    /** 导出绑定: 导出开始后逐本重写, 导出结束/取消后置 null。 */
+    var export: ExportTrayBinding?
+        get() = exportBinding.value
+        set(value) {
+            exportBinding.value = value
+        }
+
+    private val cacheBookBinding = MutableStateFlow<ProgressTrayBinding?>(null)
+
+    /** 缓存书籍绑定: 缓存服务启动后逐次重写, 服务结束/队列清空后置 null。 */
+    var cacheBook: ProgressTrayBinding?
+        get() = cacheBookBinding.value
+        set(value) {
+            cacheBookBinding.value = value
+        }
+
+    private val checkSourceBinding = MutableStateFlow<ProgressTrayBinding?>(null)
+
+    /** 书源校验绑定: 校验开始后逐本重写, 校验结束/取消后置 null。 */
+    var checkSource: ProgressTrayBinding?
+        get() = checkSourceBinding.value
+        set(value) {
+            checkSourceBinding.value = value
         }
 
     // 状态监听作用域 (install 建 / uninstall 取消), 显隐与 refresh 在协程线程读, 故 @Volatile
@@ -167,6 +237,9 @@ object DesktopMediaTray {
 
     @Volatile
     private var exitAction: (() -> Unit)? = null
+
+    /** 主窗口已关闭到托盘 (窗口只隐藏, 界面状态与后台任务继续)。 */
+    private val windowHidden: Boolean get() = DesktopWindowChrome.hiddenToTray
 
     /**
      * 注册托盘宿主 (窗口恢复 / 退出回调) 并启动后台任务状态监听。
@@ -226,6 +299,17 @@ object DesktopMediaTray {
                     .flatMapLatest { it?.controller?.state ?: flowOf(null) }
                     .collect { syncVisibility() }
             }
+            // 导出逐本重写绑定: 值变化即刷 tooltip 与菜单 (对照原版逐本重发通知)
+            s.launch {
+                exportBinding.collect { syncVisibility() }
+            }
+            // 缓存/校验逐次重写绑定: 同上 (对照原版两条常驻通知的逐次刷新)
+            s.launch {
+                cacheBookBinding.collect { syncVisibility() }
+            }
+            s.launch {
+                checkSourceBinding.collect { syncVisibility() }
+            }
         }
         // 任务栏缩略图按钮/进度条/全局媒体键 (Windows 专属, 内部自检平台)
         DesktopTaskbarMedia.install()
@@ -250,6 +334,52 @@ object DesktopMediaTray {
         exitAction = null
     }
 
+    // ==================== 窗口隐藏到托盘 ====================
+
+    /**
+     * 本机是否支持系统托盘 (不问图标当前是否已上屏, 无副作用)。
+     *
+     * 关闭窗口询问框据此决定是否提供"缩小到托盘"选项: 不支持的机器藏起来就再也叫不回来。
+     */
+    fun traySupported(): Boolean =
+        !GraphicsEnvironment.isHeadless() && SystemTray.isSupported()
+
+    /**
+     * 托盘图标能上屏才允许隐藏窗口 (图标上不来时隐藏会让界面既不在屏幕上也无恢复入口)。
+     *
+     * 空闲期图标本不驻留, 这里会先把图标上屏 —— 隐藏期间必须有一个恢复入口。
+     */
+    private fun canHideWindow(): Boolean {
+        if (monitorScope == null) return false
+        if (SwingUtilities.isEventDispatchThread()) {
+            showTrayIcon()
+        } else {
+            SwingUtilities.invokeAndWait { showTrayIcon() }
+        }
+        return trayIcon != null
+    }
+
+    /**
+     * 收起主窗口: 界面隐藏, 界面状态与后台任务保留, 托盘图标转为常驻 (含空闲期)。
+     *
+     * 窗口显隐统一改共享状态而不直接改 AWT 可见性 —— 直接改会让 Window(visible=) 的入参
+     * 与实际可见性脱钩, 之后点关闭按钮不再产生变化, 窗口就关不掉了 (见 [DesktopWindowChrome.hideToTray])。
+     *
+     * @return false = 托盘图标上不了屏, 本次未隐藏 (调用方必须改走退出, 否则界面不可达)。
+     */
+    fun hideWindow(): Boolean {
+        if (!canHideWindow()) return false
+        DesktopWindowChrome.hideToTray()
+        syncVisibility()
+        return true
+    }
+
+    /** 恢复主窗口 (托盘左键单击 / 菜单"显示主界面")。 */
+    fun showWindow() {
+        activateWindow()
+        syncVisibility()
+    }
+
     // ==================== 显隐 (后台任务驱动) ====================
 
     /**
@@ -260,6 +390,9 @@ object DesktopMediaTray {
      *   而原版通知 (服务存活期) 全程保持
      * - 朗读: BaseReadAloudService 在 state ∈ {PLAYING, PAUSED} 时 startForeground,
      *   停止/完成/出错时 stopSelf
+     * - 导出: ExportBookService 全程为前台服务 (队列空才 stopSelf), 对应绑定非空期间
+     * - 缓存书籍: CacheBookService 全程为前台服务 (队列空才 stopSelf), 对应绑定非空期间
+     * - 书源校验: CheckSourceService 全程为前台服务 (跑完 stopSelf), 对应绑定非空期间
      *
      * 桌面端把"前台服务 + 通知"呈现为托盘图标, 判定状态源与 app 端完全一致。
      */
@@ -269,14 +402,16 @@ object DesktopMediaTray {
         val aloudState = aloud?.controller?.state?.value
         val aloudActive =
             aloudState == ReadAloudState.PLAYING || aloudState == ReadAloudState.PAUSED || aloudState == ReadAloudState.WAITING
-        return audioActive || aloudActive
+        return audioActive || aloudActive || exportBinding.value != null ||
+            cacheBookBinding.value != null || checkSourceBinding.value != null
     }
 
     /** 状态事件可在任意线程发出, 显隐操作统一收口到 EDT (SystemTray 状态单线程串行改)。 */
     private fun syncVisibility() {
         SwingUtilities.invokeLater {
             if (monitorScope == null) return@invokeLater
-            if (anyBackgroundActive()) showTrayIcon() else hideTrayIcon()
+            // 窗口隐藏期间图标必须常驻: 它是把界面叫回来的唯一入口 (空闲期也不例外)
+            if (anyBackgroundActive() || windowHidden) showTrayIcon() else hideTrayIcon()
             refresh()
             updateTaskbar()
         }
@@ -370,7 +505,36 @@ object DesktopMediaTray {
                     ?: str("read_aloud_s", "点击打开阅读界面")
             }
 
-            else -> lines += appName()
+            else -> {
+                // 非媒体后台任务: 多条链同时活跃时只呈现优先级最高的一条
+                // (导出 → 缓存 → 校验, 与音频/朗读的优先呈现同一规则); 菜单里每条链都列出
+                val exportTask = exportBinding.value
+                val cacheBookTask = cacheBookBinding.value
+                val checkSourceTask = checkSourceBinding.value
+                when {
+                    exportTask != null -> {
+                        // 对照 app 端导出通知: 标题取 subText, 正文即通知 contentText
+                        lines += str("export_book", "导出书籍")
+                        lines += syncGetString(
+                            "export_book_notification_content",
+                            exportTask.bookName,
+                            exportTask.remaining,
+                        )
+                    }
+
+                    cacheBookTask != null -> {
+                        lines += cacheBookTask.title
+                        lines += cacheBookTask.content
+                    }
+
+                    checkSourceTask != null -> {
+                        lines += checkSourceTask.title
+                        lines += checkSourceTask.content
+                    }
+
+                    else -> lines += appName()
+                }
+            }
         }
         return lines.joinToString("\n").take(TOOLTIP_MAX)
     }
@@ -424,6 +588,9 @@ object DesktopMediaTray {
      * 跳到当前后台任务对应的页面 (原版通知 contentIntent 的桌面等价):
      * - 音频活跃: 打开音频播放页 (对照 AudioPlayActivity)
      * - 朗读活跃: 打开阅读页 (对照 ReaderActivity)
+     * - 导出活跃: 打开书架管理页 (对照 app 端导出通知的 contentIntent)
+     * - 缓存书籍活跃: 无跳转 (原版该通知的 setContentIntent 是注释掉的)
+     * - 书源校验活跃: 打开书源管理页 (对照 app 端校验通知的 contentIntent)
      * 经 AppNavigatorProviders 全局导航 (非 Composable 代码的既有入口)。
      */
     private fun jumpToActive() {
@@ -438,6 +605,8 @@ object DesktopMediaTray {
             // 音频优先 (与托盘菜单/媒体键一致)
             audioActive -> AudioPlayShared.book?.toReadRoute()
             aloudActive -> ActiveReadBookRegistry.current?.bookValue?.toReadRoute()
+            exportBinding.value != null -> AppRoute.BookshelfManage()
+            checkSourceBinding.value != null -> AppRoute.BookSourceManage
             else -> null
         }
         if (route != null) {
@@ -549,7 +718,7 @@ object DesktopMediaTray {
         val action: (() -> Unit)? = null,
     )
 
-    /** 菜单内容单一来源 (Swing JPopupMenu 渲染; 音频/朗读两链共用, 防漂移)。 */
+    /** 菜单内容单一来源 (Swing JPopupMenu 渲染; 音频/朗读/导出/缓存/校验五条链共用, 防漂移)。 */
     private fun buildMenuModel(): List<MenuEntry> {
         val entries = ArrayList<MenuEntry>()
         val audioStatus = AudioPlayShared.status
@@ -558,8 +727,13 @@ object DesktopMediaTray {
         val aloudState = aloud?.controller?.state?.value
         val aloudActive =
             aloudState == ReadAloudState.PLAYING || aloudState == ReadAloudState.PAUSED || aloudState == ReadAloudState.WAITING
-        // 两条链同时活跃时加标题分组, 免得两组"上一章"分不清 (文案取 app 端通知 subText)
-        val grouped = audioActive && aloudActive
+        // 多条链同时活跃时加标题分组, 免得两组"上一章"分不清 (文案取 app 端通知 subText)
+        val exportTask = exportBinding.value
+        val cacheBookTask = cacheBookBinding.value
+        val checkSourceTask = checkSourceBinding.value
+        val grouped = listOf(
+            audioActive, aloudActive, exportTask != null, cacheBookTask != null, checkSourceTask != null,
+        ).count { it } > 1
         if (audioActive) {
             if (grouped) entries += MenuEntry(str("audio", "音频"), enabled = false)
             addAudioEntries(entries, audioStatus)
@@ -568,10 +742,32 @@ object DesktopMediaTray {
             if (grouped) entries += MenuEntry(str("read_aloud", "朗读"), enabled = false)
             addReadAloudEntries(entries, aloud, aloudState == ReadAloudState.PAUSED)
         }
-        if (audioActive || aloudActive) entries += MenuEntry() // 分隔线
-        // 无"显示"项: 恢复窗口 + 跳转对应页面 (原版通知点击行为) 由托盘左键单击承载
+        if (exportTask != null) {
+            if (grouped) entries += MenuEntry(str("export_book", "导出书籍"), enabled = false)
+            // 对照 app 端导出通知的取消 action (IntentAction.stop)
+            entries += MenuEntry(str("cancel", "取消")) { exportTask.cancel() }
+        }
+        // 缓存/校验两组: 标题取 app 端通知标题, 取消对应通知上的 IntentAction.stop
+        listOf(cacheBookTask, checkSourceTask).forEach { task ->
+            if (task == null) return@forEach
+            if (grouped) entries += MenuEntry(task.title, enabled = false)
+            entries += MenuEntry(str("cancel", "取消")) { task.cancel() }
+        }
+        if (audioActive || aloudActive || exportTask != null || cacheBookTask != null || checkSourceTask != null) {
+            entries += MenuEntry() // 分隔线
+        }
+        // 窗口收起或最小化后菜单里必须有显式恢复入口: 只剩"退出"时用户很容易误点
+        // (左键单击也能恢复, 但可发现性差)
+        if (windowHidden || windowMinimized()) {
+            entries += MenuEntry(str("show_main_window", "显示主界面")) { showWindow() }
+        }
         entries += MenuEntry(str("exit", "退出")) { exitAction?.invoke() }
         return entries
+    }
+
+    private fun windowMinimized(): Boolean {
+        val frame = windowProvider?.invoke() as? Frame ?: return false
+        return frame.extendedState and Frame.ICONIFIED != 0
     }
 
     private fun buildMenu(): JPopupMenu {
@@ -654,6 +850,9 @@ object DesktopMediaTray {
 
     /** 取消最小化 → 临时置顶抬到最前 → 请求焦点 (同 SingleInstanceGuard.activateWindow)。 */
     private fun activateWindow() {
+        // 先清隐藏态再取窗口: 取不到窗口 (未注入/已销毁) 时若不清, 托盘图标会一直常驻且
+        // 菜单一直显示"显示主界面", 而界面其实已经可见
+        DesktopWindowChrome.restoreWindow()
         val window = windowProvider?.invoke() ?: return
         SwingUtilities.invokeLater {
             runCatching {
@@ -662,6 +861,8 @@ object DesktopMediaTray {
                         frame.extendedState = frame.extendedState and Frame.ICONIFIED.inv()
                     }
                 }
+                // 与共享状态同向立即置可见: 只靠 Window(visible=) 的异步应用时, 下面的
+                // toFront/requestFocus 可能排在它之前, 对仍隐藏的窗口无效
                 window.isVisible = true
                 val wasAlwaysOnTop = window.isAlwaysOnTop
                 if (!wasAlwaysOnTop && window.isAlwaysOnTopSupported) {
@@ -736,7 +937,11 @@ object DesktopMediaTray {
 
     private fun appName(): String = str("app_name", "阅读")
 
-    /** shared composeResources 缺 key 时 syncGetString 原样返回 key, 用中文兜底。 */
-    private fun str(key: String, fallback: String): String =
+    /**
+     * shared composeResources 缺 key 时 syncGetString 原样返回 key, 用中文兜底。
+     *
+     * 供同模块需要同一兜底口径的调用方 (窗口关闭询问框) 复用, 免两处各写一套。
+     */
+    internal fun str(key: String, fallback: String): String =
         syncGetString(key).takeIf { it != key } ?: fallback
 }

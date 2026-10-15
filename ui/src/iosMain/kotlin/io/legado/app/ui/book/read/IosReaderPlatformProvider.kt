@@ -9,9 +9,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.toArgb
 import io.legado.app.data.entities.Book
-import io.legado.app.data.entities.Bookmark
-import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.AppWebDavShared
+import io.legado.app.help.book.BookImageDownloadShared
 import io.legado.app.help.showSourceLogin
 import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isLocal
@@ -22,7 +22,6 @@ import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ThemeConfigProviders
-import io.legado.app.help.image.ImageBitmapLoader
 import io.legado.app.help.storage.BackupShared
 import io.legado.app.help.toast.Toasters
 import io.legado.app.help.tts.IosReadAloudHost
@@ -62,7 +61,8 @@ import platform.UIKit.UIImageWriteToSavedPhotosAlbum
  * 渲染, 此处只持有状态 + 导航回调); 差异仅 getBatteryLevel 用 UIDevice 真实电量。
  *
  * 朗读已接入: 短按经 [IosReadAloudHost] (ReadAloudControllerShared) 启动/暂停/恢复,
- * 长按弹共享朗读控制面板, 退出阅读页停朗读 (iOS 无后台控制面)。
+ * 长按弹共享朗读控制面板; 退出阅读页停朗读 (iOS 无前台 Service 维持阅读实例;
+ * 播放期间的锁屏/控制中心播控卡片由 SystemMediaControl 接管, 见 IosMediaNotificationController)。
  *
  * # 不实现
  * - 沉浸式色彩: 纯色阅读背景时菜单栏跟随阅读背景色+文字色 (shared createReadMenuColors,
@@ -152,7 +152,8 @@ object IosReaderPlatformProvider : ReaderPlatformProvider {
     }
 
     /** 阅读页销毁: 停止自动翻页并释放控制器/协程; 收起浮动菜单 + 停朗读, 避免残留 (对照原版 onDestroy → textActionMenu.dismiss)。
-     *  iOS 无前台 Service/后台控制面, 离开阅读页即无朗读控制入口, 显式停止。 */
+     *  iOS 无前台 Service 维持阅读实例 (朗读在进程内编排), 离开阅读页即失去阅读上下文, 显式停止;
+     *  播放期间的锁屏/控制中心播控卡片 (SystemMediaControl) 随 stop 一并撤下。 */
     override fun onExit(screenModel: ReaderScreenModel) {
         autoPageStop(screenModel)
         (screenModel.menuController.state as? IosReadMenuState)?.dispose()
@@ -195,13 +196,11 @@ object IosReaderPlatformProvider : ReaderPlatformProvider {
         )
     }
 
-    /** 保存到相册: 下载解码 → UIImageWriteToSavedPhotosAlbum (无完成回调, 保存后提示)。 */
+    /** 保存到相册: 读已缓存图片字节 → UIImageWriteToSavedPhotosAlbum (无完成回调, 保存后提示)。 */
     private fun saveImageToAlbum(screenModel: ReaderScreenModel, src: String) {
-        val book = screenModel.viewModel.book.value
-        val bookSource = screenModel.viewModel.bookSource.value
         Toasters.get().toast("正在保存")
         scope.launch {
-            val image = loadImage(src, book, bookSource)
+            val image = loadCachedImage(screenModel.currentBook, screenModel.currentChapter, src)
             if (image == null) {
                 Toasters.get().toast("图片保存失败")
                 return@launch
@@ -211,11 +210,14 @@ object IosReaderPlatformProvider : ReaderPlatformProvider {
         }
     }
 
-    /** 下载并解码图片 (ImageBitmapLoader 内部网络/磁盘切 IO, 本 scope 在主线程, 返回即可直接操作 UIKit)。 */
-    private suspend fun loadImage(src: String, book: Book?, bookSource: BookSource?): UIImage? {
-        val bytes = runCatching { ImageBitmapLoader().loadBytes(src, book, bookSource) }.getOrNull()
+    /**
+     * 取已缓存的图并解成 [UIImage] (只读缓存/本地书内嵌图, 不触发下载); 取不到返回 null。
+     *
+     * 字节读取在 [BookImageDownloadShared.imageBytesToSave] 内部切 IO, 返回后可直接操作 UIKit。
+     */
+    private suspend fun loadCachedImage(book: Book?, chapter: BookChapter?, src: String): UIImage? {
+        val bytes = book?.let { BookImageDownloadShared.imageBytesToSave(it, src, chapter) }
             ?: return null
-        if (bytes.isEmpty()) return null
         return runCatching {
             val nsData = bytes.usePinned { pinned ->
                 NSData.create(bytes = pinned.addressOf(0), length = bytes.size.toULong())

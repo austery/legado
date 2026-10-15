@@ -8,12 +8,10 @@ import io.legado.app.help.extension.ExtensionPrefs
 import io.legado.app.help.extension.model.InstallStep
 import io.legado.app.help.extension.model.MangaExtension
 import io.legado.app.help.extension.MangaExtensionManager
+import io.legado.app.help.extension.PluginSourceIcons
 import io.legado.app.help.extension.model.MangaExtensionRepo
 import io.legado.app.help.extension.model.RepoKind
-import io.legado.app.model.anime.AnimeSourceMapper
 import io.legado.app.model.plugin.pluginInstalledOf
-import io.legado.app.model.webBook.AnimeFilterSession
-import io.legado.app.model.webBook.MangaFilterSession
 import io.legado.app.ui.book.manga.extension.MangaContentFilter
 import io.legado.app.ui.book.manga.extension.MangaContentWarning
 import io.legado.app.ui.book.manga.extension.MangaExtensionItem
@@ -115,6 +113,14 @@ open class SharedMangaExtensionPlatform(
         val updatedNames: Set<String>,
     )
 
+    /**
+     * 状态流在服务构造 (宿主启动注册) 时开始组装: 书源管理页据「已装插件集合变化」重取插件源
+     * 图标, 该信号必须在冷启动就生效, 不能等插件管理页首入口 [init]。
+     */
+    init {
+        startStateAssembly()
+    }
+
     override fun init() {
         if (!inited.compareAndSet(false, true)) return
         MangaExtensionManager.init()
@@ -128,7 +134,9 @@ open class SharedMangaExtensionPlatform(
                 contentFilter.value = ExtensionPrefs.getContentFilter().toContentFilter()
             }
             .launchIn(scope)
+    }
 
+    private fun startStateAssembly() {
         // updatedNames 必须作为 combine 输入: checkForUpdates 在 Manager 发射完状态之后才写它,
         // 不参与 combine 就没有重算触发, 条目 hasUpdate 不会刷新。
         val filters = combine(languages, kindFilter, contentFilter) { langs, kind, content ->
@@ -231,18 +239,6 @@ open class SharedMangaExtensionPlatform(
         MangaExtensionManager.findAvailableExtensions()
     }
 
-    override suspend fun createMangaFilterSession(bookSourceUrl: String): MangaFilterSession? {
-        val sourceId = MangaSourceMapper.sourceIdOf(bookSourceUrl) ?: return null
-        val source = MangaExtensionManager.getSource(sourceId) ?: return null
-        return MangaFilterSession(source.getFilterList())
-    }
-
-    override suspend fun createAnimeFilterSession(bookSourceUrl: String): AnimeFilterSession? {
-        val sourceId = AnimeSourceMapper.sourceIdOf(bookSourceUrl) ?: return null
-        val source = MangaExtensionManager.getAnimeSource(sourceId) ?: return null
-        return AnimeFilterSession(source.getFilterList())
-    }
-
     // region 插件自带配置 (ConfigurableSource/ConfigurableAnimeSource)
 
     override fun isConfigurable(pkgName: String): Boolean =
@@ -268,6 +264,9 @@ open class SharedMangaExtensionPlatform(
     }
 
     // endregion
+
+    override fun sourceIconPath(bookSourceUrl: String): String? =
+        PluginSourceIcons.iconPathOf(bookSourceUrl)
 
     private fun collectInstallStep(pkgName: String, flow: Flow<InstallStep>) {
         scope.launch {

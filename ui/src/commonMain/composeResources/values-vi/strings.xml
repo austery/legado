@@ -89,6 +89,7 @@
     <string name="previous_chapter">Chương trước</string>
     <string name="pt_hide_status_bar">Ẩn thanh trạng thái</string>
     <string name="read_aloud">Đọc thành tiếng</string>
+    <string name="channel_media_play">Phát phương tiện</string>
     <string name="read_aloud_t">Đang đọc</string>
     <string name="read_aloud_s">Nhấn để mở trình đọc</string>
     <string name="audio_play">Phát</string>
@@ -591,6 +592,7 @@
     <string name="open_sys_dir_picker_error">Lỗi khi mở bộ chọn thư mục hệ thống, tự động mở bộ chọn thư mục ứng dụng</string>
     <string name="book_tree_uri_t">Vị trí lưu sách</string>
     <string name="book_tree_uri_s">Vị trí lưu sách được mở từ các ứng dụng khác</string>
+    <string name="book_storage_help">Do hạn chế truy cập bộ nhớ của Android, không thể chọn thư mục gốc của bộ nhớ trong, thư mục gốc của thẻ SD và chính thư mục Download (muốn dùng Download, hãy chọn thư mục con như Download/Books).\nMọi thư mục khác đều chọn được, kể cả thư mục con của thư mục gốc bộ nhớ (ví dụ /sdcard/books).\nNếu không đặt vị trí lưu sách, việc sao chép và tải sách cục bộ, webDav sẽ không hoạt động.</string>
     <string name="select_book_folder">Chọn thư mục lưu sách</string>
     <string name="user_agent">User agent</string>
     <string name="bg_alpha">Độ trong suốt của nền</string>
@@ -600,7 +602,6 @@
     <string name="timeout">Hết giờ</string>
     <string name="seconds">giây</string>
     <string name="less_than">nhỏ hơn</string>
-    <string name="check_source_config_summary">Thời gian chờ xác minh: %1$s giây\nMục xác minh:%2$s</string>
     <string name="record_debug_log">Ghi nhật ký gỡ lỗi</string>
     <string name="sub_dir">Thư mục con</string>
     <string name="general">Toàn cục</string>
@@ -658,6 +659,7 @@
     <string name="show_add_to_shelf_alert_title">Nhắc thêm vào tủ sách khi quay lại</string>
     <string name="show_add_to_shelf_alert_summary">Nhắc thêm vào tủ sách khi quay lại từ việc đọc sách không có trên tủ sách</string>
     <string name="review">Đánh giá</string>
+    <string name="review_title_with_count">Đánh giá (%1$s)</string>
     <string name="rule_review_url">URL đánh giá đoạn (reviewUrl)</string>
     <string name="rule_avatar">Avatar người đăng đánh giá đoạn (avatarRule)</string>
     <string name="rule_review_content">Nội dung đánh giá đoạn (contentRule)</string>
@@ -693,7 +695,6 @@
     <string name="audio_play_wake_lock">Khóa đánh thức dịch vụ âm thanh</string>
     <string name="copy_rule">Sao chép quy tắc</string>
     <string name="paste_rule">Dán quy tắc</string>
-    <string name="groups_or_source">Đa nhóm / nguồn sách</string>
     <string name="replace_state_change">Thay thế (bật / tắt)</string>
     <string name="show_last_update_time">Hiển thị thời gian cập nhật lần cuối</string>
     <string name="refresh_list">Làm mới danh sách</string>
@@ -992,4 +993,16 @@
     <string name="keyword_highlight_exclude_scope">Pham vi loai tru, tuy chon ten sach hoac URL nguon</string>
     <string name="video_lock">Khóa</string>
     <string name="video_unlock">Mở khóa</string>
+    <string name="close_to_tray_title">Thu nhỏ vào khay khi đóng</string>
+    <string name="close_to_tray_summary">Cửa sổ ẩn đi nhưng tác vụ nền vẫn chạy; mở lại từ biểu tượng khay</string>
+    <string name="close_window">Đóng cửa sổ</string>
+    <string name="close_to_tray_prompt">Thu nhỏ vào khay? Ứng dụng và các tác vụ nền vẫn tiếp tục chạy, bạn có thể mở lại từ biểu tượng khay.</string>
+    <string name="close_to_tray">Thu nhỏ vào khay</string>
+    <string name="show_main_window">Hiện cửa sổ chính</string>
+    <string name="dialog_preview">Xem trước hộp thoại</string>
+    <string name="dialog_preview_summary">Xem lần lượt mọi hộp thoại và bảng trượt (chỉ để gỡ lỗi; dữ liệu là bản sao)</string>
+    <string name="dialog_preview_group_alert">Hộp xác nhận / thông báo</string>
+    <string name="dialog_preview_group_dialog">Hộp thoại</string>
+    <string name="dialog_preview_group_sheet">Bảng trượt dưới</string>
+    <string name="dialog_preview_group_base">Khung cơ bản</string>
 </resources>

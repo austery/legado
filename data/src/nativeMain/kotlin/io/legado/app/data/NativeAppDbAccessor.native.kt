@@ -34,8 +34,18 @@ import io.legado.app.data.dao.TxtTocRuleDao
  * 仅类名 (IosAppDbAccessor / OhosAppDbAccessor)
  * 与注册函数不同, 故下沉到 nativeMain 共用, 平台源集用 typealias 别名 + 各自 register 函数。
  *
- * Transactions use the Room writer connection. Nested suspend DAO calls participate
- * in the same immediate transaction and exceptions roll back the entire operation.
+ * # 事务行为
+ *
+ * [runInTransactionSuspending] 走 Room 3 真事务, 实现下沉在 commonMain
+ * [AppDatabase.runInImmediateTransaction] (desktop 端 DesktopAppDbAccessor 复用同一函数):
+ * useWriterConnection 把写连接放进协程上下文 (ConnectionElement), block 内的 suspend DAO
+ * 会复用同一连接加入事务; immediateTransaction 对应 BEGIN IMMEDIATE, 抛异常自动回滚。
+ *
+ * 鸿蒙端的 room3 是 CPF fork (androidx.room3:room3-*-ohosarm64:3.0.0-alpha01-0.3.0),
+ * 本文件只经 klib 元数据核对过 immediateTransaction/useWriterConnection 声明存在,
+ * 未做编译验证; iOS 端用的官方 room3 变体同理。
+ *
+ * 模式参考 desktop `DesktopAppDbAccessor` 实现。
  */
 class NativeAppDbAccessor : AppDbAccessor {
 
@@ -52,7 +62,7 @@ class NativeAppDbAccessor : AppDbAccessor {
     override val bookDao: BookDao get() = appDb.bookDao
     override val bookSourceDao: BookSourceDao get() = appDb.bookSourceDao
     override val bookChapterDao: BookChapterDao get() = appDb.bookChapterDao
-    // BookInfoViewModelShared.loadGroup 用 (查询分组名)
+    // 详情页读分组名 / 书架分组流用 (bookGroupDao)
     override val bookGroupDao: BookGroupDao get() = appDb.bookGroupDao
     override val keywordHighlightDao: KeywordHighlightDao get() = appDb.keywordHighlightDao
     override val replaceRuleDao: ReplaceRuleDao get() = appDb.replaceRuleDao
@@ -76,10 +86,11 @@ class NativeAppDbAccessor : AppDbAccessor {
     // KeyboardToolbar / 备份恢复用 (键盘助手)
     override val keyboardAssistsDao: KeyboardAssistsDao get() = appDb.keyboardAssistsDao
 
-    /** Keep the writer connection in coroutine context across nested DAO calls. */
+    // ---- AppDbAccessor 事务 ----
+    // suspend 版本走 Room KMP 真事务, 与 desktop 端复用同一下沉实现
+    // (commonMain AppDatabase.runInImmediateTransaction: useWriterConnection 把写连接放进
+    // 协程上下文, immediateTransaction 对应 BEGIN IMMEDIATE, 抛异常自动回滚)。
     override suspend fun <R> runInTransactionSuspending(block: suspend () -> R): R {
-        return appDb.useWriterConnection { writer ->
-            writer.immediateTransaction { block() }
-        }
+        return appDb.runInImmediateTransaction(block)
     }
 }

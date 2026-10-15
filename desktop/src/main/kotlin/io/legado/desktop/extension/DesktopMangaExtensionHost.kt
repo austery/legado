@@ -5,18 +5,31 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.extension.ExtensionApkInfo
 import io.legado.app.help.extension.ExtensionInstallScaffold
+import io.legado.app.help.extension.EXTENSION_ICON_MAX_BYTES
+import io.legado.app.help.extension.EXTENSION_ICON_MAX_PIXEL_SIZE
+import io.legado.app.help.extension.ExtensionManifestContract
 import io.legado.app.help.extension.MangaExtensionHost
 import io.legado.app.help.extension.MangaExtensionManager
-import io.legado.app.help.extension.model.ContentWarning as ModelContentWarning
+import io.legado.app.help.extension.model.ContentWarning
 import io.legado.app.help.extension.model.InstallStep
 import io.legado.app.help.extension.model.MangaExtension
+import io.legado.app.help.extension.isValidExtensionPackageName
 import io.legado.app.help.extension.requireValidExtensionPackageName
 import io.legado.app.help.extension.trust.TrustHelper
 import io.legado.app.help.file.desktopAppRootDir
+import io.legado.app.utils.FileUtilsBase
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import net.dongliu.apk.parser.ApkFile
+import org.jetbrains.skia.Codec
+import org.jetbrains.skia.Data
+import org.jetbrains.skia.EncodedImageFormat
+import org.jetbrains.skia.Image
+import org.jetbrains.skia.impl.use
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipFile
 
 /** 桌面端扩展目录: 应用数据根下 extensions/ (便携模式跟随程序目录 data/)。 */
 fun desktopMangaExtensionDir(): File = File(desktopAppRootDir(), "extensions")
@@ -68,7 +81,7 @@ class DesktopMangaExtensionHost(
                         versionName = manifest.versionName.orEmpty(),
                         versionCode = manifest.versionCode,
                         isShared = false,
-                        contentWarning = ModelContentWarning.SAFE,
+                        contentWarning = ContentWarning.SAFE,
                         signatures = emptyList(),
                         reason = MangaExtension.NotLoaded.Reason.Failed(
                             e.message ?: e::class.simpleName.orEmpty(),
@@ -99,13 +112,13 @@ class DesktopMangaExtensionHost(
         fun notLoaded(
             reason: MangaExtension.NotLoaded.Reason,
         ) = MangaExtension.NotLoaded(
-            name = manifest.label?.substringAfter("Aniyomi: ")?.substringAfter("Tachiyomi: ")
+            name = manifest.label?.let { ExtensionManifestContract.stripLabelPrefix(it) }
                 ?: pkgName,
             pkgName = pkgName,
             versionName = manifest.versionName.orEmpty(),
             versionCode = manifest.versionCode,
             isShared = false,
-            contentWarning = ModelContentWarning.SAFE,
+            contentWarning = ContentWarning.SAFE,
             signatures = signatures,
             reason = reason,
         )
@@ -149,11 +162,7 @@ class DesktopMangaExtensionHost(
             versionCode = versionCode,
             libVersion = libVersion,
             lang = lang,
-            contentWarning = when (contentWarning) {
-                ContentWarning.SAFE -> ModelContentWarning.SAFE
-                ContentWarning.MIXED -> ModelContentWarning.MIXED
-                ContentWarning.NSFW -> ModelContentWarning.NSFW
-            },
+            contentWarning = contentWarning,
             isShared = false,
             signatures = signatures,
             pkgFactory = pkgFactory,
@@ -170,7 +179,7 @@ class DesktopMangaExtensionHost(
             versionName = versionName,
             versionCode = versionCode,
             isShared = false,
-            contentWarning = ModelContentWarning.SAFE,
+            contentWarning = ContentWarning.SAFE,
             signatures = signatures,
             libVersion = libVersion,
             reason = when (reason) {
@@ -193,8 +202,7 @@ class DesktopMangaExtensionHost(
      */
     private val installer = object : ExtensionInstallScaffold() {
 
-        override fun tempFile(pkgName: String): File =
-            File(extDir, "$pkgName.$APK_EXTENSION.part")
+        override fun extensionDir(): File = extDir
 
         override fun readApkInfo(file: File): ExtensionApkInfo? {
             val manifest = runCatching { ApkManifestReader.read(file) }.getOrNull() ?: return null
@@ -202,7 +210,7 @@ class DesktopMangaExtensionHost(
                 pkgName = manifest.packageName,
                 versionCode = manifest.versionCode,
                 isExtension = manifest.reqFeatures.any {
-                    it == EXTENSION_FEATURE || it == ANIME_EXTENSION_FEATURE
+                    ExtensionManifestContract.isExtensionFeature(it)
                 },
                 signatures = runCatching { ApkSignatures.sha256HexList(file) }.getOrDefault(emptyList()),
             )
@@ -215,12 +223,7 @@ class DesktopMangaExtensionHost(
         }
 
         override fun placeApk(file: File, info: ExtensionApkInfo, replaced: Boolean) {
-            val target = File(extDir, "${info.pkgName}.$APK_EXTENSION")
-            extDir.mkdirs()
-            if (!file.renameTo(target)) {
-                file.copyTo(target, overwrite = true)
-                file.delete()
-            }
+            FileUtilsBase.replaceFileAtomically(file, File(extDir, "${info.pkgName}.$APK_EXTENSION"))
         }
 
         override fun onInstalled(pkgName: String) {
@@ -239,14 +242,110 @@ class DesktopMangaExtensionHost(
     override fun uninstall(extension: MangaExtension.Installed) {
         // 桌面无共享扩展形态: 一律扩展目录内文件
         requireValidExtensionPackageName(extension.pkgName)
+        ExtensionInstallScaffold.discardInstallTemps(extDir, extension.pkgName)
         val file = File(extDir, "${extension.pkgName}.$APK_EXTENSION")
-        if (file.isFile && file.delete()) {
+        if (file.isFile && FileUtilsBase.deleteWithReplaceBackup(file)) {
             loadCache.remove(extension.pkgName)?.loaded?.classLoader?.let { loader ->
                 runCatching { loader.close() }
             }
             MangaExtensionManager.reloadExtensions()
         }
     }
+
+    /**
+     * 插件包内启动图标 (PNG 字节): 扩展目录内 apk 的清单图标条目, 取密度最高的一条。
+     *
+     * 扩展 apk 的图标资源名被混淆 (如 `res/o-.png`), 只能经资源表反解, 故用已有的 apk-parser;
+     * 文件缺失、清单无图标、图标解不出图像一律返回 null (调用方回落书源名首字占位)。
+     *
+     * 取图口径与安卓端一致: 清单图标条目是什么位图格式都收 (png/webp/jpg...), 统一编码成 PNG 落盘,
+     * 不要求条目本身就是 png。自适应图标的 xml 是矢量/自适应描述, 桌面无对应渲染器, 跳过。
+     *
+     * 单条目读取与像素尺寸都有上限 ([EXTENSION_ICON_MAX_BYTES] / [EXTENSION_ICON_MAX_PIXEL_SIZE]):
+     * 清单可以声明任意大的图标, 不限量地读条目、按声明尺寸解像素都会被拉到巨量分配。
+     *
+     * 解析/读条目任何一环出错都收敛为 null: 调用方在书源列表流里逐行取图, 异常漏出去会终结
+     * 整条列表流 (此后不再随插件与书源库更新)。
+     */
+    override fun readExtensionIcon(pkgName: String): ByteArray? =
+        runCatching { readIconPngBytes(pkgName) }
+            .getOrElse { e ->
+                // 落日志自身也要写文件, 再套一层: 日志失败同样不能让异常漏出本方法
+                runCatching { AppLog.put("扩展图标读取失败: $pkgName", e) }
+                null
+            }
+
+    /** [readExtensionIcon] 的实现体 (允许抛出, 由外层收容)。 */
+    private fun readIconPngBytes(pkgName: String): ByteArray? {
+        if (!isValidExtensionPackageName(pkgName)) return null
+        val apk = File(extDir, "$pkgName.$APK_EXTENSION")
+        if (!apk.isFile) return null
+        return ApkFile(apk).use { file ->
+            file.iconPathsByDensity().firstNotNullOfOrNull { path ->
+                readApkEntryBounded(apk, path)?.let(::rasterToPng)
+            }
+        }
+    }
+
+    /**
+     * apk 内图标条目的 zip 路径, 按密度从高到低 (密度越高越清晰)。
+     *
+     * apk-parser 的 getIconPaths() 只解出资源表里的路径与密度, 不读条目内容; 其替代品
+     * getAllIcons() 会把每个候选条目整块读进内存, 用不了有上限的读取。
+     */
+    @Suppress("DEPRECATION")
+    private fun ApkFile.iconPathsByDensity(): List<String> =
+        getIconPaths().sortedByDescending { it.density }.map { it.path }
+
+    /**
+     * 读 apk 内单个条目, 超过 [EXTENSION_ICON_MAX_BYTES] 的一律不读。
+     *
+     * 不用 apk-parser 的 getFileData: 它把整条一次性读进内存; 这里先看中央目录声明的长度,
+     * 再按实际读到的字节数兜一次 (声明值不可信时同样有上限)。
+     */
+    private fun readApkEntryBounded(apk: File, path: String): ByteArray? {
+        return try {
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry(path) ?: return null
+                if (entry.size > EXTENSION_ICON_MAX_BYTES) return null
+                val buffer = ByteArray(16 * 1024)
+                val out = ByteArrayOutputStream()
+                zip.getInputStream(entry).use { input ->
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        if (out.size() + read > EXTENSION_ICON_MAX_BYTES) return null
+                        out.write(buffer, 0, read)
+                    }
+                }
+                out.toByteArray()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 任意位图条目 → PNG 字节; 解不出图像或尺寸超过 [EXTENSION_ICON_MAX_PIXEL_SIZE] 的返回 null。
+     *
+     * 统一转 PNG 是为了两端只交一种格式: 取用侧据此按 PNG 判缓存完整性, 图标原格式不参与判定。
+     * 尺寸先看图像头再解像素: 反过来会先按声明尺寸分配像素。
+     */
+    private fun rasterToPng(bytes: ByteArray): ByteArray? = runCatching {
+        Data.makeFromBytes(bytes).use { data ->
+            Codec.makeFromData(data).use { codec ->
+                val withinLimit = codec.width in 1..EXTENSION_ICON_MAX_PIXEL_SIZE &&
+                    codec.height in 1..EXTENSION_ICON_MAX_PIXEL_SIZE
+                if (!withinLimit) {
+                    null
+                } else {
+                    Image.makeFromEncoded(bytes).use { image ->
+                        image.encodeToData(EncodedImageFormat.PNG)?.bytes
+                    }
+                }
+            }
+        }
+    }.getOrNull()
 
     // endregion
 
@@ -261,10 +360,5 @@ class DesktopMangaExtensionHost(
 
     companion object {
         private const val APK_EXTENSION = "apk"
-
-        // 与 Android 端 ExtensionLoader 的 feature 键一致 (预检 + 安装校验用;
-        // JvmExtensionLoader 内部按同一契约识别)
-        private const val EXTENSION_FEATURE = "tachiyomi.extension"
-        private const val ANIME_EXTENSION_FEATURE = "tachiyomi.animeextension"
     }
 }

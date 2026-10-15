@@ -2,6 +2,7 @@ package io.legado.app.ui.book.read.config
 
 import androidx.compose.runtime.Composable
 import io.legado.app.constant.PreferKey
+import io.legado.app.ui.compose.component.rememberResponsiveColumns
 import io.legado.app.ui.compose.preference.PreferenceScreen
 import io.legado.app.ui.compose.preference.listPreference
 import io.legado.app.ui.compose.preference.preference
@@ -14,6 +15,7 @@ import legado.ui.generated.resources.click_regional_config
 import legado.ui.generated.resources.double_page_horizontal
 import legado.ui.generated.resources.double_page_title
 import legado.ui.generated.resources.double_page_value
+import legado.ui.generated.resources.hang_first_punctuation
 import legado.ui.generated.resources.keep_light
 import legado.ui.generated.resources.page_touch_slop_title
 import legado.ui.generated.resources.preview_image_by_click
@@ -73,6 +75,7 @@ fun MoreConfigScreen(
     val titleProgressBarBehavior = stringResource(Res.string.progress_bar_behavior)
     val titleTextFullJustify = stringResource(Res.string.text_full_justify)
     val titleTextBottomJustify = stringResource(Res.string.text_bottom_justify)
+    val titleHangFirstPunctuation = stringResource(Res.string.hang_first_punctuation)
     val titlePageTouchSlop = stringResource(Res.string.page_touch_slop_title)
     val titleAutoChangeSource = stringResource(Res.string.auto_change_source)
     val titlePreviewImageByClick = stringResource(Res.string.preview_image_by_click)
@@ -80,7 +83,8 @@ fun MoreConfigScreen(
     val titleShowReadTitleAddition = stringResource(Res.string.show_read_title_addition)
 
     AppTheme {
-        PreferenceScreen {
+        // 宽屏自动分列: 单列 640dp→2 列、1000dp→3 列, 之后每 +400dp 加一列 (窄屏恒单列)
+        PreferenceScreen(columns = rememberResponsiveColumns(1)) {
             if (hasScreenOrientation) {
                 listPreference(
                     prefKey = PreferKey.screenOrientation,
@@ -148,6 +152,13 @@ fun MoreConfigScreen(
                 defaultValue = true,
                 isBottomBackground = true,
                 onCheckedChange = { onPrefChange(PreferKey.textBottomJustify) },
+            )
+            switchPreference(
+                prefKey = PreferKey.hangFirstPunctuation,
+                title = titleHangFirstPunctuation,
+                defaultValue = false,
+                isBottomBackground = true,
+                onCheckedChange = { onPrefChange(PreferKey.hangFirstPunctuation) },
             )
             // 音量键翻页恒生效 (2026-08 用户拍板), 无开关条目; 滚轮翻页已彻底禁用 (2026-08 用户拍板), 无开关条目
             preference(

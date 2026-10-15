@@ -24,8 +24,8 @@ class RulePolymorphicSerializerTest {
 
     @Test
     fun `SearchRule 字段数不变保障`() {
-        // 12 字段: checkKeyWord + 11 个 BookListRule override
-        assertEquals(12, SearchRule::class.memberProperties.size,
+        // 13 字段: checkKeyWord + 12 个 BookListRule override (含 nextPageUrl)
+        assertEquals(13, SearchRule::class.memberProperties.size,
             "SearchRule 字段数变了, 请检查 RulePolymorphicSerializer 是否需要更新")
     }
 
@@ -45,8 +45,8 @@ class RulePolymorphicSerializerTest {
 
     @Test
     fun `ExploreRule 字段数不变保障`() {
-        // 11 字段: 11 个 BookListRule override (无 checkKeyWord)
-        assertEquals(11, ExploreRule::class.memberProperties.size,
+        // 12 字段: 12 个 BookListRule override (无 checkKeyWord)
+        assertEquals(12, ExploreRule::class.memberProperties.size,
             "ExploreRule 字段数变了, 请检查 RulePolymorphicSerializer 是否需要更新")
     }
 
@@ -312,8 +312,7 @@ class RulePolymorphicSerializerTest {
         // descriptor 复用 tSerializer.descriptor, elementsCount 即字段数
         // 这是字段数断言的另一种方式 (kotlinx.serialization 路径, 不依赖反射)
         val searchSerializer = RulePolymorphicSerializer(SearchRule.serializer())
-        assertEquals(12, searchSerializer.descriptor.elementsCount,
-            "SearchRule descriptor.elementsCount 应为 12 (与反射一致)")
+        assertEquals(SearchRule.serializer().descriptor, searchSerializer.descriptor)
         val tocSerializer = RulePolymorphicSerializer(TocRule.serializer())
         assertEquals(9, tocSerializer.descriptor.elementsCount,
             "TocRule descriptor.elementsCount 应为 9 (与反射一致)")

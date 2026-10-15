@@ -56,6 +56,22 @@ data class OhosBinaryBridgeResponse(
 )
 
 /**
+ * 通知上的一个按钮 (Kotlin → ArkTS, 经 [OhosNativeBridge.showNotification] 下发)。
+ *
+ * ArkTS 侧渲染为 `NotificationRequest.actionButtons` 的一项 (title + wantAgent); 点击后由宿主
+ * 经统一平台事件通道 (type="notificationAction") 把所属通知 id 与 [action] 回传到 Kotlin
+ * (`OhosPlatformEventChannel`), 不新增 napi 导出。
+ *
+ * @param text 按钮文案 (对照原版 `addAction` 的 title)
+ * @param action 动作标识 (对照原版 `addAction` 的 pendingIntent action, 如 [io.legado.app.constant.IntentAction.stop])
+ */
+@Serializable
+data class NotificationButton(
+    val text: String,
+    val action: String,
+)
+
+/**
  * 鸿蒙 napi 桥接基础设施: Kotlin → ArkTS 反向调用 (KP7+)。
  *
  * # 设计目的
@@ -152,8 +168,34 @@ object OhosNativeBridge {
      * @param content 通知正文 (已含进度文本, 如 "下载中 (50/100)")
      * @param progress 当前进度
      * @param max 最大进度 (<=0 视为不确定进度)
+     * @param ongoing 进行中分支标记 (对照原版导出通知 `setOngoing(true)`): ArkTS 侧置
+     *   `isOngoing=true` / `tapDismissed=false` (进行中通知不可点掉); 缺省 (false) 两个字段都不下发,
+     *   由系统按默认处理 (`tapDismissed` 默认 true 即原版 `setAutoCancel(true)`)
+     * @param alertOnce 只提醒一次 (对照原版 `setOnlyAlertOnce(true)`): ArkTS 侧置 `isAlertOnce`;
+     *   缺省 (false) 不下发, 每次更新按系统通知模式提醒 (原版未调该方法的通知即此行为)
+     * @param buttons 通知按钮 (对照原版 `addAction`); 缺省空 = 无按钮
+     * @param clickAction 点击通知本体的动作标识 (原版 contentIntent 直达某 Service action 的场景,
+     *   如 WebService 的 "copyHostAddress"): 非空时 ArkTS 侧把点击目标构建为携带
+     *   `{notificationId, action}` 的 Want (同按钮), 回传路径与按钮一致; 缺省 (null) 时点击仍走
+     *   id→route 表
+     * @param continuousTask 长时任务类型配置项 (module.json5 的 backgroundModes 项, 如
+     *   "multiDeviceConnection" / "dataTransfer"): 非空时 ArkTS 侧在发布通知后交长时任务仲裁器
+     *   申请同名长时任务 (鸿蒙无前台服务, 不申请则进程退后台会被挂起; 音频/朗读在播放时仲裁器
+     *   会降级为只发通知), 取消时须同步传 [stopContinuousTask]; **缺省 = 本业务当前不要长时任务**
+     *   (已申请过的会被释放, 如缓存的"缓存完成"那一条)
      */
-    fun showNotification(id: Int, title: String, content: String, progress: Int, max: Int) {
+    fun showNotification(
+        id: Int,
+        title: String,
+        content: String,
+        progress: Int,
+        max: Int,
+        ongoing: Boolean = false,
+        alertOnce: Boolean = false,
+        buttons: List<NotificationButton> = emptyList(),
+        clickAction: String? = null,
+        continuousTask: String? = null,
+    ) {
         val json = KS_JSON.encodeToString(
             NotificationPayload(
                 action = NotificationAction.SHOW,
@@ -162,6 +204,11 @@ object OhosNativeBridge {
                 content = content,
                 progress = progress,
                 max = max,
+                ongoing = ongoing.takeIf { it },
+                alertOnce = alertOnce.takeIf { it },
+                buttons = buttons.takeIf { it.isNotEmpty() },
+                clickAction = clickAction?.takeIf { it.isNotEmpty() },
+                continuousTask = continuousTask?.takeIf { it.isNotEmpty() },
             )
         )
         val progressText = if (max > 0) "$content ($progress/$max)" else content
@@ -177,10 +224,16 @@ object OhosNativeBridge {
      * 取消通知。未注册 tsfn 时丢弃 (见 [dispatchTsfn])。
      *
      * @param id 通知 id (与 showNotification 传入的 id 一致)
+     * @param stopContinuousTask 该通知背靠长时任务时传 true: ArkTS 侧交仲裁器一并释放长时任务
+     *   (对照 app 端 WebService 的 `stopSelf()` 同时停掉前台服务与其常驻通知); 缺省不动长时任务
      */
-    fun cancelNotification(id: Int) {
+    fun cancelNotification(id: Int, stopContinuousTask: Boolean = false) {
         val json = KS_JSON.encodeToString(
-            NotificationPayload(action = NotificationAction.CANCEL, id = id)
+            NotificationPayload(
+                action = NotificationAction.CANCEL,
+                id = id,
+                stopContinuousTask = stopContinuousTask.takeIf { it },
+            )
         )
         dispatchTsfn(
             synchronized(lock) { notificationTsfn },
@@ -1095,13 +1148,6 @@ object OhosNativeBridge {
         dispatchTsfn(synchronized(lock) { windowTsfn }, commandJson, "ohos-window", commandJson)
     }
 
-    /** 切换窗口全屏布局 (对照 @ohos.window setWindowLayoutFullScreen)。 */
-    fun setWindowFullScreenLayout(enabled: Boolean) {
-        sendWindowCommand(
-            KS_JSON.encodeToString(WindowCommand(action = "setFullScreenLayout", enabled = enabled))
-        )
-    }
-
     /** 切换保持屏幕常亮 (对照 @ohos.window setWindowKeepScreenOn)。 */
     fun setWindowKeepScreenOn(enabled: Boolean) {
         sendWindowCommand(
@@ -1121,10 +1167,35 @@ object OhosNativeBridge {
         )
     }
 
-    /** 设置系统栏显隐 (对照 @ohos.window setWindowSystemBarEnable, enabled=true 显示 / false 隐藏)。 */
-    fun setWindowSystemBarEnable(enabled: Boolean) {
+    /**
+     * 设置系统栏显隐 (对照 @ohos.window setSpecificSystemBarEnabled, 分栏控制)。
+     * [statusBar]/[navigationBar] 分别为状态栏与导航栏 (含三键导航栏与手势导航条) 的可见性。
+     */
+    fun setWindowSystemBarEnable(statusBar: Boolean, navigationBar: Boolean) {
         sendWindowCommand(
-            KS_JSON.encodeToString(WindowCommand(action = "setSystemBarEnable", enabled = enabled))
+            KS_JSON.encodeToString(
+                WindowCommand(
+                    action = "setSystemBarEnable",
+                    statusBar = statusBar,
+                    navigationBar = navigationBar,
+                )
+            )
+        )
+    }
+
+    /**
+     * 设置系统栏属性 (对照 @ohos.window setWindowSystemBarProperties)。
+     * [properties] 只放本次要设的字段 (键名同 @ohos.window SystemBarProperties, 如
+     * statusBarContentColor), 未列出的字段保持原值; 未注册 window tsfn 时丢弃。
+     */
+    fun setWindowSystemBarProperties(properties: Map<String, String>) {
+        sendWindowCommand(
+            KS_JSON.encodeToString(
+                WindowCommand(
+                    action = "setSystemBarProperties",
+                    payload = KS_JSON.encodeToString(properties),
+                )
+            )
         )
     }
 
@@ -1156,6 +1227,88 @@ object OhosNativeBridge {
 
     /** 检查 window 桥是否已就绪 (tsfn 已注入)。 */
     fun isWindowBridgeReady(): Boolean = synchronized(lock) { windowTsfn != null }
+
+    // ===== Dialog 同步桥 (请求复用 window tsfn, 结果复用 platformEvent, 不新增 napi 符号) =====
+    // 系统/自绘对话框 (带标题的候选列表 / 是-否确认框 / 多字段输入框) 只能由 ArkTS 调
+    // @ohos.promptAction 弹出 (无 NDK C 接口), 而 KMP 侧需要拿到用户选择, 故是"请求-响应"型桥。
+    // 本仓既有的两条通道正好覆盖两个方向, 复用之, 不另建 C++ tsfn + @CName 回调:
+    //
+    // 请求侧 (Kotlin → ArkTS): 复用 window tsfn (同 exitApplication 的复用先例),
+    //   WindowCommand(action = "showDialog", payload = DialogBridgeRequest JSON);
+    //   ArkTS 侧 EntryAbility 的 window callback 把 payload 交给 SysDialogBridgeHandler。
+    // 结果侧 (ArkTS → Kotlin): 复用统一平台事件通道 legado.platformEvent
+    //   (OhosPlatformEventChannel type="dialogResult", 同 colorMode/audioDeviceChange 等
+    //   后加事件走同一 napi 入口的先例), 回到本 object 的 [onDialogResult]。
+    //
+    // 为什么不直接照 Image/FilePicker 那样新建独立 tsfn + 回调符号: 那需要同步改
+    // ohosApp/entry/src/main/cpp/legado_napi.cpp 与 cpp/types/liblegado_napi/Index.d.ts,
+    // 二者都不在本模块的文件域内 (本模块只许改 foundation/ui 的 ohosMain 与 ohosApp 的 ets/profile)。
+    // 桥未就绪 (window tsfn 未注册) 时 [invokeDialogSync] 返回 null, 调用方按"未选择"降级。
+
+    /** 待响应的 dialog 同步请求 Map<requestId, CompletableDeferred<resultJson>>。 */
+    private val dialogPendingRequests = mutableMapOf<Long, CompletableDeferred<String>>()
+
+    /** dialog 请求自增 ID (原子性由 [lock] 保护)。 */
+    private var dialogRequestCounter = 0L
+
+    /**
+     * 弹对话框并阻塞等待用户提交 (对照 Android AlertDialog / iOS UIAlertController)。
+     *
+     * @param action 对话框形态: "select" (带标题的候选列表) / "confirm" (是-否确认框) /
+     *   "form" (多字段输入框 + 各提交按钮)
+     * @param payloadJson 形态参数 JSON (由调用方序列化):
+     *   - select: `{"title":"...","items":["a","b"]}`
+     *   - confirm: `{"title":"...","message":"...","confirmText":"...","cancelText":"..."}`
+     *   - form: `{"title":"...","fields":[{"key","label","initial?","hint?","numeric?"}],
+     *     "actions":[{"key","text"}],"cancelText?"}`
+     * @param timeoutMs 超时毫秒 (默认 60s: 用户可能长时间思考; 对齐 filePicker/permission 的交互超时。
+     *   form 形态要逐字段打字, 由调用方传更长值)
+     * @return ArkTS 返回的结果 JSON (`{ok,index}` / `{ok,confirmed}` / `{ok,action,values}` /
+     *   `{ok,cancelled}` / `{ok:false,error}`); 桥未就绪或超时返回 null (调用方按"未选择"降级)
+     */
+    fun invokeDialogSync(action: String, payloadJson: String, timeoutMs: Long = 60000L): String? {
+        val requestId = synchronized(lock) { ++dialogRequestCounter }
+        val deferred = CompletableDeferred<String>()
+        synchronized(lock) { dialogPendingRequests[requestId] = deferred }
+
+        val requestJson = KS_JSON.encodeToString(
+            DialogBridgeRequest(requestId = requestId, action = action, payload = payloadJson)
+        )
+        // 复用 window tsfn: 与 Window/FilePicker 等同模式, 未注册直接降级 (不空等超时)
+        val tsfn = synchronized(lock) { windowTsfn }
+        if (tsfn == null) {
+            synchronized(lock) { dialogPendingRequests.remove(requestId) }
+            return null
+        }
+        val commandJson = KS_JSON.encodeToString(
+            WindowCommand(action = "showDialog", payload = requestJson)
+        )
+        runCatching { tsfn(commandJson) }.onFailure {
+            synchronized(lock) { dialogPendingRequests.remove(requestId) }
+            return null
+        }
+
+        // 阻塞等待 ArkTS 回调 (业务线程阻塞, ArkTS 主线程回调 complete, 不同线程无死锁)
+        val result = runBlocking { withTimeoutOrNull(timeoutMs) { deferred.await() } }
+        synchronized(lock) { dialogPendingRequests.remove(requestId) }
+        return result
+    }
+
+    /**
+     * dialog 结果回调 (由 [io.legado.app.napi.OhosPlatformEventChannel] 的 "dialogResult" 事件调用)。
+     * ArkTS SysDialogBridgeHandler 弹出系统对话框拿到用户选择后, 经 legado.platformEvent 回送结果
+     * JSON, 唤醒 [invokeDialogSync] 中阻塞的 CompletableDeferred。
+     *
+     * @param requestId 对应 [invokeDialogSync] 生成的请求 ID
+     * @param resultJson 结果 JSON (含 ok/index 或 ok/confirmed 或 ok/cancelled 字段)
+     */
+    fun onDialogResult(requestId: Long, resultJson: String) {
+        val deferred = synchronized(lock) { dialogPendingRequests.remove(requestId) }
+        deferred?.complete(resultJson)
+    }
+
+    /** 检查 dialog 桥是否已就绪 (请求走 window tsfn, 故与 [isWindowBridgeReady] 同判据)。 */
+    fun isDialogBridgeReady(): Boolean = isWindowBridgeReady()
 
     // ===== FilePicker 同步桥 (tsfn + callback, KP8+, 同 Image/Crypto/Http 模式) =====
     // 文件选择 (pickDocuments/pickDocumentContent) 是同步接口, 但 ArkTS @ohos.file.picker.DocumentViewPicker
@@ -1492,7 +1645,8 @@ object OhosNativeBridge {
     // 阅读页电池电量走 ArkTS @ohos.batteryInfo (无 NDK C 接口), 经 tsfn 同步请求/响应获取。
     // 调用链: KMP getBatteryLevel → invokeBatterySync("getLevel") → tsfn → ArkTS @ohos.batteryInfo.batterySOC
     //   → legado.batteryCallback(requestId, {"level":85}) → deferred.complete → 返回缓存值
-    // ArkTS 侧实现为 TODO (legado_napi.cpp registerBatteryCallback + BatteryBridgeHandler.ets)
+    // ArkTS 侧已实现 (legado_napi.cpp registerBatteryCallback + BatteryBridgeHandler.ets),
+    // 由 EntryAbility 启动时注册: legado.registerBatteryCallback(...)
 
     /** battery threadsafe_function 引用 (Kotlin → ArkTS 发送电量查询)。 */
     @Volatile
@@ -1699,7 +1853,11 @@ object OhosNativeBridge {
         val durationMs: Int,
     )
 
-    /** notification 跨语言传递 payload。show 携带 title/content/progress/max, cancel 仅 id。 */
+    /**
+     * notification 跨语言传递 payload。show 携带 title/content/progress/max (+ 可选的进行中标记 /
+     * 只提醒一次 / 按钮 / 点击动作 / 长时任务类型), cancel 携带 id (+ 可选的"一并取消长时任务");
+     * 可选字段缺省时不下发。
+     */
     @Serializable
     private data class NotificationPayload(
         val action: NotificationAction,
@@ -1708,6 +1866,12 @@ object OhosNativeBridge {
         val content: String? = null,
         val progress: Int? = null,
         val max: Int? = null,
+        val ongoing: Boolean? = null,
+        val alertOnce: Boolean? = null,
+        val buttons: List<NotificationButton>? = null,
+        val clickAction: String? = null,
+        val continuousTask: String? = null,
+        val stopContinuousTask: Boolean? = null,
     )
 
     /** notification 操作类型 (ArkTS 侧据 action 分支 show/cancel)。 */
@@ -1828,6 +1992,14 @@ object OhosNativeBridge {
         val url: String? = null,
     )
 
+    /** dialog 桥请求 payload (Kotlin → ArkTS, 同 ImageBridgeRequest 结构, action=select/confirm)。 */
+    @Serializable
+    private data class DialogBridgeRequest(
+        val requestId: Long,
+        val action: String,
+        val payload: String,
+    )
+
     /** filePicker 桥请求 payload (Kotlin → ArkTS, 同 ImageBridgeRequest 结构, action=pickDocuments/pickDocumentContent)。 */
     @Serializable
     private data class FilePickerBridgeRequest(
@@ -1901,13 +2073,24 @@ object OhosNativeBridge {
         val sourceType: Int = 0,
     )
 
-    /** window 命令 payload (Kotlin → ArkTS, 全屏/常亮/方向/系统栏, fire-and-forget)。 */
+    /**
+     * window 命令 payload (Kotlin → ArkTS, 全屏/常亮/方向/系统栏, fire-and-forget)。
+     *
+     * [payload] 供复用本通道的非窗口命令携带自己的请求 JSON: 目前只有
+     * action="showDialog" (对话框桥, 内层为 [DialogBridgeRequest], 见 [invokeDialogSync])。
+     */
     @Serializable
     private data class WindowCommand(
         val action: String,
         val enabled: Boolean? = null,
         val orientation: Int? = null,
         val brightness: Float? = null,
+        // 单栏显隐 (setSystemBarEnable): 状态栏/导航栏各自的可见性
+        val statusBar: Boolean? = null,
+        val navigationBar: Boolean? = null,
+        // 长文本/结构化命令的内层载荷 (如系统对话框桥的请求 JSON);
+        // 与 ArkTS 侧 WindowCommand 的同名字段对应
+        val payload: String? = null,
     )
 
     /** TTS 命令 payload (Kotlin → ArkTS, createEngine/speak/pause/resume/stop/shutdown)。 */

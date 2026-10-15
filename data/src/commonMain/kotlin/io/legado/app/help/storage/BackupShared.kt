@@ -132,24 +132,43 @@ object BackupShared {
     /**
      * 自动备份 (距上次备份超过一天时触发, 云端已有当日备份则只更新时间戳)。
      * 跨平台统一调度 (对照原版 Backup.autoBack)。
+     *
+     * 发起即返回 (启动路径用); 需要等它落完盘的收尾路径用 [autoBackAwait]。
      */
     fun autoBack(
         destinationPath: String? = PreferenceProviders.get().getStringOrNull(PreferKey.backupPath),
     ) {
-        if (!shouldAutoBackup()) return
         Coroutine.async {
-            autoBackMutex.withLock {
-                if (!shouldAutoBackup()) return@async
-                val backupZipFileName = nowZipFileName()
-                val hasRemote = runCatching { AppWebDavShared.hasBackUp(backupZipFileName) }.getOrDefault(false)
-                if (!hasRemote) {
-                    backupLocked(destinationPath)
-                } else {
-                    BackupRestoreHooks.get().setLastBackup(systemCurrentTimeMillis())
-                }
-            }
+            autoBackAwait(destinationPath)
         }.onError {
             AppLog.put("自动备份失败\n${it.message}", it, tag = TAG)
+        }
+    }
+
+    /**
+     * 自动备份的可等待入口 (退出前收尾用)。
+     *
+     * 收尾路径必须等它跑完: [autoBack] 发起即返回, 调用方进程紧接着结束会把写到一半的
+     * 备份截断 (文件名带时间戳, 不覆盖旧备份, 但会留下一个不可用的半成品)。
+     */
+    suspend fun autoBackAwait(
+        destinationPath: String? = PreferenceProviders.get().getStringOrNull(PreferKey.backupPath),
+    ) {
+        // 规则订阅的每日更新挂在自动备份这批时机上 (退出阅读页 / 退出程序 / 退到后台), 节流各算各的:
+        // 订阅读自己的 RuleSub.update, 备份读 lastBackup, 互不推迟。
+        // 发起即返回不在这里等: 订阅地址失效时等网络超时会把每次退出都拖住;
+        // 挑选时已把该条订阅的下次尝试时间推到次日, 失败或中断都等次日时机再试, 不写半份数据。
+        RuleSubAutoUpdate.run()
+        if (!shouldAutoBackup()) return
+        autoBackMutex.withLock {
+            if (!shouldAutoBackup()) return
+            val backupZipFileName = nowZipFileName()
+            val hasRemote = runCatching { AppWebDavShared.hasBackUp(backupZipFileName) }.getOrDefault(false)
+            if (!hasRemote) {
+                backupLocked(destinationPath)
+            } else {
+                BackupRestoreHooks.get().setLastBackup(systemCurrentTimeMillis())
+            }
         }
     }
 

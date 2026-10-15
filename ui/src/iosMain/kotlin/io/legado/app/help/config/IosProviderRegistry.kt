@@ -11,8 +11,10 @@ import io.legado.app.help.book.registerNativeBookStorage
 import io.legado.app.help.storage.registerNativeDataStorage
 import io.legado.app.help.book.registerIosLocalBookLocator
 import io.legado.app.help.book.registerNativeContentProcessorAccessor
+import io.legado.app.help.crash.CrashMarkerProviders
 import io.legado.app.help.crash.IosCrashHandler
-import io.legado.app.help.crash.refreshNativeCrashLogPaths
+import io.legado.app.help.crash.LocalConfigCrashMarkerProvider
+import io.legado.app.help.crash.NativeCrashLogWriter
 import io.legado.app.help.file.registerIosAppFilesDir
 import io.legado.app.help.file.registerNativeFileDownloader
 import io.legado.app.help.http.registerIosBackstageWebView
@@ -21,18 +23,21 @@ import io.legado.app.help.image.NativeBitmapProvider
 import io.legado.app.help.image.registerIosBookImageLoader
 import io.legado.app.help.image.registerReaderImageResolver
 import io.legado.app.help.log.registerNativeAppLogHost
+import io.legado.app.help.regex.registerNativeRegexErrorHandler
 import io.legado.app.help.http.registerDefaultIosCookieStoreProvider
 import io.legado.app.help.http.registerNativeHttpProvider
 import io.legado.app.help.http.registerSharedCookieJarBridge
 import io.legado.app.help.media.registerIosMediaNotificationController
 import io.legado.app.help.notification.registerIosNotificationProgress
 import io.legado.app.help.registerComposeDefaultDataResourceProvider
+import io.legado.app.ui.association.registerUiRuleSubAutoUpdateHook
 import io.legado.app.ui.compose.platform.registerComposeStringProviders
 import io.legado.app.help.registerNativeDirectLinkUploadProviders
 import io.legado.app.help.registerNativeExploreKindsCacheProvider
 import io.legado.app.help.registerNativeFileCacheProvider
 import io.legado.app.help.registerNativeSourceCacheProvider
 import io.legado.app.help.service.registerIosBackgroundTasks
+import io.legado.app.help.service.registerIosCacheBookServiceNotifications
 import io.legado.app.help.service.registerIosServiceLauncher
 import io.legado.app.help.service.registerNativeUpdateBookCallback
 import io.legado.app.help.source.registerNativeSourceHelpAccessor
@@ -52,13 +57,15 @@ import io.legado.app.model.registerIosReadBookPlatform
 import io.legado.app.model.registerNativeCacheBookCallback
 import io.legado.app.model.script.registerNativeJsEngines
 import io.legado.app.model.webBook.registerNativeWebBookProviders
+import io.legado.app.ui.IosNotificationPublisher
+import io.legado.app.ui.IosShareInbox
 import io.legado.app.ui.book.changesource.registerNativeChangeBookSourcePlatform
 import io.legado.app.ui.book.manage.registerNativeBookshelfManagePlatform
 import io.legado.app.ui.book.read.page.provider.registerSkiaTextMeasurer
+import io.legado.app.utils.IosRuleRegex
+import io.legado.app.utils.RuleRegexes
 import io.legado.app.utils.registerIosScreenInfoProvider
-import io.legado.app.web.registerNativeWebServerPlatform
-import io.legado.app.web.utils.registerComposeWebAssetSource
-import io.legado.app.web.utils.registerNativeWebStrings
+import io.legado.app.utils.registerRuleRegexForJsonPath
 import platform.UIKit.UIDevice
 import platform.UIKit.UIScreen
 import kotlin.concurrent.Volatile
@@ -102,21 +109,25 @@ fun registerIosProviders() {
     if (providersRegistered) return
     providersRegistered = true
 
-    // 0. 崩溃捕获 (未捕获异常钩子 + 信号处理器) 必须在最前: 本函数内任一 provider 注册抛异常
+    // 0. 崩溃捕获 (未捕获异常钩子 + 原生信号标记) 必须在最前: 本函数内任一 provider 注册抛异常
     // 都会中断整条链, 而后面未注册的 provider (如 ScreenInfoProviders) 后续会硬崩 ——
     // 捕获装在链首才能留下现场
     IosCrashHandler.install()
+    // 0.1 异常退出标记的读取通道: 原生信号处理器只写标记文件, 这里让启动期提示能消费它
+    // (偏好通道覆盖未捕获异常路径; 两条都查、都清)
+    CrashMarkerProviders.register(
+        LocalConfigCrashMarkerProvider { NativeCrashLogWriter.crashCandidateDirs() }
+    )
 
     // 1. 文件系统目录 (其他 provider 持久化依赖)
     registerIosAppFilesDir()
-
-    // 1.01 崩溃日志落盘路径补齐 (崩溃捕获装在链首时只有回退路径, 文件目录一就绪重建一次)
-    refreshNativeCrashLogPaths()
 
     // 1.05 字符串 provider (syncGetString 与 appString 两条同步通道: model/help 层异常、
     // 翻页边界提示、Toaster 按钮文案等; 未注册时两条通道均返回 key 名, 运行期可见为
     // "no_prev_page" 之类原始 key。零平台依赖顺序无关, 只须在任何取值调用之前)
     registerComposeStringProviders()
+    // 规则订阅每日自动更新的导入实现 (复用 :ui 的导入链, 见 RuleSubAutoUpdateHook)
+    registerUiRuleSubAutoUpdateHook()
 
     // 1.06 Toaster (须在 AppLog 宿主之前: AppLog.put(toast = true) 的 toast 出口走 Toasters,
     // 晚注册则初始化期的提示直接抛; IosToaster 只依赖 UIKit, 拿不到 vc 时 NSLog 兜底。
@@ -131,6 +142,20 @@ fun registerIosProviders() {
     // 须在 AppFilesDirs 之后 (日志目录从 filesDir 派生)、任何 AppLog.put 之前)
     registerNativeAppLogHost()
 
+    // 1.15 正则替换超时处理器 (超时提示走 Toasters, 崩溃落盘走 NativeCrashLogWriter;
+    // 须在 Toaster/AppLog/AppFilesDirs 之后、registerNativeWebBookProviders() 之前)
+    registerNativeRegexErrorHandler()
+
+    // 1.16 规则正则引擎 (书源/替换/目录规则的 `##匹配##替换`、`:regex`、正文去重标题、
+    // JSONPath 的 match() 均经它执行):
+    // K/N stdlib 的 kotlin.text.Regex 匹配按迭代次数递归 (GroupQuantifierSet 每消费一次分组体
+    // 递归一层), 复杂书源规则实测递归 2969 帧后写穿线程栈保护页直接闪退, 且无中断检查点 ——
+    // 超时后线程会持续占满一核。换成系统 NSRegularExpression (ICU: 回溯状态在堆上, 栈用量
+    // 不随模式复杂度增长), 时间上限经 NSMatchingReportProgress 回调实现。
+    // 须在 1.15 之后 (超时副作用走 RegexErrorHandlers)、任何规则解析之前
+    RuleRegexes.register(IosRuleRegex)
+    registerRuleRegexForJsonPath()
+
     // 2. 配置 provider (AppConfigAccessor 委托 1.07 已注册的 PreferenceProvider)
     registerNativeAppConfigAccessor()
 
@@ -142,6 +167,8 @@ fun registerIosProviders() {
 
     // 2.5 主题配置 provider (文件持久化 themeConfig.json, 与 app 端 ThemeConfig 同格式; 替换原内存版)
     ThemeConfigProviders.register(FileThemeConfigProvider())
+    // 2.5.1 系统深色初值 + 启动期无条件按当前日/夜重算一次主题色 (之后的变化走 NativeSystemTheme.update)
+    NativeSystemTheme.init()
 
     // 2.5.1 阅读配置 provider (readConfig.json / shareReadConfig.json, 供 BackupShared 备份/恢复)
     ReadBookConfigProviders.register(ReadBookConfigShared(PreferenceProviders.get()))
@@ -250,18 +277,24 @@ fun registerIosProviders() {
     // 备份/恢复钩子 (lastBackup 时间戳 + 恢复完成提示; zip 复制/解压走 BackupFileOps 默认实现)
     registerNativeBackupRestoreHook()
     registerIosNotificationProgress()
+    // 通知分类 (带自定义动作的通知必须先注册分类再发送, 否则通知上不出现动作按钮):
+    // 发送侧在 IosNotificationPublisher, 动作处理在 IosNotificationDelegate
+    IosNotificationPublisher.installCategories()
     // UI provider (Toast/OpenUrl/UserAgent), 供 JsExtensionsCommon 调用, 顺序无关, 须在任何 JS eval 之前
     registerIosOpenUrlProvider()
     registerNativeUserAgentProvider()
     // 源验证 UI provider (最小实现: 不支持路径明确报错+Toast, 纯打开链接走 OpenUrlProviders;
     // 未注册时 JS 验证入口裸抛 IllegalStateException)
     registerNativeVerificationUiProvider()
-    // UpdateBook callback 须在 Toaster + NotificationProgress 之后 (本 callback 委托这两个 provider)、
-    // ServiceLauncher 之前 (NativeServiceLauncher.updateBookShared lazy 构造时取 UpdateBookCallbacks.getDefault)
+    // UpdateBook callback 须在 Toaster + NotificationProgress 之后 (本 callback 委托这两个 provider);
+    // 消费方在懒构造更新引擎时取 UpdateBookCallbacks.getDefault, 故须先于其创建
     registerNativeUpdateBookCallback()
     // CacheBook callback 须在 ServiceLauncher 之前 (缓存流程未注册时 CacheBookCallbacks.get() 直接 error)
     registerNativeCacheBookCallback()
     registerIosServiceLauncher()
+    // 缓存书籍服务通知镜像须紧跟在启动器注册之后 (本函数把已注册的启动器包一层通知态;
+    // 对照 app 端通知随 CacheBookService 生死, iOS 无 Service 故镜像在启停入口上)
+    registerIosCacheBookServiceNotifications()
     // 音频播控 Commander (IosAudioPlayCommander, 与 ServiceLauncher 同级的播放编排入口)
     registerIosAudioPlayCommanders()
     // 系统媒体控制 (NowPlaying / RemoteCommandCenter / 锁屏控制卡片)
@@ -280,18 +313,23 @@ fun registerIosProviders() {
     // 返回 null, 排版静默跳过图片 —— 此前两端漏注册, 图片全部不显示)
     registerReaderImageResolver()
 
-    // 10. Web 服务 provider (WebAssetSource + WebStrings + WebServerPlatform, iOS/鸿蒙共用 Ktor server 壳)
-    // 仅注册平台实现, 不启动服务 (WebServerManager.start 由用户操作触发)
-    registerComposeWebAssetSource()
-    registerNativeWebStrings()
-    // BookController 图片/阅读状态 provider (/cover /image 直出缓存字节, /deleteBook /saveBookProgress
-    // 经 NativeReadBookStateProvider 桥接阅读页挂接的 ReadBookShared)
+    // 10. WebApi 用的 BookController provider (ImageController + ReadBookState; /cover /image
+    // 直出缓存字节, /deleteBook /saveBookProgress 经 ActiveReadBookStateProvider 桥接阅读页
+    // 挂接的 ReadBookShared)。iOS 不提供 Web 服务 (无后台常驻能力, 详见 WebServerPlatform 注释),
+    // 但 ReadBookStateProviders 还被 Book.delete 消费 (删除正在阅读的书时清理阅读状态),
+    // 故本注册保留
     registerNativeBookControllerProviders()
-    registerNativeWebServerPlatform()
 
     // 缓存书籍后台续跑 (退后台收尾窗口 + BGProcessingTask 链式续约, 实现见 core iosMain
     // help/service/IosBackgroundTasks.kt)。BGTaskScheduler 的 registerForTaskWithIdentifier
     // 必须在 didFinishLaunching 返回前调用 (Apple 硬约束), 本函数由 iOS 宿主在该钩子内调用,
     // 置于全部 provider 注册之后。
     registerIosBackgroundTasks()
+
+    // 分享扩展取件扫描 (分享面板 → App Group 共享容器 → 本启动路径取件 → 既有导入分发)。
+    // 入口类写件见 iosApp/ShareExtension/ShareViewController.swift。
+    // 取件本身在 IO 线程上跑 (见 IosShareInbox); 通道未生效时 (未签名产物拿不到
+    // App Group entitlement, 容器取不到) 不抛不崩, 并在应用进入活动态后把原因与替代导入路径
+    // 明确提示给用户一次 (见 IosShareInbox.notifyEntryUnavailable)。
+    IosShareInbox.deliverPending()
 }

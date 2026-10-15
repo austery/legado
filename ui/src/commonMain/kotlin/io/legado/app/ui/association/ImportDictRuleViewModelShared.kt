@@ -102,17 +102,19 @@ class ImportDictRuleViewModelShared(
      * @param finally 导入完成回调 (无论成功/失败均触发, 与 app 端 onFinally 一致)
      */
     fun importSelect(checked: List<Boolean>, finally: () -> Unit) {
-        Coroutine.async(scope = scope) {
-            val selectSource = arrayListOf<DictRule>()
-            checked.forEachIndexed { index, b ->
-                if (b) {
-                    selectSource.add(allSources[index])
-                }
+        Coroutine.async(scope = scope) { importSelectAwait(checked) }
+            .onFinally { finally() }
+    }
+
+    /** Returns only after persistence succeeds; failures propagate to automatic imports. */
+    suspend fun importSelectAwait(checked: List<Boolean>) {
+        val selectSource = arrayListOf<DictRule>()
+        checked.forEachIndexed { index, b ->
+            if (b) {
+                selectSource.add(allSources[index])
             }
-            appDb.dictRuleDao.insert(*selectSource.toTypedArray())
-        }.onFinally {
-            finally.invoke()
         }
+        appDb.dictRuleDao.insert(*selectSource.toTypedArray())
     }
 
     /**
@@ -134,13 +136,22 @@ class ImportDictRuleViewModelShared(
      */
     fun importSource(text: String) {
         Coroutine.async(scope = scope) {
-            importSourceAwait(readImportPayload(text).trim())
+            preImportAwait(text)
         }.onError {
             _errorState.tryEmit("ImportError:${it.message}")
             AppLog.put("ImportError:${it.message}", it)
-        }.onSuccess {
-            comparisonSource()
         }
+    }
+
+    /**
+     * 解析载荷 → 与本地库比对, 算好 [defaultChecked] 并投递 [successState]。
+     *
+     * 手动导入 ([importSource]) 与规则订阅的每日自动更新共用这一段, 两处走同一份解析与同一份
+     * "需要导入"判据。载荷无法解析时抛异常 (调用方决定记日志还是提示)。
+     */
+    suspend fun preImportAwait(text: String) {
+        importSourceAwait(readImportPayload(text).trim())
+        comparisonSource()
     }
 
     /**
@@ -210,19 +221,17 @@ class ImportDictRuleViewModelShared(
      *
      * - 遍历 [allSources], 调 `appDb.dictRuleDao.getByName(it.name)` 查本地 (注意是按 name
      *   查询, 与其他 VM 按 id 查询不同, 因为 DictRule 用 name 作唯一标识);
-     * - defaultChecked: source 为 null (本地不存在) 时选中 (新增默认选);
+     * - defaultChecked: 本地不存在, 或本地已有但 [dictRuleChanged] 判为有变化 (新增与更新都默认选);
      * - 推送 `_successState.tryEmit(allSources.size)` (替代 `successLiveData.postValue(allSources.size)`)。
      *
-     * 业务在 IO 跑 (DAO 查询必须 IO), 与 BaseViewModel.execute 默认值一致。
+     * 由 [preImportAwait] 在 IO 上下文内调用 (DAO 查询必须 IO)。
      */
-    private fun comparisonSource() {
-        Coroutine.async(scope = scope) {
-            allSources.forEach {
-                val source = appDb.dictRuleDao.getByName(it.name)
-                checkSources.add(source)
-                defaultChecked.add(source == null)
-            }
-            _successState.tryEmit(allSources.size)
+    private suspend fun comparisonSource() {
+        allSources.forEach {
+            val source = appDb.dictRuleDao.getByName(it.name)
+            checkSources.add(source)
+            defaultChecked.add(source == null || dictRuleChanged(it, source))
         }
+        _successState.tryEmit(allSources.size)
     }
 }

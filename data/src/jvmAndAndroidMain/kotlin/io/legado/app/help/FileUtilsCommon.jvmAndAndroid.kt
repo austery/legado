@@ -10,6 +10,7 @@ import io.legado.app.help.FileUtilsCommon.writeBytes
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.utils.FileUtilsBase
 import io.legado.app.utils.InputStream
+import io.legado.app.utils.isAtomicWriteTempName
 import java.io.File
 
 /**
@@ -26,6 +27,8 @@ import java.io.File
  * - [delete] / [getPath] 委托 [FileUtilsBase], 与原 FileUtils 转发链等价
  * - [readBytes] / [writeBytes] / [createFileReplace] 直接走 java.io.File,
  *   与原 app 端 JsExtensions 内联实现一致 (File.readBytes / File.writeBytes / File.createFileReplace)
+ * - [replaceFileAtomically] 委托 [FileUtilsBase.replaceFileAtomically] (同卷改名, Windows 上目标
+ *   被占用时走备份让位重试), 失败收成 false
  */
 actual object FileUtilsCommon {
 
@@ -82,6 +85,8 @@ actual object FileUtilsCommon {
         return FileUtilsBase.delete(path, deleteRootDir)
     }
 
+    actual fun length(path: String): Long = FileUtilsBase.getLength(path)
+
     actual fun listFiles(path: String): List<String> {
         // 与原 getTxtInFolder 内 folder.listFiles() 一致: 仅文件, 不含子目录
         val dir = File(path)
@@ -125,11 +130,22 @@ actual object FileUtilsCommon {
         return dir.listFiles { f -> f.isDirectory }?.map { it.absolutePath } ?: emptyList()
     }
 
+    actual fun isDirAbsentOrEmpty(path: String): Boolean {
+        // 复刻下沉前桌面端 DesktopCore.dirAbsentOrEmpty: 不用空判掩盖 IO 错误。
+        // File.list() 在"不是目录"与"是目录但读目录出错"时都返回 null, 两者靠 isDirectory 区分:
+        // 后者按"非空"处理 (返回 false), 让清理照原样跑。
+        val dir = File(path)
+        val entries = dir.list()
+        return if (entries == null) !dir.isDirectory else entries.isEmpty()
+    }
+
     actual fun getDirSize(path: String): Long {
         val file = File(path)
         if (!file.exists()) return 0L
         if (file.isFile) return file.length()
-        return file.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return file.walkTopDown()
+            .filter { it.isFile && !isAtomicWriteTempName(it.name) }
+            .sumOf { it.length() }
     }
 
     actual fun lastModified(path: String): Long {
@@ -141,4 +157,9 @@ actual object FileUtilsCommon {
         val idx = maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\'))
         return if (idx >= 0) path.substring(idx + 1) else path
     }
+
+    actual fun replaceFileAtomically(srcPath: String, dstPath: String): Boolean =
+        runCatching {
+            FileUtilsBase.replaceFileAtomically(File(srcPath), File(dstPath))
+        }.isSuccess
 }

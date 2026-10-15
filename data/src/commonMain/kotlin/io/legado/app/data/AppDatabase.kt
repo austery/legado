@@ -57,7 +57,7 @@ import io.legado.app.data.entities.TxtTocRule
  *   (官方 room3 的 migrate 是 suspend, 鸿蒙 CPF fork 不是)
  */
 @Database(
-    version = 90,
+    version = 91,
     exportSchema = true,
     entities = [NativeReadingResume::class, Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchKeyword::class, Cookie::class,
@@ -72,6 +72,7 @@ import io.legado.app.data.entities.TxtTocRule
         AutoMigration(from = 85, to = 86),
         AutoMigration(from = 86, to = 87),
         AutoMigration(from = 87, to = 88),
+        AutoMigration(from = 90, to = 91),
     ]
 )
 // DATABASE 作用域注册 Book.Converters: iOS/ohos KSP 处理 BookChapter.ForeignKey 跨实体解析时,

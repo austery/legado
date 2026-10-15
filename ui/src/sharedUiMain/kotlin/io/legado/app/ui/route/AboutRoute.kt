@@ -17,6 +17,7 @@ import io.legado.app.help.FileUtilsCommon
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.toast.Toasters
 import io.legado.app.help.update.AppUpdateManager
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.ui.about.AboutHeaderCard
 import io.legado.app.ui.about.AboutScreen
 import io.legado.app.ui.about.AboutScreenModel
@@ -30,8 +31,9 @@ import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.PlatformServiceProviders
 import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.ScreenModelStore
-import io.legado.app.ui.widget.dialog.MdDocDialog
+import io.legado.app.ui.widget.dialog.TextDialog
 import io.legado.app.ui.widget.dialog.WaitDialog
+import io.legado.app.ui.widget.dialog.rememberBuiltInDocContent
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -56,8 +58,8 @@ import org.jetbrains.compose.resources.stringResource
  * 通过 [ScreenModelStore] 复用 [AboutScreenModel], 渲染 [AboutScreen]。
  *
  * 检查更新与内置文档 (许可证/免责声明/隐私政策) 四端同一条链, 无平台分支:
- * 前者 [AboutScreenModel.checkUpdate] → AppUpdateManager, 后者 [MdDocDialog] 读
- * composeResources。真正平台专属的只剩崩溃日志/保存日志/堆转储, 经
+ * 前者 [AboutScreenModel.checkUpdate] → AppUpdateManager, 后者读 composeResources 后
+ * 交 [TextDialog] 渲染。真正平台专属的只剩崩溃日志/保存日志/堆转储, 经
  * [PlatformCapabilityProviders] 委托各端实现。
  *
  * 页面外壳对照原版 activity_about.xml 自上而下: TitleBar (menu_share_it → 分享按钮)
@@ -100,6 +102,8 @@ fun AboutRoute(
                 // 入口 gate: 已注册 AppUpdateEnvironment 的端才显示 (当前 Android + desktop;
                 // iOS/鸿蒙未注册, 与原版一致 —— 原版也只有 Android 有这个入口)
                 showCheckUpdate = AppUpdateManager.isAvailable(),
+                // 堆转储入口: 只有存在 JVM 堆的平台才有该能力 (iOS/鸿蒙隐藏)
+                showCreateHeapDump = PlatformCapabilityProviders.get().createHeapDumpSupported,
             )
         )
     }
@@ -145,7 +149,7 @@ fun AboutRoute(
         }
 
         // 显示 MD 文件: 四端同一条通道 (内置文档在 shared composeResources files/,
-        // 经 Res.readBytes 通用读取)
+        // 经 rememberBuiltInDocContent 读取后交 TextDialog 渲染)
         override fun onShowMdFile(title: String, fileName: String) {
             mdDoc = title to fileName
         }
@@ -191,7 +195,13 @@ fun AboutRoute(
 
     // 隐私政策/许可证/免责声明 (对照原版 AboutFragment.showMdFile: 读内置 md 后弹 MD 对话框)
     mdDoc?.let { (title, path) ->
-        MdDocDialog(title = title, assetPath = path, onDismiss = { mdDoc = null })
+        TextDialog(
+            title = title,
+            content = rememberBuiltInDocContent(path),
+            onDismiss = { mdDoc = null },
+            markdown = true,
+            showActionBar = false,
+        )
     }
 }
 
@@ -213,11 +223,13 @@ private val donateQrWriteLock = Mutex()
  *
  * 目录取 [FileUtilsCommon.getCachePath] (Android externalCacheDir, 其余端 cacheDir):
  * 这张图只是"点开看一眼"的临时载体, 不需要用户找得到、也不需要跨启动存活, 系统随时可回收。
- * 文件名带内容摘要, 换图后自然指向新文件, 不会因相同字节数读到旧缓存。
+ * 文件名带内容摘要, 换图后自然指向新文件, 不会因相同字节数读到旧缓存; 同名即同内容, 文件在
+ * 即直接用, 不再回读比对。
  * 不放 `image_cache` —— 那是 [io.legado.app.help.image.ImageBytesCache] 的私有目录,
  * 它的清理逻辑会扫整个目录。
  *
- * 写盘失败直接抛出, 不静默回退。
+ * 落盘整份归位 (同目录临时件 + 改名就位): 直接覆盖写会在写完之前把目标截断, 此时按该路径
+ * 直读的大图查看器拿到的是半张图。写盘失败直接抛出, 不静默回退。
  */
 private suspend fun donateQrFilePath(): String = donateQrWriteLock.withLock {
     val bytes = Res.readBytes(DONATE_QR_RES_PATH)
@@ -228,12 +240,8 @@ private suspend fun donateQrFilePath(): String = donateQrWriteLock.withLock {
     val path = FileUtilsCommon.getPath(
         FileUtilsCommon.getCachePath(), "$DONATE_QR_CACHE_PREFIX$digest.jpg"
     )
-    val cached = FileUtilsCommon.readBytes(path)
-    if (cached == null || !cached.contentEquals(bytes)) {
-        check(FileUtilsCommon.writeBytes(path, bytes)) { "捐赠二维码落盘失败: $path" }
-    }
-    check(FileUtilsCommon.readBytes(path)?.contentEquals(bytes) == true) {
-        "捐赠二维码校验失败: $path"
+    if (!FileUtilsCommon.exist(path) && !writeBytesAtomically(path, bytes)) {
+        error("捐赠二维码落盘失败: $path")
     }
     path
 }

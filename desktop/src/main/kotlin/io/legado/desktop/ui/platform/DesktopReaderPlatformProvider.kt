@@ -12,14 +12,16 @@ import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
+import io.legado.app.help.book.BookImageDownloadShared
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.ReadBookConfigProviders
-import io.legado.app.help.image.ImageBitmapLoader
 import io.legado.app.help.source.SourceVerificationHelpShared
 import io.legado.app.help.storage.BackupShared
 import io.legado.app.help.storage.DataStorageProviders
 import io.legado.app.help.toast.Toasters
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.ui.book.read.BaseReadMenuState
 import io.legado.app.ui.book.read.ReadAloudControls
 import io.legado.app.ui.book.read.ReadBookEvents
@@ -77,10 +79,12 @@ import kotlin.concurrent.Volatile
  * - 顶/底栏菜单 UI 由 shared [io.legado.app.ui.book.read.ReadMenuOverlay] 渲染, 此处只持有状态
  * - 导航回调 (clickCatalog/clickSearch/clickFont/clickSetting 等) 经 [AppNavigator] 跳 shared Route
  * - 章节导航 (clickPre/clickNext/onSeekStop) 委托 [ReaderScreenModel.viewModel]
+ * - ReadAloud (朗读): app 端走 ReadAloud + BaseReadAloudService, desktop 无 Service, 改由
+ *   [DesktopReadAloudHost] 驱动 ReadAloudControllerShared; 长按弹共享朗读控制面板。
+ *   朗读宿主是进程级媒体会话, 退出阅读页不停朗读; Windows 下的后台/系统播控由
+ *   desktop.audio.DesktopSmtc (SMTC 卡片) 与 desktop.ui.tray.DesktopTaskbarMedia (任务栏媒体控件) 承接
  *
  * # 不实现 (与 app 端差异)
- * - ReadAloud (朗读): app 端走 ReadAloud + BaseReadAloudService, desktop 无 Service,
- *   改由 [DesktopReadAloudHost] 驱动 ReadAloudControllerShared; 长按弹共享朗读控制面板
  * - ThemeConfig.applyDayNight: app 端切夜间主题后调 Activity 重启 UI, desktop 经
  *   [io.legado.app.help.config.ThemeConfigProviders] (FileThemeConfigProvider.applyDayNight)
  *   写 ThemeStore 色 + themeMode 并 emit RECREATE, AppTheme 重组重读新色
@@ -119,6 +123,15 @@ class DesktopReaderPlatformProvider : ReaderPlatformProvider {
     // 自动翻页面板停止按钮 (对照 app 端 autoPageStop → stopAutoPage: 停控制器 + 复位开关)
     override fun autoPageStop(screenModel: ReaderScreenModel) {
         (screenModel.menuController.state as? DesktopReadMenuState)?.stopAutoPage()
+    }
+
+    // 退到后台 / 被别的页面盖住 → 挂起自动翻页 (开关保持, 只停推进), 回到可见期自动接着翻
+    override fun autoPagePause(screenModel: ReaderScreenModel) {
+        (screenModel.menuController.state as? DesktopReadMenuState)?.pauseAutoPage()
+    }
+
+    override fun autoPageResume(screenModel: ReaderScreenModel) {
+        (screenModel.menuController.state as? DesktopReadMenuState)?.resumeAutoPage()
     }
 
     // 自动翻页滑条抬手 → 重新应用当前 TTS 语速 (对照 app 端 upTtsSpeechRate: 重读配置 +
@@ -258,10 +271,9 @@ class DesktopReaderPlatformProvider : ReaderPlatformProvider {
         refreshReaderImage(screenModel.currentBook, screenModel.currentChapter, src)
     }
 
-    /** 保存图片: 原生保存对话框选路径 → 下载解码字节 (书源防盗链+解密链路) → 落盘, toast 提示路径。 */
+    /** 保存图片: 原生保存对话框选路径 → 读图片缓存字节 → 落盘, toast 提示路径。 */
     private fun saveImage(screenModel: ReaderScreenModel, src: String) {
         val book = screenModel.currentBook
-        val bookSource = screenModel.viewModel.bookSource.value
         imageActionScope.launch {
             // 阻塞式选择器必须切 IO (对照漫画阅读页 onSaveImage 的 withContext(IoDispatcher))
             val destPath = withContext(Dispatchers.IO) {
@@ -273,7 +285,7 @@ class DesktopReaderPlatformProvider : ReaderPlatformProvider {
             } ?: return@launch
             Toasters.get().toast("正在保存")
             val savedPath = withContext(Dispatchers.IO) {
-                writeImageBytes(src, book, bookSource, File(destPath))
+                writeImageBytes(src, book, screenModel.currentChapter, File(destPath))
             }
             Toasters.get().toast(if (savedPath != null) "保存成功\n$savedPath" else "保存失败")
         }
@@ -287,7 +299,6 @@ class DesktopReaderPlatformProvider : ReaderPlatformProvider {
      */
     private fun saveImageToSelectedDir(screenModel: ReaderScreenModel, src: String) {
         val book = screenModel.currentBook
-        val bookSource = screenModel.viewModel.bookSource.value
         imageActionScope.launch {
             val dir = withContext(Dispatchers.IO) {
                 FileDialogs.pickDirectory(title = "选择保存目录")
@@ -295,7 +306,7 @@ class DesktopReaderPlatformProvider : ReaderPlatformProvider {
             Toasters.get().toast("正在保存")
             val savedPath = withContext(Dispatchers.IO) {
                 writeImageBytes(
-                    src, book, bookSource,
+                    src, book, screenModel.currentChapter,
                     File(dir, "legado-${System.currentTimeMillis()}.jpg"),
                 )
             }
@@ -307,18 +318,24 @@ class DesktopReaderPlatformProvider : ReaderPlatformProvider {
         }
     }
 
-    /** 下载解码字节写入 [dest], 返回最终绝对路径 (写入后按魔数修正扩展名); 失败返回 null。 */
+    /**
+     * 取已缓存图片字节写入 [dest], 返回最终绝对路径 (写入后按魔数修正扩展名); 取不到缓存返回 null。
+     *
+     * 保存只导出已看过的图 (对照原版 BaseReadViewModel.saveImage 的读取段), 不触发下载;
+     * 建议名恒为 .jpg, 与实际格式不符时按魔数改名 (shared 统一 helper, 与漫画保存一致)。
+     *
+     * 落盘整份归位: 目标已存在时 (用户选了同名文件) 覆盖写会先把旧图截断, 写到一半被打断
+     * 就留下一张半截图。
+     */
     private suspend fun writeImageBytes(
         src: String,
         book: Book?,
-        bookSource: io.legado.app.data.entities.BookSource?,
+        chapter: BookChapter?,
         dest: File,
     ): String? = try {
-        val bytes = ImageBitmapLoader().loadBytes(src, book, bookSource)
+        val bytes = book?.let { BookImageDownloadShared.imageBytesToSave(it, src, chapter) }
             ?: return null
-        dest.parentFile?.mkdirs()
-        dest.writeBytes(bytes)
-        // 建议名恒为 .jpg, 与实际格式不符时按魔数改名 (shared 统一 helper, 与漫画保存一致)
+        if (!writeBytesAtomically(dest.path, bytes)) error("保存图片失败: ${dest.path}")
         FileUtilsBase.fixImageExtension(dest).absolutePath
     } catch (e: Exception) {
         AppLog.put("保存图片出错\n${e.localizedMessage}", e)
@@ -587,6 +604,21 @@ private class DesktopReadMenuState(
         autoPager = null
         autoPage = false
         readerAutoPageActive = false
+    }
+
+    /**
+     * 挂起自动翻页: 开关保持开着, 只停推进 (当前画面保持, 暂停时长不计入进度)。
+     *
+     * 退到后台 / 被别的页面盖住时由 [DesktopReaderPlatformProvider.autoPagePause] 调用,
+     * 回到可见期由 [resumeAutoPage] 接着推进 —— 用户不必再点一次自动翻页。
+     */
+    fun pauseAutoPage() {
+        autoPager?.pause()
+    }
+
+    /** 恢复自动翻页推进 (开关已被用户关掉时控制器已销毁, 此处自然 no-op)。 */
+    fun resumeAutoPage() {
+        autoPager?.resume()
     }
 
     /** 释放菜单状态与协程作用域 (阅读页退出时由 Provider 调用) */

@@ -13,6 +13,8 @@ import io.legado.app.base.BaseComposeActivity
 import io.legado.app.constant.Theme
 import io.legado.app.help.LifecycleHelp
 import io.legado.app.help.toast.Toasters
+import io.legado.app.ui.compose.dialogs.ComposeAlertDialogHost
+import io.legado.app.ui.file.HandleFileHost
 import io.legado.app.ui.main.MainActivity
 import io.legado.app.ui.main.videoDirectTarget
 import io.legado.app.ui.root.AppRoute
@@ -21,6 +23,7 @@ import io.legado.app.ui.root.LaunchRequestBus
 import io.legado.app.ui.root.PlatformCapabilities
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.widget.dialog.WaitDialog
+import io.legado.app.ui.widget.dialog.awaitWaitDialogDismissed
 import io.legado.app.utils.startActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -49,6 +52,9 @@ class AssociationActivity : BaseComposeActivity(theme = Theme.Transparent, image
 
     /** 待处理的"需要导航"请求 (addToBookshelf / read): 壳内转圈抓书后转发主界面。 */
     private var pendingBookNav by mutableStateOf<Pair<DeepLinkImportType, String>?>(null)
+
+    /** 抓书是否已结束 (无论成败): 抓完先收起加载框, 再转发主界面。 */
+    private var bookNavResolved by mutableStateOf(false)
 
     /** 本壳注册的 capabilities 实例, onDestroy 身份校验用。 */
     private var registeredCapabilities: PlatformCapabilities? = null
@@ -139,8 +145,14 @@ class AssociationActivity : BaseComposeActivity(theme = Theme.Transparent, image
     override fun Content() {
         val nav = pendingBookNav
         if (nav == null) {
-            // 纯导入 (勾选六型/readConfig/unknown): 只挂共享导入宿主, 不渲染主界面页面
+            // 纯导入 (勾选六型/readConfig/unknown): 只挂共享导入宿主与壳内弹窗宿主,
+            // 不渲染主界面页面
             DeepLinkImportHost()
+            // 文件选择/导出对话框宿主 (FileAssociationFragment 经 HandleFileLauncher 发起)
+            HandleFileHost()
+            // alert/selector DSL 请求宿主: 壳内提示框 (如文件格式不支持) 由壳自己渲染。
+            // 不挂则请求被主界面宿主渲染, 而主界面在壳之下 —— 框透得出来却点不动。
+            ComposeAlertDialogHost()
             // 收壳: 先等到有导入请求, 再等它被消费 (对话框关闭) → 结束透明壳回到原应用。
             // 不能直接 "pending 为空即 finish": 文件关联走嗅探/权限申请, 期间 pending 恒空;
             // 深链路径 handleIntent 已在组合前置好 pending, 第一步立即通过, 语义不变。
@@ -153,12 +165,16 @@ class AssociationActivity : BaseComposeActivity(theme = Theme.Transparent, image
             }
             return
         }
-        // addToBookshelf / read: 壳内转圈抓书 (透明浮层), 直投进程内总线后唤起主界面
-        WaitDialog(visible = true, onDismissRequest = {})
+        // addToBookshelf / read: 壳内转圈抓书 (透明浮层), 抓完先收框再转发主界面
+        WaitDialog(visible = !bookNavResolved, onDismissRequest = {})
         LaunchedEffect(nav) {
-            runCatching {
+            val result = runCatching {
                 withContext(Dispatchers.IO) { resolveRouteForNav(nav.first, nav.second) }
-            }.onSuccess { route ->
+            }
+            // 先收起加载框并等它确实离开界面, 再唤起主界面: 壳的窗口在页面转场期间仍在合成,
+            // 框不收就会整段转场带着它 (顺序与原版一致: 关框 → 打开详情页 → 结束壳)
+            awaitWaitDialogDismissed { bookNavResolved = true }
+            result.onSuccess { route ->
                 // 同进程直投路由引用 (BookRef.Stored 零拷贝, 保持别名契约; 不序列化不查库),
                 // asRoot = 书架不进导航栈 (对照 master BookInfoActivity/ReadBookActivity 直开);
                 // Intent 只负责把主界面唤到前台, 不带载荷

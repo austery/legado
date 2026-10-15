@@ -1,6 +1,7 @@
 package io.legado.app.utils
 
 import androidx.annotation.IntDef
+import io.legado.app.constant.AppLog
 import io.legado.app.help.coroutine.printStackTraceOnDebug
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
@@ -10,7 +11,6 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.FileWriter
 import java.io.IOException
-import java.io.InputStream
 import java.io.UnsupportedEncodingException
 import java.nio.charset.Charset
 import java.text.SimpleDateFormat
@@ -248,6 +248,48 @@ object FileUtilsBase {
         return src.renameTo(tar)
     }
 
+    /** Unique replacement backups are owned by their creating operation, not by filename alone. */
+    private const val REPLACE_BACKUP_SUFFIX = ".bak"
+
+    /**
+     * 用 [src] 整份替换 [dst], 任一步失败都保持 [dst] 已有的内容可用。
+     *
+     * 流程: 直接改名 (同卷上是纯元数据操作, 安卓/Linux/macOS 原子覆盖目标) → 改名被拒 (Windows
+     * 上目标已存在时改名不成功) 时原文件退到 [REPLACE_BACKUP_SUFFIX] 备份名让出目标名后重试 →
+     * 重试成功才清掉备份, 重试失败把原文件改回原位。全程不删原文件。
+     *
+     * Only the unique backup owned by this invocation may be removed.
+     *
+     * [src] 与 [dst] 必须同卷 (调用方的临时文件都落在目标目录或同一应用数据分区内): 跨卷只剩
+     * 整份复制一条路, 复制中断会留下半截目标。
+     *
+     * [src] 的内容校验由调用方在调用前完成 —— 改名不复制字节, 校验过的临时文件原样成为目标。
+     *
+     * 失败抛 [IOException] (消息给出失败环节与原文件去向), [src] 保持原样由调用方清理。
+     */
+    fun replaceFileAtomically(src: File, dst: File) {
+        dst.parentFile?.mkdirs()
+        val backup = File(dst.parentFile, dst.name + "." + randomUUIDString() + REPLACE_BACKUP_SUFFIX)
+        if (!src.renameTo(dst)) {
+            if (!dst.exists()) {
+                throw IOException("替换落盘失败: ${dst.path}")
+            }
+            if (!dst.renameTo(backup)) {
+                throw IOException("替换落盘失败, 原文件被占用: ${dst.path}")
+            }
+            if (!src.renameTo(dst)) {
+                if (!backup.renameTo(dst)) {
+                    throw IOException("替换落盘失败, 原文件在 ${backup.path}")
+                }
+                throw IOException("替换落盘失败, 原文件未动: ${dst.path}")
+            }
+        }
+        backup.delete()
+    }
+
+    /** Delete only the requested file; adjacent backup names may belong to the user. */
+    fun deleteWithReplaceBackup(target: File): Boolean = target.delete()
+
     /**
      * 读取文本文件, 失败将返回空串
      */
@@ -322,35 +364,6 @@ object FileUtilsBase {
             false
         } finally {
             closeSilently(fos)
-        }
-    }
-
-    /**
-     * 保存文件内容
-     */
-    fun writeInputStream(filepath: String, data: InputStream): Boolean {
-        val file = File(filepath)
-        return writeInputStream(file, data)
-    }
-
-    /**
-     * 保存文件内容
-     */
-    fun writeInputStream(file: File, data: InputStream): Boolean {
-        return try {
-            if (!file.exists()) {
-                file.parentFile?.mkdirs()
-                file.createNewFile()
-            }
-            data.use {
-                FileOutputStream(file).use { fos ->
-                    data.copyTo(fos)
-                    fos.flush()
-                }
-            }
-            true
-        } catch (e: IOException) {
-            false
         }
     }
 
@@ -448,18 +461,22 @@ object FileUtilsBase {
     }
 
     /**
-     * 按文件头魔数校正图片扩展名: 已匹配则不动, 否则 renameTo 追加真实扩展名。
+     * 按文件头魔数校正图片扩展名: 已匹配则不动, 否则 renameTo 追加真实扩展名
+     * (判据与 app 端 FileUtils.getImageExtension 同一条)。
      *
-     * 原 desktop 阅读页 fixImageExtension 与漫画 fixExtension 各写一份逐字相同,
-     * 收拢至此单一实现 (对照 app 端 FileUtils.saveImage 的魔数改名语义)。
+     * 改名失败时 [dest] 内容不变、原名保留, 返回 [dest] 本身并留一条日志: 返回的路径始终指向本次
+     * 写入的文件。
      *
-     * @return 最终文件 (未改名时即原文件)
+     * @return 最终文件 (未改名或改名失败时即原文件)
      */
     fun fixImageExtension(dest: File): File {
         val ext = getImageExtension(dest)
         if (dest.name.endsWith(ext, ignoreCase = true)) return dest
         val renamed = File(dest.parentFile, dest.nameWithoutExtension + ext)
-        dest.renameTo(renamed)
+        if (!dest.renameTo(renamed)) {
+            AppLog.put("图片扩展名校正失败, 保留原名: ${dest.path}")
+            return dest
+        }
         return renamed
     }
 

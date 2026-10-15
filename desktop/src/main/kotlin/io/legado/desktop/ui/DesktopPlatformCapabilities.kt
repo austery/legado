@@ -1,30 +1,41 @@
 package io.legado.desktop.ui
 
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.SourceType
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSourcePart
+import io.legado.app.exception.InvalidBooksDirException
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.DirectLinkUploadRule
 import io.legado.app.help.RssToolbarActions
+import io.legado.app.help.book.effectiveBookSaveDir
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.tryParesExportFileName
 import io.legado.app.help.config.LocalConfigKeys
 import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.help.config.effectiveBookExportDir
+import io.legado.app.help.config.rememberBookExportDir
+import io.legado.app.help.coroutine.mainDispatcher
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.file.desktopStoredLocalRef
+import io.legado.app.help.service.ServiceLaunchers
 import io.legado.app.help.source.SourceVerificationHelpShared
 import io.legado.app.help.storage.DataStorageProviders
 import io.legado.app.help.toast.Toasters
+import io.legado.app.help.writeTextAtomically
 import io.legado.app.model.Debug
+import io.legado.app.model.fileBook.FileBook
 import io.legado.app.ui.FileAssociationDispatch
 import io.legado.app.ui.book.import.ImportFileItem
+import io.legado.app.ui.book.info.WebFileImportShared
 import io.legado.app.ui.book.read.config.FontItem
 import io.legado.app.ui.book.source.BookSourceSort
 import io.legado.app.ui.book.source.manage.BookSourceViewModelShared
+import io.legado.app.ui.book.source.manage.getExportBookSources
 import io.legado.app.ui.compose.platform.syncGetString
 import io.legado.app.ui.config.MODE_EDIT_CONFIG
 import io.legado.app.ui.config.MODE_EDIT_PREFS
@@ -36,16 +47,20 @@ import io.legado.app.ui.root.BookRef
 import io.legado.app.ui.root.DefaultDialogTransitionSpec
 import io.legado.app.ui.root.DialogTransitionSpec
 import io.legado.app.ui.root.SharedPlatformCapabilities
+import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.PlatformServiceProviders
 import io.legado.app.ui.root.RouteResultPayload
 import io.legado.app.ui.root.RouteTransitionSpec
+import io.legado.app.ui.root.ensureBookSaveDirSelected
 import io.legado.app.ui.root.pushExportDispatch
-import io.legado.app.utils.cnCompare
 import io.legado.app.ui.root.TransitionEasing
 import io.legado.app.ui.root.toRouteRef
 import io.legado.app.utils.GSON
 import io.legado.app.utils.browseUrl
+import io.legado.app.utils.FileUtilsBase
+import io.legado.app.utils.atomicWriteTempPath
 import io.legado.app.utils.compress.ZipUtils
+import io.legado.app.utils.openFileWithSystem
 import io.legado.app.utils.toJson
 import io.legado.desktop.constant.DesktopAppInfo
 import io.legado.desktop.help.DesktopCrashLogDirs
@@ -60,13 +75,18 @@ import io.legado.desktop.model.fileBook.DesktopImportBook
 import io.legado.desktop.model.fileBook.DesktopImportFile
 import io.legado.desktop.ui.DesktopPlatformCapabilities.saveLog
 import io.legado.desktop.ui.component.FileDialogs
+import io.legado.desktop.ui.tray.DesktopMediaTray
+import io.legado.desktop.ui.tray.ExportTrayBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
@@ -79,6 +99,33 @@ import javax.management.ObjectName
 object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * 待导出队列, 键为书 url (对照原版 ExportBookService.waitExportBooks): 重复触发导出时新请求
+     * 入队稍后照常导出; 同一本书已在队列里就换成最新落点。
+     */
+    private val waitExportBooks = LinkedHashMap<String, PendingExport>()
+
+    /** 正在导出的书 url (对照原版 exportProgress: 同一本书正在导出时不再重复入队)。 */
+    private var exportingBookUrl: String? = null
+
+    /** 队列执行者是否在跑 (与队列读写同锁判断, 避免"收工瞬间入队"的书没人导)。 */
+    private var exportWorkerRunning = false
+
+    /** 队列执行者 (对照 app 端 ExportBookService 的服务存活, 可取消)。 */
+    private var exportBooksJob: Job? = null
+
+    /** 队列里的一本书: 落点 + 导出方式 (对照原版 ExportBookService 的 bookUrl → ExportConfig)。 */
+    private class PendingExport(val path: String, val book: Book, val mode: ExportMode)
+
+    /** 导出方式 (对照原版 ExportBookService.ExportConfig: type 或 epubScope+epubSize)。 */
+    private sealed interface ExportMode {
+        /** 按导出配置导: `txt` / `epub`, 图片书为 `cbz`。 */
+        data class ByConfig(val type: String) : ExportMode
+
+        /** 自定义导出: 章节范围 + 分卷大小 (epub)。 */
+        data class CustomEpub(val range: String, val size: Int) : ExportMode
+    }
+
     override val capabilityScope: CoroutineScope get() = scope
 
     private val appDb get() = AppDbProviders.get()
@@ -88,10 +135,9 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     internal val bookSourceViewModel by lazy { BookSourceViewModelShared(scope) }
 
     override fun exitApplication() {
-        // 主界面返回双击退出等 shared 调用: 关闭主窗口 (等价标题栏关闭按钮),
-        // 触发 Window.onCloseRequest → compose exitApplication (含单实例守卫清理)
-        (PlatformServiceProviders.get() as? DesktopPlatformServices)
-            ?.windowHandle?.window?.dispose()
+        // shared 的"再按一次退出程序"在桌面端 = 退到后台: 对齐原版 Android 双击返回 finish
+        // 主界面、服务与通知继续 (真退出入口只有托盘菜单"退出")
+        DesktopWindowChrome.interfaceExitRequest?.invoke()
     }
 
     // ===== 全局转场动画平台 spec (方案 A: 动画单一注入点参数化) =====
@@ -129,6 +175,9 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     // 语言: CMP 资源按 Locale.current 选 values-xx 目录, 进程内改默认 locale 不会重取
     // 已组合的字符串, 所以与安卓一样靠重启生效 (对照原版 appCtx.restart())
     override val languageSwitchSupported: Boolean get() = true
+
+    /** 关闭主窗口可缩小到系统托盘 (仅托盘图标能上屏的桌面环境)。 */
+    override val closeToTraySupported: Boolean get() = DesktopMediaTray.traySupported()
 
     override fun applyAppLanguage() {
         applyDesktopLanguagePref()
@@ -180,7 +229,7 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         sourceName: String,
         sourceType: Int,
     ): Boolean {
-        val engine = DesktopWebViewEngines.get()
+        val engine = DesktopWebViewEngines.get(forceRefresh = true)
         if (engine == null) {
             browseUrl(url)
             runCatching {
@@ -232,9 +281,10 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         html: String?,
         headerMap: Map<String, String>,
         actions: RssToolbarActions,
+        js: String?,
     ): Boolean {
         val target = url.ifBlank { book.tocUrl }
-        val engine = DesktopWebViewEngines.get()
+        val engine = DesktopWebViewEngines.get(forceRefresh = true)
         if (engine == null) {
             browseUrl(target)
             runCatching {
@@ -260,6 +310,14 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
                 sourceType = SourceType.book,
                 sourceName = book.originName,
                 rssActions = actions,
+                // 源注入脚本: 对照原版每次网页加载完成后执行 (正文分支与直接加载网址分支
+                // 都经这里执行), 窗口引擎在每次导航完成时回调本处, 经窗口句柄执行脚本
+                onNavigated = {
+                    val script = js
+                    if (!script.isNullOrBlank()) {
+                        scope.launch { handle?.evaluateJavascript(script) }
+                    }
+                },
                 onClosed = {
                     // 窗口被关闭 → RSS 路由出栈; 但路由先出栈 (onDetach → close) 触发
                     // 的 close 回调不能再 pop, 否则会误弹 RSS 之下的路由 (reviewer 2026-08-07)
@@ -339,13 +397,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         appDb.bookDao.getBook(bookUrl)?.toRouteRef()
 
     // 书架布局 / 底栏配置: shared Compose 对话框 (BookshelfNavConfigDialogs.kt)
-    override fun showBookshelfLayoutDialog() {
-        AppNavigatorProviders.get().showOverlay(AppOverlay.Dialog("bookshelf_layout"))
-    }
-
-    override fun showBottomNavConfigDialog() {
-        AppNavigatorProviders.get().showOverlay(AppOverlay.Dialog("bottom_nav_config"))
-    }
 
     override fun showThemeCustomizeDialog(configIndex: Int?, isNight: Boolean) {
         val mode = if (configIndex == null) MODE_NEW_CONFIG else MODE_EDIT_CONFIG
@@ -376,9 +427,12 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     override fun showChangeCoverDialog(book: Book, onCoverSelected: (String) -> Unit) {
         val navigator = AppNavigatorProviders.get()
         scope.launch {
-            navigator.showOverlay(
-                AppOverlay.Dialog("change_cover", payload = "${book.name}\n${book.author}")
-            )
+            // 弹层是界面动作, 回主线程; 能力作用域是 IO, 弹层栈是"先读后写"。
+            withContext(mainDispatcher) {
+                navigator.showOverlay(
+                    AppOverlay.Dialog("change_cover", payload = "${book.name}\n${book.author}")
+                )
+            }
             val result = navigator.overlayResults.first { it.key == "change_cover" }
             val payload = result.payload as? RouteResultPayload.ChangeCover ?: return@launch
             withContext(Dispatchers.Main) { onCoverSelected(payload.coverUrl) }
@@ -392,9 +446,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
 
     // 崩溃日志: 与 app 端同走 shared OverlayContentHost 的 "crash_logs" key
     // (数据源 = DesktopPlatformServices.crashLogs, 写入方见 DesktopCrashHandler)
-    override fun showCrashLogs() {
-        AppNavigatorProviders.get().showOverlay(AppOverlay.Dialog("crash_logs"))
-    }
 
     // 对照 app 端 saveLog: 打包 logs + crash + heapDump 成 logs.zip 落到用户可见目录
     // (app 端落 SAF 备份目录, 桌面端落 userExportDir; 桌面无 logcat 可 dump)
@@ -443,9 +494,17 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         if (sources.isEmpty()) throw NoStackTraceException("没有可保存的日志文件")
         val outDir = File(DataStorageProviders.get().userExportDir).apply { mkdirs() }
         val zipFile = File(outDir, "logs.zip")
-        zipFile.delete()
-        if (!ZipUtils.zipFiles(sources, zipFile)) {
-            throw NoStackTraceException("打包日志失败")
+        // 打包到同目录临时件再整份改名就位: 直接打包到目标会先把上一轮的 logs.zip 截断,
+        // 打包被中断时用户手里既没有新件也没有旧件。临时件名走共享契约 ([atomicWriteTempPath]):
+        // 导出目录是用户可见目录, 没有孤儿临时件的回收方, 残留只能靠下面的 finally 清掉
+        val tempZip = File(atomicWriteTempPath(zipFile.path))
+        try {
+            if (!ZipUtils.zipFiles(sources, tempZip)) {
+                throw NoStackTraceException("打包日志失败")
+            }
+            FileUtilsBase.replaceFileAtomically(tempZip, zipFile)
+        } finally {
+            tempZip.delete()
         }
         zipFile.absolutePath
     }
@@ -481,6 +540,181 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         runCatching { resolveLocalFile(bookUrl).length() }.getOrDefault(0L)
     }
 
+    // 对照 BookInfoViewModel.downloadToLocal: 业务已共享 (FileBook.downloadRemoteBook)
+    override fun downloadBookToLocal(book: Book, success: (() -> Unit)?) {
+        scope.launch {
+            runCatching { FileBook.downloadRemoteBook(book) }
+                .onSuccess {
+                    withContext(Dispatchers.Main) {
+                        Toasters.get().toast("下载成功")
+                        success?.invoke()
+                    }
+                }
+                .onFailure { error ->
+                    // 保存位置未设置时走既有的"去设置目录"出口 (与书籍详情的 web 文件导入同一
+                    // 入口与偏好键); 用户取消 (uri == null) 时不动既有配置
+                    if (error is InvalidBooksDirException) {
+                        withContext(Dispatchers.Main) {
+                            PlatformCapabilityProviders.get().pickBookTreeUri { uri ->
+                                if (uri != null) {
+                                    prefs.putString(PreferKey.defaultBookTreeUri, uri)
+                                }
+                            }
+                        }
+                    }
+                    AppLog.put("下载远程书籍<${book.name}>失败", error, true)
+                }
+        }
+    }
+
+    // 对照 BookInfoActivity.onReadClick isWebFile 分支 + showWebFileDownloadAlert:
+    // 直链书点"阅读"先选一个下载项, 再下载导入并跳阅读
+    override fun handleWebFileRead(
+        book: Book,
+        onWaitDialog: (Boolean) -> Unit,
+        onAction: (String) -> Unit,
+        onSuccess: ((Book) -> Unit)?,
+    ) {
+        scope.launch {
+            // 对照 BaseReadViewModel.loadWebFile: 本地书无书源, 其余按 origin 查源
+            val source = if (book.origin != BookType.localTag) {
+                appDb.bookSourceDao.getBookSource(book.origin)
+            } else null
+            // 构建 webFile 列表的平台无关段已下沉 WebFileImportShared (同 BaseReadViewModel.loadWebFile)
+            val webFiles = WebFileImportShared.buildWebFiles(book, source)
+            withContext(Dispatchers.Main) {
+                if (webFiles.isEmpty()) {
+                    Toasters.get().toast("Unexpected webFileData")
+                    return@withContext
+                }
+                showWebFileDownloadAlert(book, webFiles, onWaitDialog, onAction, onSuccess)
+            }
+        }
+    }
+
+    // 对照 BookInfoActivity.showWebFileDownloadAlert: 下载项选择框 (桌面端走
+    // DesktopDialogRequest.SelectList, 与 app 端 activity.selector 同语义)
+    private fun showWebFileDownloadAlert(
+        book: Book,
+        webFiles: List<FileBook.WebFile>,
+        onWaitDialog: (Boolean) -> Unit,
+        onAction: (String) -> Unit,
+        onSuccess: ((Book) -> Unit)?,
+    ) {
+        DesktopDialogs.show(
+            DesktopDialogRequest.SelectList(
+                title = syncGetString("download_and_import_file"),
+                items = webFiles.map { it.name },
+            ) { index ->
+                val webFile = index?.let { webFiles.getOrNull(it) } ?: return@SelectList
+                when {
+                    webFile.isSupported ->
+                        importWebFile(book, webFile, onWaitDialog, onAction) { onSuccess?.invoke(it) }
+
+                    webFile.isSupportDecompress ->
+                        downloadWebFile(book, webFile, onWaitDialog, onAction) { path ->
+                            getArchiveFilesName(path) { fileNames ->
+                                if (fileNames.size == 1) {
+                                    importBookFromArchive(
+                                        path,
+                                        fileNames[0],
+                                        book,
+                                        onWaitDialog
+                                    ) { onSuccess?.invoke(it) }
+                                } else {
+                                    showDecompressFileImportAlert(
+                                        path,
+                                        fileNames,
+                                        book,
+                                        onWaitDialog,
+                                        onSuccess
+                                    )
+                                }
+                            }
+                        }
+
+                    else -> showUnsupportedWebFileAlert(book, webFile, onWaitDialog, onAction)
+                }
+            }
+        )
+    }
+
+    // 对照 BookInfoActivity.showDecompressFileImportAlert: 压缩包内选书
+    private fun showDecompressFileImportAlert(
+        archiveFilePath: String,
+        fileNames: List<String>,
+        book: Book,
+        onWaitDialog: (Boolean) -> Unit,
+        onSuccess: ((Book) -> Unit)?,
+    ) {
+        if (fileNames.isEmpty()) {
+            Toasters.get().toast(syncGetString("unsupport_archivefile_entry"))
+            return
+        }
+        DesktopDialogs.show(
+            DesktopDialogRequest.SelectList(
+                title = syncGetString("import_select_book"),
+                items = fileNames,
+            ) { index ->
+                val name = index?.let { fileNames.getOrNull(it) } ?: return@SelectList
+                importBookFromArchive(archiveFilePath, name, book, onWaitDialog) {
+                    onSuccess?.invoke(it)
+                }
+            }
+        )
+    }
+
+    // 对照 app 端 showWebFileDownloadAlert 的 open_fun 分支: 不支持的格式下载后交系统程序打开
+    // (桌面等价的 openFileUri 通道 = openFileWithSystem, 与 ServiceLauncher 同一出口)
+    private fun showUnsupportedWebFileAlert(
+        book: Book,
+        webFile: FileBook.WebFile,
+        onWaitDialog: (Boolean) -> Unit,
+        onAction: (String) -> Unit,
+    ) {
+        DesktopDialogs.show(
+            DesktopDialogRequest.Confirm(
+                title = syncGetString("draw"),
+                message = syncGetString("file_not_supported", webFile.name),
+                okText = syncGetString("open_fun"),
+                noText = syncGetString("cancel"),
+                onOk = {
+                    downloadWebFile(book, webFile, onWaitDialog, onAction) { path ->
+                        openFileWithSystem(path)
+                    }
+                },
+                onNo = {},
+            )
+        )
+    }
+
+    // 对照 RemoteBookActivity.startRead 的 archive 分支: 在书籍保存目录里找已下载的压缩包,
+    // 找到就交文件关联分发链 (与 NativeImportBook.openReader 同口径: 桌面无压缩包内选章 UI,
+    // 走 FileAssociationDispatch 的直接导入链), 没找到就弹确认框由调用方重新下载后重试
+    override fun startReadRemoteArchive(fileName: String, onNeedDownload: () -> Unit) {
+        scope.launch {
+            // 与 DesktopFileBookAccessor 的有效书籍保存目录同源 (用户在"书籍保存位置"选定)
+            val dir = effectiveBookSaveDir()
+            val path = dir?.let { File(it, fileName) }
+            if (path != null && path.isFile) {
+                FileAssociationDispatch.dispatch(path.absolutePath)
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                DesktopDialogs.show(
+                    DesktopDialogRequest.Confirm(
+                        title = syncGetString("draw"),
+                        message = syncGetString("archive_not_found"),
+                        okText = syncGetString("ok"),
+                        noText = syncGetString("cancel"),
+                        onOk = { onNeedDownload() },
+                        onNo = {},
+                    )
+                )
+            }
+        }
+    }
+
     // ===== 书架管理: 导出 =====
 
     override fun enableCustomExport(): Boolean = prefs.getBoolean(PreferKey.enableCustomExport, false)
@@ -511,28 +745,30 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     }
 
     // 导出书籍正文, 格式取导出配置 (0=txt 1=epub, 对照 app 端 AppConfig.exportType;
-    // 图片书自动走 cbz), 目录来自 pref 或现选
+    // 图片书自动走 cbz), 目录取用户选过的设备本地记忆, 未选过时拉起目录选择器
     override fun exportAllBooks(books: List<Book>) {
         if (books.isEmpty()) return
-        val cached = prefs.getString(KEY_EXPORT_BOOK_PATH, "").takeIf { File(it).isDirectory }
-            ?: defaultBookExportDir()
-        if (cached == null) {
+        val dir = effectiveBookExportDir()
+        if (dir == null) {
             selectExportFolder(books)
             return
         }
-        startExport(cached, books)
+        startExport(dir, books)
     }
 
     override fun selectExportFolder(books: List<Book>) {
         scope.launch {
             val dir = FileDialogs.pickDirectory(
                 "选择导出目录",
-                initialDir = defaultBookExportDir()?.let(::File),
+                initialDir = effectiveBookExportDir()?.let(::File),
             ) ?: return@launch
-            prefs.putString(KEY_EXPORT_BOOK_PATH, dir.absolutePath)
+            // 记忆落设备本地配置空间 (rememberBookExportDir): 选定的是本机目录, 不能随备份
+            // 走到别的设备; 与安卓同一个键、同一套三分支
+            rememberBookExportDir(dir.absolutePath)
             if (books.isNotEmpty()) {
-                // 对照 app 端 exportDir 回调: 开启自定义导出时先弹章节配置对话框
-                if (enableCustomExport()) {
+                // 对照 app 端 exportDir 回调: 开启自定义导出时先弹章节配置对话框。
+                // 本类同名成员是"自定义导出"开关当前值 (菜单勾选态), 走全限定名取上面那条带导出类型的判定
+                if (io.legado.app.utils.enableCustomExport()) {
                     showExportSectionConfig(dir.absolutePath, books)
                 } else {
                     startExport(dir.absolutePath, books)
@@ -540,12 +776,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
             }
         }
     }
-
-    /** 用户没选过导出目录时的默认落点 (桌面/legado/books), 创建失败返回 null 走目录选择器。 */
-    private fun defaultBookExportDir(): String? = runCatching {
-        val dir = File(DataStorageProviders.get().bookExportDir)
-        if (dir.isDirectory || dir.mkdirs()) dir.absolutePath else null
-    }.getOrNull()
 
     // 导出配置弹窗 (对照 app 端 showExportConfig / dialog_export_config.xml 全量字段):
     // 导出文件名 JS 规则 / 导出类型 txt|epub / 导出编码 / TXT 不导出章节名
@@ -591,45 +821,157 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     }
 
     private fun startCustomExport(path: String, books: List<Book>, range: String, size: Int) {
-        if (books.isEmpty()) return
-        scope.launch {
-            Toasters.get().toast("开始导出 ${books.size} 本 (自定义章节)")
-            try {
-                DesktopBookExport.exportCustomEpub(path, books, range, size)
-                Toasters.get().toast("导出完成\n$path")
-            } catch (e: Exception) {
-                AppLog.put("导出书籍出错\n${e.message}", e)
-                Toasters.get().toast("导出书籍出错\n${e.message}")
-            }
-        }
+        enqueueExport(books, path, label = " (自定义章节)") { ExportMode.CustomEpub(range, size) }
+    }
+
+    /**
+     * 把当前导出进度交给托盘呈现 (对照 app 端 ExportBookService.upExportNotification):
+     * 托盘图标常驻显示书名 + 剩余待导本数, 右键菜单可取消 (取消即取消本次导出任务)。
+     */
+    private fun upExportTrayBinding(book: Book, remaining: Int) {
+        DesktopMediaTray.export = ExportTrayBinding(
+            bookName = book.name,
+            remaining = remaining,
+            cancel = { exportBooksJob?.cancel() },
+        )
     }
 
     private fun startExport(dir: String, books: List<Book>) {
         val type = prefs.getInt(PreferKey.exportType, 0)
-        scope.launch {
-            Toasters.get().toast("开始导出 ${books.size} 本")
-            runCatching {
-                // 对照 app 端 MainActivity.startExportBooks: 图片书一律导出 cbz,
-                // 其余按配置类型 (0=txt 1=epub)
-                val txtBooks = arrayListOf<Book>()
-                val epubBooks = arrayListOf<Book>()
-                val cbzBooks = arrayListOf<Book>()
-                books.forEach { book ->
-                    when {
-                        book.isImage -> cbzBooks.add(book)
-                        type == 1 -> epubBooks.add(book)
-                        else -> txtBooks.add(book)
-                    }
-                }
-                if (txtBooks.isNotEmpty()) DesktopBookExport.exportTxt(dir, txtBooks)
-                if (epubBooks.isNotEmpty()) DesktopBookExport.exportEpub(dir, epubBooks)
-                if (cbzBooks.isNotEmpty()) DesktopBookExport.exportCbz(dir, cbzBooks)
+        // 导出配置在此快照 (对照原版 BookshelfManageActivity 把 exportType 随 intent 传进服务),
+        // 图片书一律导 cbz (对照 app 端 MainActivity.startExportBooks)
+        enqueueExport(books, dir) {
+            ExportMode.ByConfig(if (it.isImage) "cbz" else if (type == 1) "epub" else "txt")
+        }
+    }
+
+    /**
+     * 导出请求入队 (对照原版 BookshelfManageActivity.startExportBooks → ExportBookService:
+     * 每本书一条队列项, 重复触发入队稍后照常导出), 队列空闲时顺手拉起执行者。
+     *
+     * @param label 导出方式后缀 (自定义章节导出提示里带"自定义章节", 普通导出为空)
+     * @param modeOf 按书算导出方式 (图片书一律 cbz 等)
+     */
+    private fun enqueueExport(
+        books: List<Book>,
+        path: String,
+        label: String = "",
+        modeOf: (Book) -> ExportMode,
+    ) {
+        if (books.isEmpty()) return
+        val (added, started) = synchronized(this) {
+            // 同一本书只入队一次 (正在导出的那本不入队), 已在队列里则换成最新落点
+            var count = 0
+            books.forEach { book ->
+                if (book.bookUrl == exportingBookUrl) return@forEach
+                waitExportBooks[book.bookUrl] = PendingExport(path, book, modeOf(book))
+                count++
             }
-                .onSuccess { Toasters.get().toast("导出完成\n$dir") }
-                .onFailure {
-                    AppLog.put("导出书籍出错\n${it.message}", it)
-                    Toasters.get().toast("导出书籍出错\n${it.message}")
+            val start = count > 0 && !exportWorkerRunning
+            if (start) exportWorkerRunning = true
+            count to start
+        }
+        if (added == 0) return
+        Toasters.get().toast(
+            if (started) "开始导出 $added 本$label" else "已加入导出队列 $added 本$label"
+        )
+        if (started) {
+            exportBooksJob = scope.launch { runExportQueue() }
+        }
+    }
+
+    /** 取队首的一本书并标记"正在导出" (对照原版 export(): 取队首 → exportProgress 置位), 空队列返回 null。 */
+    private fun takeNextExport(): PendingExport? = synchronized(this) {
+        val entry = waitExportBooks.entries.firstOrNull() ?: return null
+        waitExportBooks.remove(entry.key)
+        exportingBookUrl = entry.key
+        entry.value
+    }
+
+    /** 队列里还剩几本待导 (托盘进度显示用)。 */
+    private fun pendingExportCount(): Int = synchronized(this) { waitExportBooks.size }
+
+    /** 当前这本导完, 清掉"正在导出"标记。 */
+    private fun finishExport() = synchronized(this) { exportingBookUrl = null }
+
+    /**
+     * 队列空时收工 (与 [enqueueExport] 同锁): 确认没新入队才真收工, 否则继续导 —— 否则在收工
+     * 的一瞬间入队的书就没人导了。托盘进度与"执行者在跑"同一原子动作清掉, 不会清掉下一批的绑定。
+     */
+    private fun finishWorkerIfQueueEmpty(): Boolean = synchronized(this) {
+        if (waitExportBooks.isNotEmpty()) {
+            false
+        } else {
+            exportWorkerRunning = false
+            DesktopMediaTray.export = null
+            true
+        }
+    }
+
+    /** 取消时丢掉剩余队列并归还执行者名额 (对照原版 IntentAction.stop → stopSelf: 未导出的不再导出)。 */
+    private fun discardExportQueue() = synchronized(this) {
+        waitExportBooks.clear()
+        exportingBookUrl = null
+        exportWorkerRunning = false
+        DesktopMediaTray.export = null
+    }
+
+    /**
+     * 串行导出队列 (对照原版 ExportBookService.export(): 逐本从队首取出, 导完一本再取下一本)。
+     * 单本出错只记日志并继续下一本; 托盘取消则丢掉剩余队列, 与 app 端 stopSelf 同语义。
+     */
+    private suspend fun runExportQueue() {
+        val failures = mutableListOf<String>()
+        var lastPath: String? = null
+        var exported = 0
+        try {
+            while (true) {
+                val pending = takeNextExport()
+                if (pending == null) {
+                    if (finishWorkerIfQueueEmpty()) break
+                    continue
                 }
+                lastPath = pending.path
+                try {
+                    upExportTrayBinding(pending.book, pendingExportCount())
+                    when (val mode = pending.mode) {
+                        is ExportMode.ByConfig -> when (mode.type) {
+                            "cbz" -> DesktopBookExport.exportCbz(pending.path, listOf(pending.book))
+                            "epub" -> DesktopBookExport.exportEpub(pending.path, listOf(pending.book))
+                            else -> DesktopBookExport.exportTxt(pending.path, listOf(pending.book))
+                        }
+
+                        is ExportMode.CustomEpub -> DesktopBookExport.exportCustomEpub(
+                            pending.path, listOf(pending.book), mode.range, mode.size
+                        )
+                    }
+                    exported++
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failures.add("${pending.book.name}：${e.message ?: "未知错误"}")
+                    AppLog.put("导出书籍出错\n${pending.book.name}\n${e.message}", e)
+                } finally {
+                    finishExport()
+                }
+            }
+        } catch (e: CancellationException) {
+            // 托盘取消导出: 不报错, 已写出的半成品与 app 端取消语义一致; 剩余队列不再导出
+            discardExportQueue()
+            throw e
+        } catch (e: Throwable) {
+            // 意外异常不能把执行者名额带走, 否则后续导出会一直排队没人导
+            discardExportQueue()
+            throw e
+        }
+        if (exported > 0) {
+            lastPath?.let { Toasters.get().toast("导出完成\n$it") }
+        }
+        if (failures.isNotEmpty()) {
+            Toasters.get().toast("${failures.size} 本书导出失败：${failures.take(2).joinToString()}")
+        }
+        if (exported > 0 && failures.isNotEmpty()) {
+            AppLog.put("部分书籍导出失败：${failures.joinToString()}")
         }
     }
 
@@ -665,7 +1007,7 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     ) {
         if (selection.isEmpty()) return
         scope.launch {
-            val json = selectedSourcesJson(selection, sortAscending, sort) ?: return@launch
+            val json = selectedSourcesJson(selection, allCount, sortAscending, sort) ?: return@launch
             withContext(Dispatchers.Main) {
                 pushExportDispatch("bookSource.json", json, "application/json")
             }
@@ -681,28 +1023,62 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         sort: BookSourceSort
     ) {
         scope.launch {
-            val json = selectedSourcesJson(selection, sortAscending, sort) ?: return@launch
+            val json = selectedSourcesJson(selection, allCount, sortAscending, sort) ?: return@launch
             val dir = File(DataStorageProviders.get().userExportDir).apply { mkdirs() }
             val file = File(dir, "shareBookSource.json")
-            runCatching { file.writeText(json, Charsets.UTF_8) }
+            runCatching {
+                // 整份落盘: 覆盖写被中断会在用户目录留下半截 JSON, 分享出去的是一份打不开的文件
+                check(writeTextAtomically(file.path, json)) { "写入失败: ${file.path}" }
+            }
                 .onSuccess {
-                    PlatformServiceProviders.get().sharing
-                        .shareFile(file.absolutePath, "application/json")
-                    Toasters.get().toast("已导出到 ${file.absolutePath}")
+                    // 分享与提示是界面动作, 回主线程; 能力作用域是 IO。
+                    withContext(mainDispatcher) {
+                        PlatformServiceProviders.get().sharing
+                            .shareFile(file.absolutePath, "application/json")
+                        Toasters.get().toast("已导出到 ${file.absolutePath}")
+                    }
                 }
-                .onFailure { Toasters.get().toast("导出失败\n${it.message}") }
+                .onFailure { error ->
+                    withContext(mainDispatcher) {
+                        Toasters.get().toast("导出失败\n${error.message}")
+                    }
+                }
         }
     }
 
+    // 关键词输入与校验设置中性钮走共享对话框 (与 Android 逐字一致; 平台侧只负责启动)
     override fun checkBookSource(selection: List<BookSourcePart>) {
-        if (selection.isEmpty()) return
-        DesktopCheckSource.start(selection)
+        showCheckBookSourceDialog(selection)
+    }
+
+    override fun startCheckBookSource(urls: List<String>) {
+        DesktopCheckSource.startUrls(urls)
     }
 
     override fun cancelCheckSource() {
         DesktopCheckSource.stop()
         Debug.finishChecking()
     }
+
+    /**
+     * 退出前收尾: 停掉正在跑的后台任务 (缓存下载 / 书源校验 / 导出), 并等导出协程收手。
+     *
+     * 缓存下载与书源校验的停止口是同步的 (调完即已停); 导出跑在协程上, 取消后不等它结束,
+     * 进程会在写文件的中途被结束 —— 文件流没走完收尾, 留下的半成品比"取消当时已写完的部分"
+     * 更不完整。故等待其 job 真正完成; 半成品本身保留不删 (与托盘取消导出同一路径)。
+     *
+     * 等导出有上限: 卡在不可中断的网络/磁盘调用时无限等下去, 会让退出永远完不成 ——
+     * 退不掉比丢失半本导出更严重 (进程已不再响应任何退出操作)。
+     */
+    internal suspend fun stopBackgroundTasksAwait() {
+        runCatching { ServiceLaunchers.get().stopCacheBookService() }
+        runCatching { cancelCheckSource() }
+        val exportJob = exportBooksJob ?: return
+        exportJob.cancel()
+        withTimeoutOrNull(EXIT_EXPORT_GRACE_MS) { exportJob.join() }
+    }
+
+    private const val EXIT_EXPORT_GRACE_MS = 5_000L
 
     // ===== 其它设置 =====
 
@@ -721,23 +1097,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
             ?.mapNotNull { sub -> File(sub, fileName).takeIf { it.isFile } }
             ?.firstOrNull()
             ?.let { desktopStoredLocalRef(it) }
-    }
-
-    // 书源校验设置 / 直链上传配置: shared 已有对话框实现, 与 app 端同走 overlay
-    // onDismiss 契约同 app 端: 等 overlay 入栈再等其出栈
-    override fun showCheckSourceConfigDialog(onDismiss: () -> Unit) {
-        val navigator = AppNavigatorProviders.get()
-        scope.launch {
-            navigator.overlays.first { list -> list.any { it.key == "check_source_config" } }
-            navigator.overlays.first { list -> list.none { it.key == "check_source_config" } }
-            withContext(Dispatchers.Main) { onDismiss() }
-        }
-        navigator.showOverlay(AppOverlay.Dialog("check_source_config"))
-    }
-
-    override fun showDirectLinkUploadConfigDialog() {
-        AppNavigatorProviders.get()
-            .showOverlay(AppOverlay.Dialog("direct_link_upload_config"))
     }
 
     /**
@@ -768,6 +1127,8 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
      *
      * 桌面端无 SAF, fontFolder 恒为真实路径; 内置目录取 DataStorage.fontsDir
      * (对应 app 端 externalFiles/font)。
+     * 不走 shared 版: 本端返回 [java.io.File.absolutePath] (相对 pref 也会解析成绝对路径),
+     * shared 版返回 okio 列目录得到的路径串, 两者未逐字等价。
      */
     override suspend fun scanFontItems(): List<FontItem> = withContext(Dispatchers.IO) {
         val fontRegex = Regex("(?i).*\\.[ot]tf")
@@ -791,12 +1152,17 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
 
     // ===== 导入本地书 (状态与扫描见 DesktopImportBook) =====
 
-    override fun initImportBookData() = DesktopImportBook.init()
+    override suspend fun initImportBookData(): Boolean {
+        DesktopImportBook.init()
+        return DesktopImportBook.needsRootDir
+    }
 
     override fun importBookItems(): StateFlow<List<ImportFileItem>> = DesktopImportBook.items
     override fun importBookPath(): StateFlow<String?> = DesktopImportBook.path
     override fun importBookLoading(): StateFlow<Boolean> = DesktopImportBook.loading
     override fun importBookEmptyMsgVisible(): StateFlow<Boolean> = DesktopImportBook.emptyMsgVisible
+
+    override fun importBookHasParentDir(): StateFlow<Boolean> = DesktopImportBook.hasParentDir
 
     override fun pickImportFolder() {
         scope.launch { FileDialogs.pickDirectory("选择导入目录")?.let { DesktopImportBook.setRoot(it) } }
@@ -816,7 +1182,12 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     }
 
     override fun addImportSelectionToBookshelf(items: List<ImportFileItem>, onComplete: () -> Unit) {
-        DesktopImportBook.addToBookshelf(items, onComplete)
+        // 压缩包导入需要书籍保存位置: 未设置时经既有"书籍保存位置"选择器选定后继续导入
+        DesktopImportBook.addToBookshelf(
+            items,
+            onComplete,
+            onNeedBooksDir = { ensureBookSaveDirSelected() },
+        )
     }
 
     override fun updateImportBookFilter(key: String) = DesktopImportBook.updateFilter(key)
@@ -869,9 +1240,6 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
 
     // ===== 私有辅助 =====
 
-    /** 上次导出目录 (对照 app 端 ACache "exportBookPath")。 */
-    private const val KEY_EXPORT_BOOK_PATH = "exportBookPath"
-
     private fun resolveLocalFile(bookUrl: String): File = if (bookUrl.startsWith("file:")) {
         // Windows 上 URI.path 是 "/C:/..." 不是合法路径, 必须交给 File(URI) 解析盘符
         runCatching { File(URI(bookUrl)) }.getOrElse { File(bookUrl.removePrefix("file:")) }
@@ -879,36 +1247,19 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         File(bookUrl)
     }
 
-    /** 选中书源转 JSON, 按当前界面排序规则对齐 (对照 app 端 saveToFile + getBookSources)。 */
+    /** 选中书源转 JSON, 取数+排序+比例分流+危险 API 清理走 commonMain 编排。 */
     private suspend fun selectedSourcesJson(
         selection: List<BookSourcePart>,
-        sortAscending: Boolean = true,
-        sort: BookSourceSort = BookSourceSort.Default
+        allCount: Int,
+        sortAscending: Boolean,
+        sort: BookSourceSort
     ): String? {
-        val urls = selection.map { it.bookSourceUrl }
-        val rawSources = runCatching { appDb.bookSourceDao.getBookSourcesFix(urls) }.getOrElse {
+        val sources = runCatching {
+            getExportBookSources(selection, allCount, sortAscending, sort)
+        }.getOrElse {
             Toasters.get().toast("导出书源失败\n${it.message}")
             return null
         }
-        val sorted = when (sort) {
-            BookSourceSort.Weight -> rawSources.sortedBy { it.weight }
-            BookSourceSort.Name -> rawSources.sortedWith { o1, o2 ->
-                o1.bookSourceName.cnCompare(o2.bookSourceName)
-            }
-            BookSourceSort.Url -> rawSources.sortedBy { it.bookSourceUrl }
-            BookSourceSort.Update -> rawSources.sortedByDescending { it.lastUpdateTime }
-            BookSourceSort.Respond -> rawSources.sortedBy { it.respondTime }
-            BookSourceSort.Enable -> rawSources.sortedWith { o1, o2 ->
-                var sortNum = -o1.enabled.compareTo(o2.enabled)
-                if (sortNum == 0) sortNum = o1.weight.compareTo(o2.weight)
-                if (sortNum == 0) sortNum = o1.bookSourceName.cnCompare(o2.bookSourceName)
-                sortNum
-            }
-            else -> rawSources
-        }
-        val sources = if (sortAscending) sorted else sorted.reversed()
-        // 对照 app 端: 导出前强制关闭危险 API 开关
-        sources.forEach { if (it.enableDangerousApi == true) it.enableDangerousApi = false }
         return GSON.toJson(sources)
     }
 

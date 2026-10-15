@@ -21,8 +21,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.legado.app.ui.compose.component.LocalDialogAnchorSize
 import io.legado.app.ui.compose.platform.LocalAppConfigProvider
 import io.legado.app.ui.compose.platform.LocalEventBusProvider
 import io.legado.app.ui.compose.platform.LocalThemeStoreProvider
@@ -56,25 +58,39 @@ object AppTheme {
      * 动态主题色走 [AppTheme.colors], 此处仅放静态兜底值。
      */
     object DesignTokens {
-        // Arco 圆角三档 (对齐 dimens.xml arco_radius_sm/default/lg)
+        // Arco 圆角四档 (对齐 dimens.xml arco_radius_sm/default/md/lg)
         val radiusSm: Dp = 4.dp
         val radiusDefault: Dp = 8.dp
+        val radiusMd: Dp = 12.dp
         val radiusLg: Dp = 16.dp
 
-        // 预建形状三档, 调用方直接复用, 不再各处 new RoundedCornerShape
+        // 预建形状四档, 调用方直接复用, 不再各处 new RoundedCornerShape
         val shapeSm: RoundedCornerShape = RoundedCornerShape(radiusSm)
         val shapeDefault: RoundedCornerShape = RoundedCornerShape(radiusDefault)
+        val shapeMd: RoundedCornerShape = RoundedCornerShape(radiusMd)
         val shapeLg: RoundedCornerShape = RoundedCornerShape(radiusLg)
 
-        // 语义别名: 整屏对话框 16dp / 卡片弹层 8dp / 按钮 8dp
-        val dialogShape: RoundedCornerShape = shapeLg
-        val cardShape: RoundedCornerShape = shapeDefault
+        // 语义别名: 按钮 8dp (贴底弹层顶角不在此列 —— 它随展开比例收平, 由 AppSheetSurface 按 radiusLg 插值)
         val buttonShape: RoundedCornerShape = shapeDefault
+
+        /**
+         * 文字按钮最小宽 (对齐 M2 ButtonDefaults.MinWidth, 窄文案不被压到比规范更窄)。
+         * 高度不设下限: 视觉高度由内容决定 (14sp 一行 + 上下各 8dp = 32dp),
+         * 对话框顶/底栏等需要更高触摸目标的行由行自身高度提供。
+         */
+        val buttonMinWidth: Dp = 64.dp
 
         // 对话框尺寸占锚点 (桌面=主窗口, 移动端=屏幕) 的比例; 消费方见 AppDialogSizes。
         // 高度 0.8 为全局统一值, 新弹窗一律取这里而非自行乘系数
         const val dialogWidthFraction: Float = 0.9f
         const val dialogHeightFraction: Float = 0.8f
+
+        /**
+         * 居中对话框与半屏弹层面板的宽度上限: 可用宽超过它时收成居中面板 (桌面宽窗),
+         * 窄于它时铺满 (移动端/窄窗)。消费方见 AppDialogSizes 的宽度计算与半屏弹层
+         * (AppBottomSheetDialog), 后者按上拉展开比例插值 —— 收起态取上限, 拉到底为整窗宽。
+         */
+        val dialogMaxWidth: Dp = 800.dp
 
         // Arco 描边: thin/medium 对齐 arco_stroke_width_*, hairline 为极细描边
         val strokeHairline: Dp = 0.5.dp
@@ -225,7 +241,15 @@ private fun AppColors.toColors(): Colors {
  * @see io.legado.app.ui.compose.platform
  */
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
+fun AppTheme(
+    /**
+     * 宿主窗口可用区 (px), 作为对话框尺寸锚点; 平台根在自己的窗口处读 [LocalWindowInfo] 传入。
+     * 对话框层读到的是对话框自己的窗口 (与内容尺寸互为反馈), 故只能在宿主根读。
+     * 内嵌 AppTheme (对话框内再包主题) 不传, 继承宿主锚点。
+     */
+    anchor: IntSize? = null,
+    content: @Composable () -> Unit,
+) {
     val themeStore = LocalThemeStoreProvider.current
     val appConfig = LocalAppConfigProvider.current
     val eventBus = LocalEventBusProvider.current
@@ -239,9 +263,12 @@ fun AppTheme(content: @Composable () -> Unit) {
     }
     recreateTick
     val colors = readAppColors(themeStore, appConfig.isEInkMode)
+    // 不传锚点时继承外层 (宿主) 的锚点, 不覆盖成 null
+    val dialogAnchor = anchor ?: LocalDialogAnchorSize.current
     CompositionLocalProvider(
         LocalAppColors provides colors,
         LocalEInk provides appConfig.isEInkMode,
+        LocalDialogAnchorSize provides dialogAnchor,
     ) {
         // 文本选择菜单: 自绘澎湃样式弹层, 顶掉 Android 的平台 ActionMode (见 AppTextToolbar)
         ProvideAppTextToolbar {

@@ -1,7 +1,6 @@
 package io.legado.app.ui.route
 
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -29,9 +28,8 @@ import io.legado.app.ui.book.changesource.ChangeChapterSourceUiEvent
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
-import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppSheetSurface
 import io.legado.app.ui.compose.theme.AppTheme
-import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.RouteEntry
@@ -71,12 +69,9 @@ fun ChangeChapterSourceDialogHost(
 ) {
     AppBottomSheetDialog(
         onDismissRequest = onDismiss,
-        properties = AppDialogSizes.properties(),
     ) {
         AppTheme {
-            Surface(
-                shape = DesignTokens.dialogShape,
-                color = AppTheme.colors.background,
+            AppSheetSurface(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 ChangeChapterSourceContent(

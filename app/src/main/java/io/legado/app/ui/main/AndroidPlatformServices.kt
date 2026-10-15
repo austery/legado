@@ -19,13 +19,17 @@ import androidx.core.view.WindowInsetsControllerCompat
 import io.legado.app.App
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
+import io.legado.app.constant.DirUsage
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.crash.CRASH_LOG_FILE_PREFIX
 import io.legado.app.help.config.resolveImagePath
+import io.legado.app.help.file.AndroidDirAuthorizations
 import io.legado.app.model.bakeCoverImageFile
 import io.legado.app.model.bakedImagePath
 import io.legado.app.model.deleteImageIfUnreferenced
 import io.legado.app.notificationManager
+import io.legado.app.ui.book.video.ExternalVideoHandle
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.BrowserService
 import io.legado.app.ui.root.CrashLogProvider
@@ -40,29 +44,32 @@ import io.legado.app.ui.root.OrientationPolicy
 import io.legado.app.ui.root.PermissionService
 import io.legado.app.ui.root.PlatformCapabilities
 import io.legado.app.ui.root.PlatformServices
+import io.legado.app.ui.root.ReaderSystemBarAppearance
 import io.legado.app.ui.root.ShareService
 import io.legado.app.ui.root.SoftInputPolicy
 import io.legado.app.ui.root.SystemBarsPolicy
 import io.legado.app.ui.root.VideoPlayTarget
 import io.legado.app.ui.root.WindowController
 import io.legado.app.ui.root.importImageSetFile
+import io.legado.app.ui.root.navigateToRoute
 import io.legado.app.ui.video.VideoDirect
 import io.legado.app.utils.ActivityResultLauncherAwait
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.checkWrite
-import io.legado.app.utils.createFileIfNotExist
 import io.legado.app.utils.delete
 import io.legado.app.utils.displayName
 import io.legado.app.utils.find
 import io.legado.app.utils.getFile
 import io.legado.app.utils.hasPlayableScheme
 import io.legado.app.utils.list
-import io.legado.app.utils.openOutputStream
 import io.legado.app.utils.openUrl
 import io.legado.app.utils.realScreenSize
+import io.legado.app.utils.setLightStatusBar
+import io.legado.app.utils.setNavigationBarColorAuto
 import io.legado.app.utils.share
 import io.legado.app.utils.toastOnUi
+import io.legado.app.utils.writeDocumentBytesAtomically
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -203,23 +210,24 @@ private class AndroidFilePickerService(
     }
 
     override fun saveImageBytes(suggestedName: String, bytes: ByteArray): Boolean? = runBlocking {
-        // CreateDocument 选位置 → contentResolver 写入 (对照 master PhotoDialog 的 SAF 保存)
+        // CreateDocument 选位置 → 写入 (对照 master PhotoDialog 的 SAF 保存): 目标所在目录允许整份就位
+        // 时先写临时文档再改名, 否则直写 (见 writeDocumentBytesAtomically; 单文档授权通常只能直写)
         // 用户取消选择位置返回 null, 调用方静默; 仅写入失败返回 false
         val uri = withContext(Dispatchers.Main) { createDocumentPicker.launch(suggestedName) }
             ?: return@runBlocking null
         runCatching {
-            App.instance.contentResolver.openOutputStream(uri)
-                ?.use { it.write(bytes) } ?: return@runBlocking false
-            true
+            writeDocumentBytesAtomically(App.instance, uri, suggestedName, bytes)
         }.getOrDefault(false)
     }
 
     /**
-     * 备份目录可写性预检 (对照 app 端 BackupConfigFragment.backup:
+     * 目录可写性预检 (对照 app 端 BackupConfigFragment.backup:
      * FileDoc.fromDir(path).checkWrite())。content:// 走 SAF DocumentFile 判断,
      * 普通路径 (桌面等无 SAF 平台) 视为可写。
+     *
+     * SAF 权限按树 URI 授予, 可写性与目录当初为何而选无关。
      */
-    override fun checkWrite(path: String): Boolean = runBlocking {
+    override fun checkWrite(path: String, usage: DirUsage): Boolean = runBlocking {
         val uri = path.toUri()
         if (uri.scheme?.lowercase() != "content") {
             true
@@ -231,18 +239,18 @@ private class AndroidFilePickerService(
     }
 
     // 选目录: OpenDocumentTree (对照 app 端 HandleFileDialog.selectDocTree),
-    // 选中后 takePersistableUriPermission 保证重启后仍可访问
+    // 选中后 takePersistableUriPermission 保证重启后仍可访问;
+    // SAF 权限按树 URI 授予、本身没有用途维度, 故选中后按 [usage] 登记用途, 供本地书文件访问校验
     override val supportsDirWrite: Boolean = true
 
-    // 写进已选目录 (对照 app 端 FileUtils.saveImage(dirUri): FileDoc 兼容 content:// 与 file://)
+    // 写进已选目录 (对照 app 端 FileUtils.saveImage(dirUri)): 目录允许整份就位时先写临时文档再改名,
+    // 否则直写 (见 writeDocumentBytesAtomically)
     override fun writeImageToDir(dir: String, fileName: String, bytes: ByteArray): Boolean =
         runCatching {
-            val picFile = FileDoc.fromDir(dir.toUri()).createFileIfNotExist(fileName)
-            picFile.openOutputStream().getOrThrow().use { it.write(bytes) }
-            true
+            writeDocumentBytesAtomically(App.instance, dir.toUri(), fileName, bytes)
         }.getOrDefault(false)
 
-    override fun pickDirectory(): String? = runBlocking {
+    override fun pickDirectory(usage: DirUsage): String? = runBlocking {
         withContext(Dispatchers.Main) { openDocumentTreePicker.launch(null) }?.let { uri ->
             val modeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
                 Intent.FLAG_GRANT_WRITE_URI_PERMISSION
@@ -251,6 +259,7 @@ private class AndroidFilePickerService(
             }.onFailure {
                 AppLog.put("AndroidFilePickerService.pickDirectory takePersistableUriPermission 失败: ${it.localizedMessage}")
             }
+            AndroidDirAuthorizations.remember(uri.toString(), usage)
             uri.toString()
         }
     }
@@ -436,6 +445,9 @@ private class AndroidWindowController(
     private var savedLightStatusBars: Boolean? = null
     private var savedLightNavigationBars: Boolean? = null
 
+    /** 当前窗口是否处于阅读页系统栏外观 (见 [setReaderSystemBarAppearance])。 */
+    private var readerAppearanceApplied = false
+
     override fun setLightIconOverlay(enabled: Boolean) {
         val controller =
             WindowCompat.getInsetsController(activity.window, activity.window.decorView)
@@ -452,6 +464,25 @@ private class AndroidWindowController(
             savedLightStatusBars = null
             savedLightNavigationBars = null
         }
+    }
+
+    override fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {
+        if (appearance == null) {
+            // 离开阅读页可见期: 回到非阅读页规则
+            // (主题状态栏色 / 壁纸贴边像素亮度 + 主题导航栏色)。
+            // 本就不在阅读页外观状态时不重算 —— 非阅读页每次路由变化都会走这条,
+            // 而重算含壁纸贴边像素采样
+            if (!readerAppearanceApplied) return
+            readerAppearanceApplied = false
+            activity.setupSystemBar()
+            return
+        }
+        readerAppearanceApplied = true
+        activity.setLightStatusBar(appearance.lightStatusBarIcons)
+        // 对照原版 ReadBookActivity.upNavigationBarColor: 菜单布局不可见时按阅读背景色
+        // (setNavigationBarColorAuto 一并按该色亮度定导航栏图标明暗), 可见时走主题规则
+        appearance.navigationBarColor?.let { activity.setNavigationBarColorAuto(it) }
+            ?: activity.upNavigationBarColor()
     }
 }
 
@@ -585,11 +616,8 @@ internal const val EXPLORE_SHOW_ALIAS = "io.legado.app.ui.book.explore.ExploreSh
 
 fun Intent.toLaunchRequest(): LaunchRequest? {
     // 通知/外部入口携带 route extra: 转为 NavigateTo 请求 (bookUrl 一并携带供冷启动兜底)
-    getStringExtra("route")?.let {
-        return LaunchRequest.NavigateTo(
-            routeName = it,
-            bookUrl = getStringExtra("bookUrl"),
-        )
+    navigateToRoute(getStringExtra("route"), getStringExtra("bookUrl"))?.let {
+        return it
     }
     // 搜索界面 alias 入口 (对照 master SearchActivity.receiptIntent: key/searchScope/submit extra;
     // manifest activity-alias .ui.book.search.SearchActivity 指向本 Activity; 仅 alias 组件名命中
@@ -680,7 +708,7 @@ fun Intent.videoDirectTarget(): VideoPlayTarget.Direct? {
                 videoTargetOfUri(stream, mimeIsVideo)
             } else {
                 // 分享的是纯文本: 只有整条就是一个可播地址 (结尾 .m3u8/.mp4 等) 才截给播放页,
-                // 否则保持原语义 (ProcessText → 搜索), 不得把书名/普通文案当链接去播
+                // 否则保持原语义 (交 ProcessText 分流), 不得把书名/普通文案当链接去播
                 getStringExtra(Intent.EXTRA_TEXT)?.trim()
                     ?.takeIf { it.hasPlayableScheme() }
                     ?.let { VideoDirect.targetFor(it, mimeIsVideo) }
@@ -696,12 +724,17 @@ private fun videoTargetOfUri(uri: Uri, mimeIsVideo: Boolean): VideoPlayTarget.Di
     val address = uri.toString()
     if (!address.hasPlayableScheme()) return null
     val displayName = uri.displayName(App.instance)
-    return VideoDirect.targetFor(
+    val target = VideoDirect.targetFor(
         address = address,
         // DISPLAY_NAME 命中视频后缀 等同于 MIME 命中 (content URI 的末段常不是文件名)
         mimeIsVideo = mimeIsVideo || displayName?.matches(AppPattern.videoFileRegex) == true,
         title = displayName,
-    )
+    ) ?: return null
+    // content:// 地址在此刻打开并持有句柄
+    if (address.startsWith("content://", ignoreCase = true)) {
+        ExternalVideoHandle.hold(App.instance, address)
+    }
+    return target
 }
 
 /**
@@ -719,16 +752,19 @@ private class AndroidCrashLogProvider(
     override suspend fun loadCrashLogs(): List<CrashLogProvider.CrashLogEntry> =
         withContext(Dispatchers.IO) {
             val list = arrayListOf<FileDoc>()
-            // 外部缓存目录 crash 子目录 (对照 CrashViewModel.initData)
-            activity.externalCacheDir?.getFile("crash")?.listFiles { it.isFile }?.forEach {
-                list.add(FileDoc.fromFile(it))
-            }
+            // 外部缓存目录 crash 子目录 (对照 CrashViewModel.initData)。
+            // 只收 crash- 前缀: 该目录还放着"上次异常退出"标记文件, 它不是崩溃现场, 不该进列表
+            activity.externalCacheDir?.getFile("crash")
+                ?.listFiles { it.isFile && it.name.startsWith(CRASH_LOG_FILE_PREFIX) }
+                ?.forEach {
+                    list.add(FileDoc.fromFile(it))
+                }
             // 备份路径下的 crash 目录 (对照 CrashViewModel.initData backupPath 分支)
             val backupPath = AppConfig.backupPath
             if (!backupPath.isNullOrEmpty()) {
                 val uri = backupPath.toUri()
                 FileDoc.fromUri(uri, true).find("crash")?.list { !it.isDir }?.let {
-                    list.addAll(it)
+                    list.addAll(it.filter { doc -> doc.name.startsWith(CRASH_LOG_FILE_PREFIX) })
                 }
             }
             list.sortedByDescending { it.name }.distinctBy { it.name }
@@ -741,15 +777,20 @@ private class AndroidCrashLogProvider(
     }
 
     override suspend fun clearCrashLogs() = withContext(Dispatchers.IO) {
-        // 删外部缓存目录 crash 子目录
-        activity.externalCacheDir?.getFile("crash")?.let { dir ->
-            FileUtils.delete(dir, false)
+        // 只删崩溃现场文件, 目录本身留着: 该目录还放着"上次异常退出"标记文件, 整目录删掉会把
+        // 标记一起清掉, 下次启动就不再提示 (而用户清空日志并不等于否认刚才崩过)
+        activity.externalCacheDir?.getFile("crash")?.listFiles { it.isFile }?.forEach { file ->
+            if (file.name.startsWith(CRASH_LOG_FILE_PREFIX)) {
+                FileUtils.delete(file, false)
+            }
         }
-        // 删备份路径下的 crash 目录
+        // 删备份路径下的 crash 目录里的崩溃现场 (SAF 侧只写崩溃日志, 无标记文件)
         val backupPath = AppConfig.backupPath
         if (!backupPath.isNullOrEmpty()) {
             val uri = backupPath.toUri()
-            FileDoc.fromUri(uri, true).find("crash")?.delete()
+            FileDoc.fromUri(uri, true).find("crash")?.list { !it.isDir }
+                ?.filter { it.name.startsWith(CRASH_LOG_FILE_PREFIX) }
+                ?.forEach { it.delete() }
         }
     }
 

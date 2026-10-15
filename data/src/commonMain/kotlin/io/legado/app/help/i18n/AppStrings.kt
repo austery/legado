@@ -25,14 +25,6 @@ enum class AppStringKey {
     // SearchScope 显示 "全部书源"
     all_source,
 
-    // CheckSource 校验配置摘要
-    search,
-    discovery,
-    source_tab_info,
-    chapter_list,
-    main_body,
-    check_source_config_summary,
-
     // AudioPlay 加载占位标题
     data_loading,
 
@@ -40,11 +32,27 @@ enum class AppStringKey {
     toc_updateing,
     error_load_toc,
 
+    // 直链上传 (对照 app 端 DirectLinkUpload.upLoad 的硬编码文案, key 与
+    // composeResources 的 upload_url_not_configured / download_url_rule_not_configured /
+    // upload_failed_with_body 一一对应)
+    upload_url_not_configured,
+    download_url_rule_not_configured,
+    upload_failed_with_body,
+
+    // 直链上传打包单条目 zip 失败 (iOS/鸿蒙 NativeZipCodec): JVM/Android 端同一环节是
+    // ZipUtils 抛 IOException, 文案由 JDK 给出, 不在此列
+    upload_compress_failed_with_name,
+
     // 批注：跨章选区无单章区间可存
     underline_cross_chapter_unsupported,
 
     // AppWebDav 授权失败
     webdav_application_authorization_error,
+
+    // 书籍保存位置未设置 (对照 app 端 R.string.no_books_dir, 即原版 NoBooksDirException 的文案)。
+    // 用于共用层在"未设置书籍保存位置"时抛 InvalidBooksDirException, 让四端既有
+    // "去设置目录"分支 (InvalidBooksDirException) 能匹配上。
+    no_books_dir,
 
     // ReplaceRule 校验失败
     replace_rule_invalid,

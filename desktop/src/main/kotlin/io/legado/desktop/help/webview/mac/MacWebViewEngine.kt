@@ -6,6 +6,7 @@ import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.getUserAgent
+import io.legado.app.help.http.WebViewSnifferScripts
 import io.legado.app.help.toast.Toasters
 import io.legado.app.utils.browseUrl
 import io.legado.desktop.help.webview.DesktopWebViewEngineBase
@@ -52,6 +53,8 @@ import java.util.concurrent.atomic.AtomicReference
  *   document-start 注入 JS hook (fetch/XHR) + performance entries 轮询兜底静态资源;
  *   overrideUrlRegex 走导航完成地址。命中语义为"轮询发现即返回" (比 Android 拦截语义滞后
  *   一个轮询周期, 且无法阻止资源加载), KDoc 注明差异;
+ *   两段脚本 ([WebViewSnifferScripts.SNIFF_HOOK_JS] / [WebViewSnifferScripts.SNIFF_COLLECT_JS])
+ *   已上移 commonMain, 与 iOS 端 `IosBackstageWebView` 共用同一份;
  * - cookie 注入/回收走 WKHTTPCookieStore (block API, 主线程发起 + 协程挂起等待);
  * - 可见窗口带 AppKit 工具栏, 行为对照 Windows WebView2Toolbar。
  * 抓取主循环 / 常量在 [DesktopWebViewEngineBase], 这里只留 WKWebView 差异。
@@ -104,44 +107,15 @@ internal object MacWebViewEngine : DesktopWebViewEngineBase() {
 
     private const val SNIFF_INTERVAL_MS = 500L
 
-    /** document-start 注入的嗅探 hook: 捕获 fetch/XHR 的 URL。 */
-    internal const val SNIFF_HOOK_JS = """
-        (function(){
-          if (window.__legadoSniff) return;
-          window.__legadoSniff = [];
-          var p = function(u){ try{ if(u) window.__legadoSniff.push(String(u)); }catch(e){} };
-          try{ var f = window.fetch; if (f) window.fetch = function(){
-            try{ p(arguments[0] && (arguments[0].url || arguments[0])); }catch(e){}
-            return f.apply(this, arguments); }; }catch(e){}
-          try{ var o = XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open = function(m,u){
-            try{ p(u); }catch(e){} return o.apply(this, arguments); }; }catch(e){}
-        })();
-    """
-
-    /** 轮询取全部嗅探到的 URL (hook 结果 + performance entries 兜底静态资源), JSON 数组。 */
-    private const val SNIFF_COLLECT_JS = """
-        (function(){try{
-          var a = (window.__legadoSniff || []).concat(
-            performance.getEntriesByType('resource').map(function(e){ return e.name; }));
-          return JSON.stringify(a);
-        }catch(e){ return '[]'; }})()
-    """
-
-    @Volatile
-    private var probed = false
-
-    @Volatile
-    private var available = false
-
-    override fun isAvailable(): Boolean {
-        if (probed) return available
-        available = runCatching {
-            // mac 上 WKWebView 框架必然存在; 探测做一次最小调用确认 runtime 可用
-            ObjC.cls("WKWebView") != Pointer.NULL
-        }.getOrDefault(false)
-        probed = true
-        return available
-    }
+    /**
+     * 引擎是否可用: mac 上 WKWebView 框架必然存在, 做一次最小调用确认 runtime 可用。
+     *
+     * 不缓存结论 (与 Linux 端同一判据): 探测失败往往是一次性的运行时初始化问题, 缓存 false
+     * 会把可恢复的失败固化成本次运行内不可用; 每次现探的开销只是一次 ObjC 类查找。
+     */
+    override fun isAvailable(): Boolean = runCatching {
+        ObjC.cls("WKWebView") != Pointer.NULL
+    }.getOrDefault(false)
 
     override suspend fun fetch(request: WebViewFetchRequest): WebViewFetchResult {
         if (!isAvailable()) throw NoStackTraceException("WKWebView 引擎不可用")
@@ -186,12 +160,12 @@ internal object MacWebViewEngine : DesktopWebViewEngineBase() {
         )
     }
 
-    /** 嗅探: hook + performance 轮询; overrideRegex 走导航地址。 */
+    /** 嗅探: hook + performance 轮询; overrideUrlRegex 走导航地址。 */
     private suspend fun runSniffer(
         session: MacSession,
         request: WebViewFetchRequest,
     ): WebViewFetchResult {
-        val (overrideRegex, sourceRegex) = snifferRegexes(request)
+        val (overridePattern, sourcePattern) = snifferPatterns(request)
         val seen = HashSet<String>()
         val sniffed = CompletableDeferred<String>()
         injectWebViewCookies(request.url, platformLabel) { domain, cookie ->
@@ -201,7 +175,7 @@ internal object MacWebViewEngine : DesktopWebViewEngineBase() {
             session.onNavigated = { url ->
                 if (!url.isNullOrBlank()) {
                     harvestTagCookies(url, request.cookieTag) { session.cookies(COOKIE_TIMEOUT_MS) }
-                    if (overrideRegex?.matches(url) == true) sniffed.complete(url)
+                    if (snifferMatches(url, overridePattern)) sniffed.complete(url)
                 }
             }
             session.start(request)
@@ -209,12 +183,12 @@ internal object MacWebViewEngine : DesktopWebViewEngineBase() {
 
         val deadline = System.currentTimeMillis() + AppConst.timeLimit
         while (System.currentTimeMillis() < deadline) {
-            val body = session.evaluateJavascript(SNIFF_COLLECT_JS) ?: ""
+            val body = session.evaluateJavascript(WebViewSnifferScripts.SNIFF_COLLECT_JS) ?: ""
             runCatching {
                 val urls = Json.parseToJsonElement(body).jsonArray
                 for (element in urls) {
                     val url = element.jsonPrimitive.contentOrNull ?: continue
-                    if (seen.add(url) && sourceRegex?.matches(url) == true) {
+                    if (seen.add(url) && snifferMatches(url, sourcePattern)) {
                         sniffed.complete(url)
                         break
                     }
@@ -222,7 +196,15 @@ internal object MacWebViewEngine : DesktopWebViewEngineBase() {
             }
             val hitUrl = withTimeoutOrNull(SNIFF_INTERVAL_MS + 100) { sniffed.await() }
             if (hitUrl != null) {
-                return snifferResult(request, hitUrl)
+                // 命中带头: 与 Windows/GTK 引擎 (子资源回调可读到 requestHeaders) 同一口径。
+                // WKWebView 读不到子资源请求头, 故这里只能把"主框架导航用的请求头 (= 书源 headerMap)"
+                // 交给 [playHeaders], 缺失项回退 UA=宿主 UA + Referer=解析页。
+                // 浏览器自设的 Referer/UA 与 HttpOnly Cookie 在 mac 上拿不到 (见类 KDoc 平台限制)。
+                return snifferResult(
+                    request,
+                    hitUrl,
+                    playHeaders(request.headerMap ?: emptyMap(), request.url),
+                )
             }
             delay(SNIFF_INTERVAL_MS)
         }
@@ -318,7 +300,7 @@ internal class MacSession private constructor(
             ptr(
                 script,
                 "initWithSource:injectionTime:forMainFrameOnly:",
-                ns(MacWebViewEngine.SNIFF_HOOK_JS),
+                ns(WebViewSnifferScripts.SNIFF_HOOK_JS),
                 0L, // WKUserScriptInjectionTimeAtDocumentStart
                 1L, // forMainFrameOnly
             )!!

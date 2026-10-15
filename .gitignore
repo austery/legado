@@ -26,6 +26,7 @@ package-lock.json
 !/docs/evidence/
 /docs/evidence/*
 !/docs/evidence/2026-10-14-spec004-ipad.md
+!/docs/evidence/2026-10-15-upstream-sync.md
 !/docs/architecture/
 /docs/architecture/*
 !/docs/architecture/decisions/

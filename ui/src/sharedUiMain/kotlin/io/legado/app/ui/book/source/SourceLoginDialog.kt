@@ -4,9 +4,8 @@
 //   "login_source" / "ok" / "show_login_header" / "del_login_header" / "log" /
 //   "login_header" / "copy" / "success"
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -42,11 +41,14 @@ import io.legado.app.help.toast.Toasters
 import io.legado.app.model.script.runScriptWithContext
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.compose.component.AppAlertDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
+import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppDropdownAnchor
 import io.legado.app.ui.compose.component.AppDropdownMenu
 import io.legado.app.ui.compose.component.AppFilletTextButton
-import io.legado.app.ui.compose.component.AppSwitch
+import io.legado.app.ui.compose.component.AppSingleChoiceMenu
+import io.legado.app.ui.compose.component.AppSwitchRow
 import io.legado.app.ui.compose.component.AppUnderlineTextField
-import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.GridPackLayout
 import io.legado.app.ui.compose.component.toGridPackSpec
 import io.legado.app.ui.compose.theme.AppTheme
@@ -64,7 +66,6 @@ import kotlinx.coroutines.withContext
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.copy
 import legado.ui.generated.resources.del_login_header
-import legado.ui.generated.resources.ic_arrow_drop_down
 import legado.ui.generated.resources.ic_check
 import legado.ui.generated.resources.ic_more_vert
 import legado.ui.generated.resources.log
@@ -98,7 +99,8 @@ class SourceLoginFormState {
  * 书源登录对话框 (KMP 共享, app + desktop + iOS 复用)。
  *
  * 严格复刻 app 端 `io.legado.app.ui.login.SourceLoginDialog` 的 UI 结构与交互逻辑:
- * - 顶部 DialogTitleBar: 登录标题 + 确认按钮(ic_check) + 溢出菜单(查看/删除登录头 + 日志)
+ * - 外壳: [AppDialogScaffold] (居中卡片, 高度自适应封顶 0.8 屏高), 顶栏 = 登录标题 + 确认按钮(ic_check)
+ *   + 溢出菜单(查看/删除登录头 + 日志) 经壳的 titleActions; 无底栏 (确认在顶栏)。
  * - GridPackLayout(columnCount=12, rowUnitMinHeight=60dp) 承载 loginUi 各行
  * - 行类型: text/password/select/toggle/button, padding 与原 view 对齐
  * - 确认: loginData 空则 removeLoginInfo + 关闭; 否则 putLoginInfo + 执行 login() JS
@@ -247,11 +249,10 @@ fun SourceLoginDialog(
         }
     }
 
-    Column(Modifier.fillMaxWidth()) {
-        DialogTitleBar(
-            title = titleText,
-            onBack = onDismiss
-        ) {
+    AppDialogScaffold(
+        onDismissRequest = onDismiss,
+        title = titleText,
+        titleActions = {
             IconButton(onClick = { login(getLoginData()) }) {
                 Icon(
                     painter = painterResource(Res.drawable.ic_check),
@@ -298,7 +299,10 @@ fun SourceLoginDialog(
                     }
                 }
             }
-        }
+        },
+        contentPadding = PaddingValues(0.dp),
+        properties = AppDialogSizes.properties(),
+    ) {
         LoginForm(rows, loginData) { handleButtonClick(it) }
     }
 
@@ -359,7 +363,6 @@ private fun LoginRow(
     loginData: MutableMap<String, String>,
     onButtonClick: (RowUi) -> Unit,
 ) {
-    val colors = AppTheme.colors
     when (rowUi.type) {
         // 外围间距由 AppTextField 组件统一 (左右下各 4dp), 调用点不再叠加
         RowUi.Type.text -> AppUnderlineTextField(
@@ -382,18 +385,13 @@ private fun LoginRow(
         // 原 select/toggle 行: setPadding(space.default)=8dp
         RowUi.Type.select -> SelectRow(rowUi, modifier.padding(DesignTokens.spacingDefault), loginData, onButtonClick)
 
-        RowUi.Type.toggle -> Row(
-            modifier.padding(DesignTokens.spacingDefault),
-            verticalAlignment = Alignment.CenterVertically
+        RowUi.Type.toggle -> AppSwitchRow(
+            label = rowUi.name,
+            checked = loginData[rowUi.name] == "true",
+            modifier = modifier,
         ) {
-            Text(rowUi.name, color = colors.primaryText, modifier = Modifier.weight(1f))
-            AppSwitch(
-                checked = loginData[rowUi.name] == "true",
-                onCheckedChange = {
-                    loginData[rowUi.name] = it.toString()
-                    onButtonClick(rowUi)
-                }
-            )
+            loginData[rowUi.name] = it.toString()
+            onButtonClick(rowUi)
         }
 
         // 原 button 行: item_fillet_text, 内边距走组件基础样式
@@ -414,49 +412,25 @@ private fun SelectRow(
 ) {
     val colors = AppTheme.colors
     val chars = rowUi.chars ?: emptyList()
-    var expanded by remember { mutableStateOf(false) }
     Row(
         modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(rowUi.name, color = colors.primaryText, modifier = Modifier.padding(end = DesignTokens.spacingDefault))
-        // 自定义实现替代 MD3 ExposedDropdownMenuBox: Box + TextField + AppDropdownMenu
-        Box(modifier = Modifier.weight(1f)) {
-            AppUnderlineTextField(
-                value = loginData[rowUi.name] ?: "",
-                onValueChange = {},
-                readOnly = true,
-                // 点击 TextField 切换菜单展开状态
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded },
-                // trailing icon 用 IconButton + ic_arrow_drop_down, 点击切换展开
-                trailingIcon = {
-                    IconButton(onClick = { expanded = !expanded }) {
-                        Icon(
-                            painter = painterResource(Res.drawable.ic_arrow_drop_down),
-                            contentDescription = null,
-                            tint = colors.secondaryText
-                        )
+        // 与其它下拉同一外观 (当前值 + ▾); 热区占满标签以外的整行, 对照原版 spinner 的
+        // LinearLayout.LayoutParams(0, MATCH_PARENT, 1f) 命中面
+        AppDropdownAnchor(
+            valueText = chars.getOrElse(chars.indexOf(loginData[rowUi.name])) { "" },
+            modifier = Modifier.weight(1f),
+            menuContent = { dismiss ->
+                AppSingleChoiceMenu(chars, { index ->
+                    val item = chars[index]
+                    if (loginData[rowUi.name] != item) {
+                        loginData[rowUi.name] = item
+                        onButtonClick(rowUi)
                     }
-                }
-            )
-            AppDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false },
-            ) {
-                chars.forEach { item ->
-                    DropdownMenuItem(onClick = {
-                        expanded = false
-                        if (loginData[rowUi.name] != item) {
-                            loginData[rowUi.name] = item
-                            onButtonClick(rowUi)
-                        }
-                    }) {
-                        Text(item)
-                    }
-                }
-            }
-        }
+                }, dismiss)
+            },
+        )
     }
 }

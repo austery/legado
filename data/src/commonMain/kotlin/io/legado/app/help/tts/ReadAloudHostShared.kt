@@ -4,6 +4,9 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.Status
 import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.help.coroutine.SingleJobSlot
+import io.legado.app.help.media.PhoneCallPauseHandler
+import io.legado.app.help.media.PhoneCallState
 import io.legado.app.help.media.ReadAloudRemoteHost
 import io.legado.app.help.media.SleepTimer
 import io.legado.app.model.ActiveReadAloudHostPorts
@@ -13,12 +16,13 @@ import io.legado.app.service.ReadAloudChapterDataPort
 import io.legado.app.service.ReadAloudChapterPlan
 import io.legado.app.service.ReadAloudControllerShared
 import io.legado.app.service.ReadAloudControllerShared.ReadAloudState
+import io.legado.app.service.ReadAloudPlanBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.concurrent.Volatile
 
@@ -28,7 +32,7 @@ import kotlin.concurrent.Volatile
  *
  * 段落表取已排版章节的页文本拼接, 故段落章内起始位置与 `durChapterPos` / 页索引同口径
  * (章节未排版时退回本地缓存正文); 起始位置的累加方式 (段长 + 1 个换行) 与
- * [ReadAloudQueue.readAloudNumber] 一致。
+ * [ReadAloudQueue.Snapshot.readAloudNumber] 一致。
  */
 abstract class ReadAloudHostShared(
     private val ports: ReadAloudHostPorts = ActiveReadAloudHostPorts,
@@ -36,21 +40,8 @@ abstract class ReadAloudHostShared(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /** 当前朗读章节的完整段落表 (未按 startPos 裁剪)。 */
-    private var paragraphs: List<String> = emptyList()
-
-    /** 各段在章内的起始字符位置。 */
-    private var paragraphOffsets: IntArray = IntArray(0)
-
-    /** 控制器段下标 0 对应的真实段下标 (startPos 裁剪产生的偏移)。 */
-    private var paragraphBase: Int = 0
-
-    /** 首段被 startPos 裁掉的段内字符数。 */
-    private var firstParagraphSkip: Int = 0
-
-    /** 下一次 [ReadAloudControllerShared.start] 的章内起始字符位置。 */
-    @Volatile
-    private var pendingStartPos: Int = 0
+    /** 段落计划构建器 (与 Android 朗读服务共用同一算法, 状态由它持有)。 */
+    private val planBuilder = ReadAloudPlanBuilder()
 
     /** 本宿主最近一次写入的 durChapterPos, 用于把自身写入与用户翻页区分开。 */
     @Volatile
@@ -60,7 +51,13 @@ abstract class ReadAloudHostShared(
     @Volatile
     private var pausedPosition: ReadAloudPosition? = null
 
-    private var positionWatchJob: Job? = null
+    /**
+     * 翻页监听槽: 翻页/暂停/开始朗读都会重建它, 重建与 [stop] 分属不同线程。
+     */
+    private val positionWatch = SingleJobSlot(scope)
+
+    /** 章节装载就绪监听槽: 与 [stop] 分属不同线程。 */
+    private val chapterWatch = SingleJobSlot(scope)
 
     /** [controller] 的裸引用: 供 lazy 初始化期间启动的协程读取, 避免回环触发 lazy。 */
     @Volatile
@@ -93,6 +90,16 @@ abstract class ReadAloudHostShared(
 
     /** 对应 app 端 `BaseReadAloudService.pause`。 */
     override val isPause: Boolean get() = controllerRef?.state?.value != ReadAloudState.PLAYING
+
+    /**
+     * 挂起等待朗读停止: 运行中(播放/暂停/等待装载)即挂起, 到空闲或终态即返回。
+     * controller.state 是 StateFlow, 重放当前值, 等待开始前发生的停止不会错过。
+     */
+    suspend fun awaitStopped() {
+        controller.state.first {
+            it != ReadAloudState.PLAYING && it != ReadAloudState.PAUSED && it != ReadAloudState.WAITING
+        }
+    }
 
     /**
      * 开始朗读 (对照 `ReadAloud.play(context, play, pageIndex, startPos)` → `newReadAloud`):
@@ -132,10 +139,8 @@ abstract class ReadAloudHostShared(
 
     /** 停止朗读并清理 (对照 `ReadAloud.stop`)。 */
     override fun stop() {
-        chapterWatchJob?.cancel()
-        chapterWatchJob = null
-        positionWatchJob?.cancel()
-        positionWatchJob = null
+        chapterWatch.cancel()
+        positionWatch.cancel()
         pausedPosition = null
         sleepTimer.cancel()
         controllerRef?.stop()
@@ -174,6 +179,33 @@ abstract class ReadAloudHostShared(
     /** 定时关闭剩余分钟 (对照 `BaseReadAloudService.timeMinute`)。 */
     val timeMinute: Int get() = sleepTimer.minutes
 
+    // ===== 来电暂停 (对照 app 端 `BaseReadAloudService` 的 ReadAloudPhoneStateListener) =====
+
+    /**
+     * 来电三态状态机 (平台事件源翻译成 [PhoneCallState] 后调 [onPhoneCallState])。
+     *
+     * `onPause` 不传 abandonFocus: 本类平台无音频焦点对象, 暂停只需停 TTS/播放器。
+     */
+    private val phoneCallHandler = PhoneCallPauseHandler(
+        isPaused = { isPause },
+        onPause = { pause() },
+        onResume = { resume() },
+    )
+
+    /**
+     * 派发一次电话状态变更 (iOS `CXCallObserver` / 鸿蒙 `callStateChange` 事件源调用)。
+     *
+     * 消费门槛与 app 端逐字一致 (两个开关都为真); 开关于事件到达时现读 —— 无 Service 的
+     * 平台上没有 onDestroy 时机, 而平台观察者注册一次后全程在, 故用读数代替注销。
+     */
+    fun onPhoneCallState(state: PhoneCallState) {
+        val prefs = PreferenceProviders.get()
+        val needHandle = prefs.getBoolean(PreferKey.ignoreAudioFocus, false) &&
+            prefs.getBoolean(PreferKey.pauseReadAloudWhilePhoneCalls, false)
+        if (!needHandle) return
+        phoneCallHandler.onCallStateChanged(state)
+    }
+
     /** 设定定时关闭 (对照 `ReadAloud.setTimer` → `BaseReadAloudService` 的 SleepTimer)。 */
     fun setTimer(minute: Int) {
         sleepTimer.set(minute)
@@ -185,7 +217,7 @@ abstract class ReadAloudHostShared(
      * @param rate 原版 ttsSpeechRate 口径 (0..45), 折算倍率 (rate + 5) / 10f
      */
     fun setSpeechRate(rate: Int) {
-        controller.setSpeechRate((rate.coerceIn(0, 45) + 5) / 10f)
+        controller.setSpeechRate(ttsSpeechRateScale(rate.coerceIn(0, 45)))
         // 原版 upTtsSpeechRate 后会 pause+resume 让新语速立刻作用到当前段
         if (!isPause) {
             controller.pause()
@@ -195,7 +227,7 @@ abstract class ReadAloudHostShared(
 
     /** 按当前语速配置重新生效 (对照 `ReadAloud.upTtsSpeechRate`): 不写配置, 只重放。 */
     fun upSpeechRate() {
-        setSpeechRate(configuredSpeechRate())
+        setSpeechRate(configuredTtsSpeechRate())
     }
 
     // region 内部实现
@@ -238,15 +270,13 @@ abstract class ReadAloudHostShared(
         startPositionWatch()
     }
 
-    private var chapterWatchJob: Job? = null
-
     /**
      * 监听章节装载就绪 (对照原版 BaseReadAloudService.armChapterWatch):
      * 跨章未缓存时控制器置 WAITING, 待章节加载排版完成后自动续播。
      */
     private fun startChapterWatch() {
-        if (chapterWatchJob?.isActive == true) return
-        chapterWatchJob = scope.launch {
+        // 已在跑就不重建: 重建会丢掉订阅间隙里的事件, 置 WAITING 的章节可能再也不续播
+        chapterWatch.restartIfInactive {
             ports.chapterUpdates.collect { update ->
                 if (controller.state.value == ReadAloudState.WAITING &&
                     update.chapterIndex == controller.chapterIndex.value
@@ -258,19 +288,9 @@ abstract class ReadAloudHostShared(
         }
     }
 
-    /** AppConfig.ttsSpeechRate (0..45) 折算为控制器倍率 (原版 (rate + 5) / 10f)。 */
+    /** AppConfig.ttsSpeechRate (0..45) 折算为控制器倍率 (与一次性朗读共用 [ttsSpeechRateScale])。 */
     private fun applySpeechRate() {
-        controller.setSpeechRate((configuredSpeechRate() + 5) / 10f)
-    }
-
-    /** 当前生效语速 0..45; 跟随系统时回落默认语速 (对照原版 AppConfig.speechRatePlay)。 */
-    private fun configuredSpeechRate(): Int {
-        val prefs = PreferenceProviders.get()
-        return if (prefs.getBoolean(PreferKey.ttsFollowSys, true)) {
-            DEFAULT_SPEECH_RATE
-        } else {
-            prefs.getInt(PreferKey.ttsSpeechRate, DEFAULT_SPEECH_RATE)
-        }
+        controller.setSpeechRate(ttsSpeechRateScale(configuredTtsSpeechRate()))
     }
 
     /**
@@ -278,10 +298,12 @@ abstract class ReadAloudHostShared(
      *
      * 对应原版 `ReadBook.curPageChanged` → `readAloud(!pause)` 那条回环 —— Compose 阅读页走
      * ViewModel 翻页, 不经 `ReadBookShared.curPageChanged`, 故改为直接盯 durChapterPos。
+     *
+     * 重建可能由 UI 线程 (play/resume) 或监听协程自身 (翻页重开) 发起, 与 [stop] 并发时由
+     * [SingleJobSlot] 保证旧监听一定被取消、不会留下第二个活监听。
      */
     private fun startPositionWatch() {
-        positionWatchJob?.cancel()
-        positionWatchJob = scope.launch {
+        positionWatch.restart {
             ports.positionUpdates.collect { position ->
                 val state = controller.state.value
                 if (state == ReadAloudState.PAUSED) {
@@ -304,9 +326,11 @@ abstract class ReadAloudHostShared(
     /** 当前朗读段在章内占据的字符区间。 */
     private fun currentParagraphRange(): IntRange {
         val index = controllerRef?.paragraphIndex?.value ?: return IntRange.EMPTY
-        val real = paragraphBase + index.coerceAtLeast(0)
-        val start = paragraphOffsets.getOrNull(real) ?: return IntRange.EMPTY
-        val length = paragraphs.getOrNull(real)?.length ?: return IntRange.EMPTY
+        // 几何一次取值: 段起点与裁剪偏移必须同源 (逐字段读会取到跨版本混合值)
+        val geometry = planBuilder.snapshot
+        val real = geometry.paragraphBase + index.coerceAtLeast(0)
+        val start = geometry.paragraphStart(real) ?: return IntRange.EMPTY
+        val length = geometry.paragraphs.getOrNull(real)?.length ?: return IntRange.EMPTY
         return start until (start + length + 1)
     }
 
@@ -319,10 +343,13 @@ abstract class ReadAloudHostShared(
         val controller = controllerRef ?: return
         val position = ports.currentPosition ?: return
         if (position.chapterIndex != controller.chapterIndex.value) return
-        val real = paragraphBase + index
-        var pos = paragraphOffsets.getOrNull(real) ?: return
-        if (index == 0) pos += firstParagraphSkip
+        // 几何一次取值: 段起点与裁剪偏移必须同源 (逐字段读会取到跨版本混合值)
+        val geometry = planBuilder.snapshot
+        val real = geometry.paragraphBase + index
+        var pos = geometry.paragraphStart(real) ?: return
+        if (index == 0) pos += geometry.firstParagraphSkip
         lastSyncedPos = pos
+        ports.advanceReadAloudPage(controller.chapterIndex.value, pos)
         ports.positionPublisher.publishPosition(pos)
     }
 
@@ -362,42 +389,7 @@ abstract class ReadAloudHostShared(
     private fun chapterText(chapterIndex: Int): String? =
         ports.chapterData.chapterText(chapterIndex)
 
-    /**
-     * 建段落表并按 [pendingStartPos] 裁掉已读部分。
-     *
-     * 对照原版 `newReadAloud` 的 `getParagraphNum` + `paragraphStartPos`: 从包含起始位置的
-     * 那一段开始朗读, 该段内已读的字符直接截掉。
-     */
-    private fun buildParagraphs(chapterIndex: Int): List<String> {
-        val text = chapterText(chapterIndex) ?: return emptyList()
-        val all = ReadAloudQueue.splitParagraphs(text)
-        if (all.isEmpty()) return emptyList()
-        val offsets = IntArray(all.size)
-        var acc = 0
-        for (i in all.indices) {
-            offsets[i] = acc
-            acc += all[i].length + 1
-        }
-        paragraphs = all
-        paragraphOffsets = offsets
-
-        val startPos = pendingStartPos.coerceAtLeast(0)
-        pendingStartPos = 0
-        var base = 0
-        while (base + 1 < all.size && offsets[base + 1] <= startPos) base++
-        var skip = (startPos - offsets[base]).coerceIn(0, all[base].length)
-        if (skip >= all[base].length && base + 1 < all.size) {
-            base++
-            skip = 0
-        }
-        paragraphBase = base
-        firstParagraphSkip = skip
-        val sub = all.subList(base, all.size).toMutableList()
-        if (skip > 0) sub[0] = sub[0].substring(skip)
-        return sub
-    }
-
-    /** 将宿主章节数据端口适配为控制器的播放计划。 */
+    /** 将宿主章节数据端口适配为控制器的播放计划 (段落算法在 [planBuilder])。 */
     private val chapterData = object : ReadAloudChapterDataPort {
         override val chapterCount: Int get() = ports.chapterData.chapterCount
 
@@ -406,31 +398,11 @@ abstract class ReadAloudHostShared(
             chapterPosition: Int,
             fromLastSpeakable: Boolean,
         ): ReadAloudChapterPlan? {
-            pendingStartPos = chapterPosition
-            val plan = buildParagraphs(chapterIndex)
-                .takeIf { it.isNotEmpty() }
-                ?.let { ReadAloudChapterPlan(it, chapterPosition = chapterPosition) }
-                ?: return null
-            if (!fromLastSpeakable) return plan
-            val index = plan.paragraphs.indexOfLast {
-                !it.matches(io.legado.app.constant.AppPattern.notReadAloudRegex)
-            }
-            if (index < 0) return null
-            val chapterPos = paragraphOffsets.getOrNull(paragraphBase + index)
-                ?: plan.paragraphs.take(index).sumOf { it.length + 1 }
-            return plan.copy(
-                paragraphIndex = index,
-                paragraphOffset = 0,
-                chapterPosition = chapterPos,
-            )
+            val text = chapterText(chapterIndex) ?: return null
+            return planBuilder.buildPlan(text, chapterPosition, fromLastSpeakable)
         }
     }
     // endregion
-
-    private companion object {
-        /** 原版 AppConfig.defaultSpeechRate。 */
-        const val DEFAULT_SPEECH_RATE = 5
-    }
 }
 
 data class ReadAloudPosition(val chapterIndex: Int, val chapterPosition: Int)
@@ -465,4 +437,10 @@ interface ReadAloudHostPorts {
     val currentPosition: ReadAloudPosition?
     val positionUpdates: Flow<ReadAloudPosition> get() = emptyFlow()
     val chapterUpdates: Flow<ReadAloudChapterUpdate> get() = emptyFlow()
+
+    /** 登记一次新朗读会话的起点; 无活动阅读页时 no-op。 */
+    fun resetReadAloudPageCursor(chapterPosition: Int) = Unit
+
+    /** 朗读位置推进联动: 返回是否发生了翻页; 无活动阅读页时 no-op 返回 false。 */
+    fun advanceReadAloudPage(chapterIndex: Int, readingPos: Int): Boolean = false
 }

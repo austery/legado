@@ -21,8 +21,8 @@ import { arrayBufferToBase64, base64ToArrayBuffer } from './BridgeCodec';
  * ## 请求 (Kotlin → ArkTS)
  * {
  *   "requestId": <number>,
- *   "action": "pickDocuments" | "pickDocumentContent" | "pickImages" | "pickDirectory"
- *             | "activateDirectoryPermissions" | "saveDocument" | "saveImageToAlbum",
+ *   "action": "pickDocuments" | "pickDocumentContent" | "pickDirectory"
+ *             | "activateDirectoryPermissions" | "saveImageToAlbum",
  *   "payload": "<JSON string, action-specific>"
  * }
  *
@@ -37,12 +37,6 @@ import { arrayBufferToBase64, base64ToArrayBuffer } from './BridgeCodec';
  *   "uri": "<string>"  // pickDocuments 返回的 URI
  * }
  *
- * ## pickImages payload
- * {
- *   "contentTypes": ["public.image", "public.jpeg", ...],  // iOS UTI 风格, 内部映射到 PhotoSelectOptions.MIMEType
- *   "allowsMultiple": <boolean>
- * }
- *
  * ## pickDirectory payload
  * {}  // 无参数, maxSelectNumber 固定为 1
  *
@@ -50,12 +44,10 @@ import { arrayBufferToBase64, base64ToArrayBuffer } from './BridgeCodec';
  * - pickDocuments 成功: `{ ok: true, uris: ["<uri1>", "<uri2>", ...] }`
  * - pickDocuments 用户取消: `{ ok: true, cancelled: true }`
  * - pickDocumentContent 成功: `{ ok: true, data: "<base64>" }`
- * - pickImages 成功: `{ ok: true, uris: ["<uri1>", "<uri2>", ...] }`
- * - pickImages 用户取消: `{ ok: true, cancelled: true }`
  * - pickDirectory 成功 (2in1/Tablet): `{ ok: true, uris: ["<dirUri>"], paths: ["<沙箱路径>"] }`
  *   paths 为 fileUri.FileUri(uri).path 官方转换结果 (与 uris 一一对应);
- *   授权已持久化 (persistPermission READ_MODE, select 只授临时只读权限),
- *   持久化失败 → `{ ok: false, code, error, policyErrors? }`, 不返回路径
+ *   授权已持久化 (persistPermission READ_MODE | WRITE_MODE), 持久化失败 →
+ *   `{ ok: false, code, error, policyErrors? }`, 不返回路径
  * - pickDirectory 成功 (Phone): `{ ok: true, uris: ["<父目录 URI>"] }` (无 paths, 原行为)
  * - pickDirectory 用户取消: `{ ok: true, cancelled: true }`
  * - saveImageToAlbum 成功: `{ ok: true, uris: ["<图库资源 URI>"] }`
@@ -68,7 +60,6 @@ import { arrayBufferToBase64, base64ToArrayBuffer } from './BridgeCodec';
  * KMP 调用方 (对照 iOS pickDocuments) 传入 iOS UTI 字符串 (如 "public.json"),
  * 鸿蒙 DocumentViewPicker 用文件后缀过滤 (fileSuffixFilters, 无 MIME 过滤能力), 内部做映射;
  * 未知 UTI 不传 filter (显示所有文件, 与 iOS "允许选择任意文件" 语义一致)。
- * 选图 (PhotoViewPicker) 只有 image/video/全部 三档 (PhotoViewMIMETypes), 无逐格式过滤。
  *
  * # 用户取消识别
  * DocumentViewPicker.select 在用户取消时抛出 BusinessError, code 13900042 (ENOENT) /
@@ -115,18 +106,8 @@ interface PickDocumentContentPayload {
   uri: string;
 }
 
-interface PickImagesPayload {
-  contentTypes: string[];
-  allowsMultiple: boolean;
-}
-
 interface PickDirectoryPayload {
   // 无参数 (maxSelectNumber 固定为 1)
-}
-
-interface SaveDocumentPayload {
-  fileName: string;
-  data: string; // base64 编码的文件内容
 }
 
 interface SaveImageToAlbumPayload {
@@ -154,9 +135,6 @@ const UTI_TO_SUFFIX: Record<string, string> = {
   'org.idpf.epub-container': '.epub',
 };
 
-// ===== UTI → 图片 MIME 类别 (PhotoSelectOptions.MIMEType 只接受 PhotoViewMIMETypes 枚举) =====
-// 本桥只用于选图, 故所有图片类 UTI 统一落到 IMAGE_TYPE。
-
 /**
  * 初始化文件桥 (由 EntryAbility.onCreate 调用, 注入 UIAbilityContext)。
  *
@@ -181,10 +159,8 @@ async function handleAction(req: BridgeRequest): Promise<FilePickerResponse> {
   switch (req.action) {
     case 'pickDocuments': return await handlePickDocuments(req.payload ?? '');
     case 'pickDocumentContent': return await handlePickDocumentContent(req.payload ?? '');
-    case 'pickImages': return await handlePickImages(req.payload ?? '');
     case 'pickDirectory': return await handlePickDirectory(req.payload ?? '');
     case 'activateDirectoryPermissions': return await handleActivateDirectoryPermissions(req.payload ?? '');
-    case 'saveDocument': return await handleSaveDocument(req.payload ?? '');
     case 'saveImageToAlbum': return await handleSaveImageToAlbum(req.payload ?? '');
     default: return { ok: false, error: 'unknown action: ' + req.action };
   }
@@ -267,36 +243,6 @@ async function handlePickDocumentContent(payload: string): Promise<FilePickerRes
   }
 }
 
-// ===== pickImages: 调 photoAccessHelper.PhotoViewPicker 选图片, 返回图片 URI 列表 =====
-async function handlePickImages(payload: string): Promise<FilePickerResponse> {
-  const p = JSON.parse(payload) as PickImagesPayload;
-
-  const photoSelectOptions = new photoAccessHelper.PhotoSelectOptions();
-  // maxSelectNumber: 鸿蒙默认 1, 多选时设较大值 (与 iOS allowsMultipleSelection 语义对齐)
-  photoSelectOptions.maxSelectNumber = p.allowsMultiple ? 100 : 1;
-  // MIMEType 只接受 PhotoViewMIMETypes 枚举 (image/* | video/* | */*), 无逐格式过滤能力;
-  // 调用方传的图片类 UTI (public.jpeg/public.png/...) 统一落到 IMAGE_TYPE
-  photoSelectOptions.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE;
-
-  const photoViewPicker = new photoAccessHelper.PhotoViewPicker();
-  try {
-    const result: photoAccessHelper.PhotoSelectResult = await photoViewPicker.select(photoSelectOptions);
-    const uris: string[] = result.photoUris;
-    if (uris == null || uris.length === 0) {
-      // select 返回空数组视为取消 (理论上不会发生, 取消会抛异常)
-      return { ok: true, cancelled: true };
-    }
-    return { ok: true, uris: uris };
-  } catch (e) {
-    // 用户取消: PhotoViewPicker.select 在用户取消时抛 BusinessError (与 DocumentViewPicker 一致)
-    if (isUserCancelled(e)) {
-      return { ok: true, cancelled: true };
-    }
-    const err = e as BusinessError;
-    return { ok: false, error: err.message ?? String(e) };
-  }
-}
-
 // FolderSelection: 选目录能力 (2in1/Tablet); FolderAuthorization: 授权持久化能力
 // (fileShare.persistPermission/activatePermission, 官方 file-persistPermission.md
 // 指定用 canIUse 检测该 syscap)
@@ -320,9 +266,9 @@ async function handlePickDirectory(payload: string): Promise<FilePickerResponse>
 /**
  * 2in1/Tablet: 原生选目录 (selectMode=FOLDER) + 授权持久化。
  *
- * select 返回的 URI 只有临时只读权限 (官方 select-user-file.md, 重启/退后台失效),
- * 选完目录后立即 fileShare.persistPermission 只持久化 READ_MODE; 持久化失败即本次
- * 选择失败 (ok:false, 不返回路径 —— 不允许"本次临时可读"被当长期可读)。
+ * select 返回的 URI 只有临时授权 (官方 select-user-file.md: "待退出应用后台后，获取的临时权限
+ * 就会失效"), 选完目录后立即 fileShare.persistPermission 持久化读写模式; 持久化失败即本次
+ * 选择失败 (ok:false, 不返回路径 —— 不允许"本次临时授权"被当长期授权)。
  * 重启后由 Kotlin 侧经 activateDirectoryPermissions 按需激活。
  */
 async function pickDirectoryNative(): Promise<FilePickerResponse> {
@@ -353,17 +299,22 @@ async function pickDirectoryNative(): Promise<FilePickerResponse> {
 }
 
 /**
- * 选定目录后: 持久化 (READ_MODE, 失败即本次选择失败) → fileUri 官方转换沙箱路径。
+ * 选定目录后: 持久化 (READ_MODE | WRITE_MODE, 失败即本次选择失败) → fileUri 官方转换沙箱路径。
  * 转换不做路径校验 (官方约定), 可访问性由 Kotlin 侧真实检查。
+ *
+ * 该选择器被多个入口共用 (书籍保存位置/导入目录/备份路径/导出目录/图片保存目录), 其中备份、
+ * 导出、书籍保存、图片保存都要往选定目录里写文件; 官方《授权持久化》写明 Picker 选文件或文件夹
+ * 得到的授权是"临时读写权限", PolicyInfo.operationMode 可组合 READ_MODE | WRITE_MODE
+ * (@ohos.fileshare.d.ts 的取值说明同), 故按读写一起持久化 —— 只持久化 READ_MODE 会让
+ * 重启后激活到只读, 之后的写入被拒。
  */
 async function persistAndConvert(dirUri: string): Promise<FilePickerResponse> {
   if (!canIUse(FOLDER_AUTHORIZATION_SYSCAP)) {
     return { ok: false, code: 801, error: 'FolderAuthorization not supported on this device' };
   }
-  // 只持久化 select 实际授予的 READ_MODE (超出临时授权范围的 mode 会被拒)
   const policy: fileShare.PolicyInfo = {
     uri: dirUri,
-    operationMode: fileShare.OperationMode.READ_MODE,
+    operationMode: fileShare.OperationMode.READ_MODE | fileShare.OperationMode.WRITE_MODE,
   };
   try {
     await fileShare.persistPermission([policy]);
@@ -437,8 +388,8 @@ async function handleActivateDirectoryPermissions(payload: string): Promise<File
   }
   const policies: fileShare.PolicyInfo[] = p.uris.map((uri): fileShare.PolicyInfo => ({
     uri: uri,
-    // 与持久化同策略: select 只授 READ_MODE
-    operationMode: fileShare.OperationMode.READ_MODE,
+    // 与持久化同策略 (读写): 激活只到读权限时, 写入选定目录的入口仍会被拒
+    operationMode: fileShare.OperationMode.READ_MODE | fileShare.OperationMode.WRITE_MODE,
   }));
   try {
     await fileShare.activatePermission(policies);
@@ -474,51 +425,6 @@ function parentUriOf(uri: string): string | null {
   const parent = uri.substring(0, idx);
   // file://docs (仅剩 scheme+authority) 不是可用目录
   return parent.includes('://') && parent.indexOf('/', parent.indexOf('://') + 3) < 0 ? null : parent;
-}
-
-// ===== saveDocument: 调 DocumentViewPicker.save 弹系统保存器, fs.write 写入内容 =====
-async function handleSaveDocument(payload: string): Promise<FilePickerResponse> {
-  const p = JSON.parse(payload) as SaveDocumentPayload;
-
-  // 1. 弹系统保存器 (newFileNames 为建议文件名, 用户可改名/选目录)
-  const documentSaveOptions = new picker.DocumentSaveOptions();
-  documentSaveOptions.newFileNames = [p.fileName];
-  const documentViewPicker = new picker.DocumentViewPicker();
-  let uris: string[];
-  try {
-    uris = await documentViewPicker.save(documentSaveOptions);
-  } catch (e) {
-    // 用户取消: 与 handlePickDocuments 一致, 识别取消码返回 cancelled: true
-    if (isUserCancelled(e)) {
-      return { ok: true, cancelled: true };
-    }
-    const err = e as BusinessError;
-    return { ok: false, error: err.message ?? String(e) };
-  }
-  if (uris == null || uris.length === 0) {
-    return { ok: true, cancelled: true };
-  }
-
-  // 2. 写内容: base64 → 独立 ArrayBuffer (与 CryptoBridgeHandler.base64ToUint8 同模式) → fs.write
-  //    (save 返回的 URI 已授予写权限, 文件由系统创建为空文件, TRUNC 覆盖写)
-  let file: fs.File | undefined;
-  try {
-    const ab = base64ToArrayBuffer(p.data);
-    file = fs.openSync(uris[0], fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-    fs.writeSync(file.fd, ab);
-    return { ok: true, uris: [uris[0]] };
-  } catch (e) {
-    const err = e as BusinessError;
-    return { ok: false, error: err.message ?? String(e) };
-  } finally {
-    if (file != null) {
-      try {
-        fs.closeSync(file);
-      } catch (e) {
-        console.warn('[FilePickerBridge] closeSync failed: ' + JSON.stringify(e));
-      }
-    }
-  }
 }
 
 // ===== saveImageToAlbum: photoAccessHelper.createAsset 建图库资源, fs.write 写入字节 =====

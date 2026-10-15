@@ -1,23 +1,37 @@
 package io.legado.app.ui
 
+import io.legado.app.constant.AppLog
+import io.legado.app.constant.DirUsage
 import io.legado.app.constant.PreferKey
-import io.legado.app.data.AppDbProviders
+import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSourcePart
+import io.legado.app.data.entities.HttpTTS
+import io.legado.app.exception.InvalidBooksDirException
+import io.legado.app.help.AppWebDavShared
+import io.legado.app.help.DirectLinkUploadNativePrimitives
+import io.legado.app.help.DirectLinkUploadRule
 import io.legado.app.help.config.LocalConfigKeys
 import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.help.coroutine.IoDispatcher
+import io.legado.app.help.coroutine.mainDispatcher
 import io.legado.app.help.toast.Toasters
+import io.legado.app.help.upLoadToDirectLink
+import io.legado.app.model.fileBook.FileBook
 import io.legado.app.ui.book.source.BookSourceSort
+import io.legado.app.ui.book.source.manage.getExportBookSources
 import io.legado.app.ui.config.MODE_EDIT_CONFIG
 import io.legado.app.ui.config.MODE_EDIT_PREFS
 import io.legado.app.ui.config.MODE_NEW_CONFIG
 import io.legado.app.ui.root.AppNavigatorProviders
 import io.legado.app.ui.root.AppOverlay
 import io.legado.app.ui.root.AppRoute
+import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.PlatformServiceProviders
 import io.legado.app.ui.root.SharedPlatformCapabilities
 import io.legado.app.utils.GSON
 import io.legado.app.utils.toJson
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okio.FileSystem
 import okio.Path.Companion.toPath
 
@@ -37,6 +51,95 @@ interface NativePlatformCapabilities : SharedPlatformCapabilities {
 
     override fun enableCustomExport(): Boolean =
         PreferenceProviders.get().getBoolean(PreferKey.enableCustomExport, false)
+
+    // 对照 ReadAloudConfigDialog 的"+"按钮/行编辑: showDialogFragment(HttpTtsEditDialog)
+    // 迁 Compose Overlay: shared OverlayContentHost 的 "httpTtsEdit" key 接管
+    // (payload = 引擎 id, null 表新增)
+    override fun showHttpTtsEditDialog(engine: HttpTTS?) {
+        AppNavigatorProviders.get().showOverlay(
+            AppOverlay.Dialog(
+                "httpTtsEdit",
+                payload = engine?.id?.toString(),
+                // 表单登录 → push WebView 路由盖住本窗口时保留 Overlay, 由内容自管挂起/恢复
+                // (对照原版 DialogFragment 被新 Activity 盖住仍存活, 返回后表单原样)
+                keepOnPush = true,
+            )
+        )
+    }
+
+    /**
+     * 创建堆转储: iOS/鸿蒙无 JVM, 也就没有堆转储概念 —— 不提供该入口 (隐藏), 而不是弹
+     * "暂不支持" 的假对话框。
+     */
+    override val createHeapDumpSupported: Boolean get() = false
+
+    // 直链上传规则页的"测试"按钮: 用表单里尚未保存的规则跑一次真实上传
+    override fun testDirectLinkUpload(
+        rule: DirectLinkUploadRule,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        capabilityScope.launch {
+            runCatching {
+                upLoadToDirectLink(
+                    DirectLinkUploadNativePrimitives, "test.json", "{}", "application/json", rule,
+                )
+            }
+                .onSuccess { result -> withContext(mainDispatcher) { onSuccess(result) } }
+                .onFailure { error ->
+                    withContext(mainDispatcher) {
+                        onError(error.message ?: error.toString())
+                    }
+                }
+        }
+    }
+
+    // 对照 BookInfoViewModel.uploadBook: 上传本地书籍文件到 WebDav books/ 子目录
+    override fun uploadBook(book: Book, success: (() -> Unit)?) {
+        capabilityScope.launch {
+            runCatching {
+                // 与 AppWebDavShared.exportWebDav 同款惰性认证: native 端无 AppWebDav init 块
+                if (AppWebDavShared.authorization == null) AppWebDavShared.upConfig()
+                withContext(IoDispatcher) { AppWebDavShared.uploadBook(book) }
+            }.onSuccess {
+                withContext(mainDispatcher) {
+                    Toasters.get().toast("上传成功")
+                    success?.invoke()
+                }
+            }.onFailure { error ->
+                withContext(mainDispatcher) { Toasters.get().toast(error.message ?: error.toString()) }
+            }
+        }
+    }
+
+    // 对照 BookInfoViewModel.downloadToLocal
+    override fun downloadBookToLocal(book: Book, success: (() -> Unit)?) {
+        capabilityScope.launch {
+            runCatching { withContext(IoDispatcher) { FileBook.downloadRemoteBook(book) } }
+                .onSuccess {
+                    withContext(mainDispatcher) {
+                        Toasters.get().toast("下载成功")
+                        success?.invoke()
+                    }
+                }
+                .onFailure { error ->
+                    // 保存位置未设置时走既有的"去设置目录"出口 (与书籍详情的 web 文件导入同一
+                    // 入口与偏好键); 用户取消 (uri == null) 时不动既有配置
+                    if (error is InvalidBooksDirException) {
+                        withContext(mainDispatcher) {
+                            PlatformCapabilityProviders.get().pickBookTreeUri { uri ->
+                                if (uri != null) {
+                                    PreferenceProviders.get().putString(
+                                        PreferKey.defaultBookTreeUri, uri
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    AppLog.put("下载远程书籍<${book.name}>失败", error, true)
+                }
+        }
+    }
 
     override fun getDeleteBookOriginal(): Boolean =
         PreferenceProviders.get().getBoolean(LocalConfigKeys.deleteBookOriginal, false)
@@ -68,14 +171,15 @@ interface NativePlatformCapabilities : SharedPlatformCapabilities {
         sort: BookSourceSort
     ) {
         capabilityScope.launch {
-            val json = selectedSourcesJson(selection) ?: return@launch
-            shareText(json)
+            val json = selectedSourcesJson(selection, allCount, sortAscending, sort) ?: return@launch
+            // 分享面板是界面动作, 回主线程; 能力作用域是 IO。
+            withContext(mainDispatcher) { shareText(json) }
         }
     }
 
     override fun pickBookTreeUri(onSelected: (String?) -> Unit) {
         capabilityScope.launch {
-            onSelected(PlatformServiceProviders.get().files.pickDirectory())
+            onSelected(PlatformServiceProviders.get().files.pickDirectory(DirUsage.BookTree))
         }
     }
 
@@ -100,18 +204,22 @@ interface NativePlatformCapabilities : SharedPlatformCapabilities {
 }
 
 /**
- * 选中书源转 JSON: 导出/分享前强制关掉危险 API 开关。
+ * 选中书源转 JSON: 取数+排序+比例分流+危险 API 开关清理走 commonMain 编排。
  *
  * `internal` 而非文件私有: iOS/鸿蒙各自的 `exportBookSourceSelection` (落盘方式不同, 未合并)
  * 也要用它。
  */
-internal suspend fun selectedSourcesJson(selection: List<BookSourcePart>): String? {
-    val urls = selection.map { it.bookSourceUrl }
-    val sources = runCatching { AppDbProviders.get().bookSourceDao.getBookSourcesFix(urls) }
-        .getOrElse {
-            Toasters.get().toast("导出书源失败\n${it.message}")
-            return null
-        }
-    sources.forEach { if (it.enableDangerousApi == true) it.enableDangerousApi = false }
+internal suspend fun selectedSourcesJson(
+    selection: List<BookSourcePart>,
+    allCount: Int,
+    sortAscending: Boolean,
+    sort: BookSourceSort
+): String? {
+    val sources = runCatching {
+        getExportBookSources(selection, allCount, sortAscending, sort)
+    }.getOrElse {
+        Toasters.get().toast("导出书源失败\n${it.message}")
+        return null
+    }
     return GSON.toJson(sources)
 }
