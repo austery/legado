@@ -38,8 +38,13 @@ confirming UI observation. Physical source-local paging/retry/restart and a
 search/shelf-resume round trip also remain pending. Do not mark full device
 acceptance complete. See [dated evidence and limitations](../../evidence/2026-10-14-spec004-ipad.md#follow-up-stop-and-query-replacement-on-build-7).
 
-Next acceptance priority is a controlled delayed-peer physical check, with test
-sources/state isolated from owner data. Rotation, split view and offline restart
+The isolated delayed-peer attempt installed a separate build 7 app and imported
+only two synthetic sources. It was blocked before any request reached the fixture
+by `Local network prohibited`; no in-flight interaction pass is claimed. See the
+[isolated attempt](../../evidence/2026-10-14-spec004-ipad.md#follow-up-isolated-slow-source-attempt-blocked-before-requests).
+Next acceptance priority is to resolve that test app's local-network permission
+registration and repeat the controlled delayed-peer physical check, preserving
+owner data. Rotation, split view and offline restart
 remain broader reader regression gaps; importing or certifying the 66-source
 bundle and changing Loading are not prerequisites for this search slice.
 
