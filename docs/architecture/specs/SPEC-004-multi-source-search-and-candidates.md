@@ -2,9 +2,9 @@
 specId: SPEC-004
 title: Incremental Multi-Source Search and Expandable Candidates
 status: implemented-pending-device-acceptance
-revision: R4
+revision: R5
 creationDate: 2026-10-14
-lastUpdateDate: 2026-10-14
+lastUpdateDate: 2026-10-15
 relatedSpecs: [ADR-001, SPEC-001, SPEC-003]
 ---
 
@@ -22,7 +22,7 @@ R2 replaced the original draft's premature decisions to require sequential searc
 
 [SPEC-003 C3-A](https://github.com/austery/legado/pull/8) merged at `7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f`. All code findings below use that fixed baseline, not an unverified newer upstream version. The next slice follows [ADR-001](../decisions/ADR-001-native-experience-and-upstream-ownership.md): reuse existing capabilities, keep one authority per category of state, and avoid speculative storage redesign.
 
-## Implementation and acceptance checkpoint (R4)
+## Implementation and acceptance checkpoint (R5)
 
 Implementation merged in [PR #16](https://github.com/austery/legado/pull/16)
 (`8fd9921c4`); the physical reader overscroll follow-up merged in
@@ -31,20 +31,20 @@ behavior and exclusions below remain unchanged. The fixed-source analysis below
 is historical rationale, not a claim that implementation has yet to begin.
 
 Build 7 physical checks on 2026-10-14 passed the observed Stop-to-narrowed-scope
-and Stop-to-replacement-query sequences. Incremental results, expansion, and
-candidate-to-reader navigation were observed. Expansion/selection while a peer
-remains in flight is still inconclusive: real sources completed before the
-confirming UI observation. Physical source-local paging/retry/restart and a
-search/shelf-resume round trip also remain pending. Do not mark full device
-acceptance complete. See [dated evidence and limitations](../../evidence/2026-10-14-spec004-ipad.md#follow-up-stop-and-query-replacement-on-build-7).
+and Stop-to-replacement-query sequences. On 2026-10-15, the isolated two-source
+physical check also passed expansion and candidate selection while a slow peer
+was unfinished, followed by details, catalog and visible chapter body. The
+original build 7 was restored before this check; temporary permission diagnostics
+were not part of the accepted search implementation.
 
-The isolated delayed-peer attempt installed a separate build 7 app and imported
-only two synthetic sources. It was blocked before any request reached the fixture
-by `Local network prohibited`; no in-flight interaction pass is claimed. See the
-[isolated attempt](../../evidence/2026-10-14-spec004-ipad.md#follow-up-isolated-slow-source-attempt-blocked-before-requests).
-Next acceptance priority is to resolve that test app's local-network permission
-registration and repeat the controlled delayed-peer physical check, preserving
-owner data. Rotation, split view and offline restart
+The previous `Local network prohibited` blocker was resolved for the isolated
+installation by obtaining the system local-network permission prompt during a
+Bonjour diagnostic flow. This is an observed recovery, not a proven OS root cause
+or a production networking change. See [permission recovery and timed evidence](../../evidence/2026-10-14-spec004-ipad.md#follow-up-local-network-recovery-and-in-flight-selection-passed).
+
+Full device acceptance remains pending. Next priority is physical source-local
+paging/retry/restart, followed by an interactive search/shelf-resume round trip
+with explicit preservation checks. Rotation, split view and offline restart
 remain broader reader regression gaps; importing or certifying the 66-source
 bundle and changing Loading are not prerequisites for this search slice.
 
