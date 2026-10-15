@@ -195,7 +195,8 @@ struct ReadingText: UIViewRepresentable {
         view.delegate = view
         view.isEditable = false
         view.isSelectable = true
-        view.alwaysBounceVertical = true
+        // Keep fast drags inside the chapter instead of exposing an empty overscroll viewport.
+        view.bounces = false
         view.accessibilityIdentifier = "reader.text"
         return view
     }
