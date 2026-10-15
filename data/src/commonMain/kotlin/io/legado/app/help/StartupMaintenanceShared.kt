@@ -52,44 +52,9 @@ object StartupMaintenanceShared {
     // =================== 1. 默认数据补齐 ===================
 
     /**
-     * 首启 / 升级时的默认数据补齐 (对照 app 端 `DefaultData.upVersion()` +
-     * `dbCallback.onCreate` 的预置分组与键盘助手)。
-     *
-     * 幂等, 可重复调用。
-     *
-     * 三道动作整包在**同一个版本门**下 (对照原版 `DefaultData.upVersion()` 的
-     * `if (LocalConfig.versionCode < AppConst.appInfo.versionCode) { ... }`):
-     * 1. 预置书架分组: 按主键缺啥补啥 (不覆盖用户改动)
-     * 2. 默认键盘助手: 按 (type,key) 逐项补齐
-     * 3. httpTTS / txtTocRule / dictRule: 各自再加一层资源版本门
-     *    ([LocalConfigShared.isLastVersion], 与原版 `LocalConfig.needUpXxx` 同一算法)
-     *
-     * 版本门要求 [AppVersionProviders] 注册进来的当前版本号随版本推进单调不减
-     * (iOS/鸿蒙/桌面 由 `versionNameToVersionCode` 的定宽位槽编码保证): 按数值大小判"版本是否推进"。
-     *
-     * # `appVersionCode` 本文件只读, 不写
-     *
-     * 写这个键的只有各端的更新日志弹窗 (`upVersion`: `LocalConfig.versionCode = appInfo.versionCode`);
-     * 原版 `DefaultData.upVersion()` 同样只读它, 只写各资源版本 key。本文件也如此 —— 一旦本文件也写
-     * 这个键, 它就抢在弹窗之前把关卡门的门关死 (弹窗的判据是"已保存版本号 == 当前版本号就 return"),
-     * 这一版的首启帮助/更新日志就不会再弹。
-     *
-     * # 第 3 道失败不重试 (对齐原版)
-     *
-     * [LocalConfigShared.isLastVersion] 在返回"需要导入"之前就把新版本号写进了 key, 故那次导入抛出的
-     * 异常不会让下次启动重试 —— 原版就是这个语义 (每资源每版本只尝试一次): `DefaultData.upVersion`
-     * 的 `Coroutine.async { ... }.onError { it.printOnDebug() }` 只记日志, 版本 key 已经推进。
-     *
-     * # 存储注入 (getInt/putInt/getBoolean/getLong)
-     *
-     * 版本门涉及的 key 在各端落脚不同: app 端历史上它们全在独立的 `local` 配置里
-     * (`LocalConfig.versionCode` 与原版 `LocalConfig.needUpXxx`), 桌面/iOS/鸿蒙 则在默认配置。
-     * 不注入而直接用默认配置, 会让 app 端老用户把已记录的版本当成 0 而重跑一次默认导入 ——
-     * 字典规则是按名称 insert-or-replace, 会覆盖用户对同名默认规则的修改。
-     *
-     * 故按 [io.legado.app.help.config.LocalConfigShared.isLastVersion] 的既有做法, 把读写当参数注入:
-     * 各端传入自己那份存储 (`LocalConfigProviders.get()` / 默认配置), 默认值就是默认配置 (桌面/iOS/鸿蒙
-     * 无需传参)。:data 看不到 :core 的 `LocalConfigStore`, 这也是这里用函数参数而不是 provider 的原因。
+     * Fill missing presets on app upgrade and retry incomplete resource upgrades on startup.
+     * Resource versions advance only after successful persistence. App version ownership
+     * remains with the release-notes UI. Callers provide their existing preference store.
      */
     suspend fun initDefaultData(
         getInt: (key: String, defValue: Int) -> Int = { k, d -> PreferenceProviders.get().getInt(k, d) },
@@ -103,12 +68,11 @@ object StartupMaintenanceShared {
         // 下次启动再判。若当成 0 号版本处理, 会把"当前版本 0"永久写进配置。
         if (currentVersionCode <= 0L) return
 
-        // 版本门 (对照原版 `LocalConfig.versionCode < AppConst.appInfo.versionCode`):
-        // 这一版已经补过就整体跳过。只读不写 —— 写回该键的只有各端的更新日志弹窗。
-        if (getLong(LocalConfigKeys.appVersionCode, 0L) >= currentVersionCode) return
-
-        ensurePresetBookGroups()
-        ensureKeyboardAssists()
+        if (getLong(LocalConfigKeys.appVersionCode, 0L) < currentVersionCode) {
+            ensurePresetBookGroups()
+            ensureKeyboardAssists()
+        }
+        // Retry resource failures even after the release-notes UI records the app version.
         upDefaultDataVersion(getInt, getBoolean, putInt)
     }
 
@@ -148,12 +112,7 @@ object StartupMaintenanceShared {
         }.onFailure { AppLog.put("补齐默认键盘助手失败", it) }
     }
 
-    /**
-     * 版本号推进时按各资源版本 key 补齐默认数据 (httpTTS / txt 目录规则 / 字典规则)。
-     *
-     * 门控与写回逐字对齐原版 `LocalConfig.needUpXxx` → [LocalConfigShared.isLastVersion]:
-     * **先写回资源版本 key, 再返回"需要导入"** —— 每资源每版本只尝试一次, 那一次抛异常也不重试。
-     */
+    /** Import each resource version once successfully; failed attempts remain retryable. */
     private suspend fun upDefaultDataVersion(
         getInt: (key: String, defValue: Int) -> Int,
         getBoolean: (key: String, defValue: Boolean) -> Boolean,
@@ -165,19 +124,14 @@ object StartupMaintenanceShared {
             what: String,
             import: suspend () -> Unit,
         ) {
-            // firstOpenKey 传 null: 与原版 `isLastVersion(6, "httpTtsVersion")` 等资源档调用一致
-            // (只有 help 引导那几档才带 firstOpenKey)
-            val isLast = LocalConfigShared.isLastVersion(
-                lastVersion = lastVersion,
-                versionKey = versionKey,
-                getInt = getInt,
-                getBoolean = getBoolean,
-                putInt = putInt,
-            )
-            if (isLast) return
-            runCatching { import() }.onFailure {
-                // isLastVersion 内已写回版本 key, 与原版一致: 这一版不再重试
-                AppLog.put("$what 失败 (资源版本号已推进, 与原版一致不重试)", it)
+            if (getInt(versionKey, 0) >= lastVersion) return
+            try {
+                import()
+                putInt(versionKey, lastVersion)
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                AppLog.put("$what failed; the resource version remains retryable", error)
             }
         }
 

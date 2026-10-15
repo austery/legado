@@ -3,7 +3,6 @@ package io.legado.app.ui.association
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.storage.RuleSubAutoUpdateHook
 import io.legado.app.help.storage.RuleSubAutoUpdateHooks
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 
@@ -32,9 +31,7 @@ class UiRuleSubAutoUpdateHook(
         val checked = vm.defaultChecked
         if (checked.none { it }) return 0
         // 等写库完成再返回, 否则调用方会在入库还在跑时就结束本轮
-        val done = CompletableDeferred<Unit>()
-        vm.importSelect(checked) { done.complete(Unit) }
-        done.await()
+        vm.importSelect(checked)
         return checked.count { it }
     }
 
@@ -58,7 +55,7 @@ private interface RuleSubImportVm {
     /** 与列表里"新增/更新/已有"标记同源的默认勾选。 */
     val defaultChecked: List<Boolean>
 
-    fun importSelect(checked: List<Boolean>, finally: () -> Unit)
+    suspend fun importSelect(checked: List<Boolean>)
 }
 
 /** 书源链 (含旧订阅源转换与 `{"sourceUrls":[...]}` 多地址载荷)。 */
@@ -70,8 +67,8 @@ private class BookSourceImportVm(
 
     override val defaultChecked: List<Boolean> get() = vm.defaultChecked
 
-    override fun importSelect(checked: List<Boolean>, finally: () -> Unit) =
-        vm.importSelect(checked, finally)
+    override suspend fun importSelect(checked: List<Boolean>) =
+        vm.importSelectAwait(checked)
 }
 
 /** 替换规则链 (含 `ReplaceAnalyzer` 的旧字段映射与 `isValid()` 过滤)。 */
@@ -83,8 +80,8 @@ private class ReplaceRuleImportVm(
 
     override val defaultChecked: List<Boolean> get() = vm.defaultChecked
 
-    override fun importSelect(checked: List<Boolean>, finally: () -> Unit) =
-        vm.importSelect(checked, finally)
+    override suspend fun importSelect(checked: List<Boolean>) =
+        vm.importSelectAwait(checked)
 }
 
 /** TXT 目录规则链。 */
@@ -96,8 +93,8 @@ private class TxtTocRuleImportVm(
 
     override val defaultChecked: List<Boolean> get() = vm.defaultChecked
 
-    override fun importSelect(checked: List<Boolean>, finally: () -> Unit) =
-        vm.importSelect(checked, finally)
+    override suspend fun importSelect(checked: List<Boolean>) =
+        vm.importSelectAwait(checked)
 }
 
 /** 字典规则链。 */
@@ -109,8 +106,8 @@ private class DictRuleImportVm(
 
     override val defaultChecked: List<Boolean> get() = vm.defaultChecked
 
-    override fun importSelect(checked: List<Boolean>, finally: () -> Unit) =
-        vm.importSelect(checked, finally)
+    override suspend fun importSelect(checked: List<Boolean>) =
+        vm.importSelectAwait(checked)
 }
 
 /** 语音源链。 */
@@ -122,8 +119,8 @@ private class HttpTtsImportVm(
 
     override val defaultChecked: List<Boolean> get() = vm.defaultChecked
 
-    override fun importSelect(checked: List<Boolean>, finally: () -> Unit) =
-        vm.importSelect(checked, finally)
+    override suspend fun importSelect(checked: List<Boolean>) =
+        vm.importSelectAwait(checked)
 }
 
 /** 注册本实现 (各端宿主启动早期调用一次, 须早于任何自动更新触发)。 */

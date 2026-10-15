@@ -296,7 +296,7 @@ fun BookInfoScreen(
     // E-Ink 与竖向 devFeat 分支下 slot 不加载封面, 回调不会触发, 采样自然为空
     val cover = state.book?.getDisplayCover()
     var coverRegions by remember(cover, state.isLandscape) { mutableStateOf<CoverRegions?>(null) }
-    val onCoverLoaded: (ImageBitmap) -> Unit = remember(state.isLandscape) {
+    val onCoverLoaded: (ImageBitmap) -> Unit = remember(cover, state.isLandscape) {
         { loaded -> coverRegions = sampleCoverRegions(loaded, state.isLandscape) }
     }
     // 模糊背景是否已绘制: 宿主与平台 slot 共用同一份可变状态, 由 slot 按自身绘制条件在组合期写回。

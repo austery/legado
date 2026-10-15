@@ -189,12 +189,10 @@ internal class TextFileCore(var book: Book) {
                 var seekPos = 0
                 //进行正则匹配: 经 [RuleRegexes] (带时间上限) —— 模式串是用户配置的目录规则,
                 //native 端 `kotlin.text.Regex` 的匹配按迭代次数递归, 病态规则可把线程栈写穿闪退。
-                //超时按“本块无匹配”处理 (匹配已中止, 取不到结果); 其余异常向上抛, 不静默降级
-                val matches = try {
-                    RuleRegexes.get().findAll(blockContent, pattern, multiline = true, timeout = TOC_RULE_TIMEOUT)
-                } catch (_: RegexTimeoutException) {
-                    emptyList()
-                }
+                // Abort the complete scan on timeout; a partial TOC can omit earlier text.
+                val matches = RuleRegexes.get().findAll(
+                    blockContent, pattern, multiline = true, timeout = TOC_RULE_TIMEOUT
+                )
                 for (matcher in matches) { //获取匹配到的字符在字符串中的起始位置
                     val chapterStart = matcher.range.first
                     //获取章节内容

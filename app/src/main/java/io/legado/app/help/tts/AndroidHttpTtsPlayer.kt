@@ -165,11 +165,13 @@ class AndroidHttpTtsPlayer : HttpTtsPlayer {
                     }
                     ensureActive()
                     if (currentGeneration != generation) return@launch
-                    audioFile = file
-                    adopted = true
                     // ExoPlayer 只能主线程操作: 落盘完成后回主线程建播放器
                     withContext(Dispatchers.Main) {
-                        buildAndPreparePlayer(MediaItem.fromUri(android.net.Uri.fromFile(file)))
+                        ensureActive()
+                        if (currentGeneration == generation) {
+                            buildAndPreparePlayer(MediaItem.fromUri(android.net.Uri.fromFile(file)), preparedFile = file)
+                            adopted = true
+                        }
                     }
                 } catch (error: CancellationException) {
                     throw error
@@ -190,8 +192,10 @@ class AndroidHttpTtsPlayer : HttpTtsPlayer {
     private fun buildAndPreparePlayer(
         mediaItem: MediaItem,
         mediaSourceFactory: DefaultMediaSourceFactory? = null,
+        preparedFile: File? = null,
     ) {
         releasePlayer()
+        audioFile = preparedFile
         val context: Context = App.instance
         val builder = ExoPlayer.Builder(context)
         mediaSourceFactory?.let { builder.setMediaSourceFactory(it) }

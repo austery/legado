@@ -149,6 +149,19 @@ private fun HandleFileDialogContent(request: HandleFileRequest) {
         )
     }
 
+    fun onResult(uri: Uri?) {
+        if (param.mode == HandleFileContract.EXPORT && uri != null) {
+            param.fileData?.let { fileData ->
+                viewModel.saveToLocal(uri, fileData.name, fileData.data) { savedUri ->
+                    deliverResult(savedUri)
+                }
+                return
+            }
+        }
+        deliverResult(uri)
+    }
+
+
     val selectDocTree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         isLaunchingResult = false
         uri?.let {
@@ -157,8 +170,8 @@ private fun HandleFileDialogContent(request: HandleFileRequest) {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 context.contentResolver.takePersistableUriPermission(it, modeFlags)
             }
-            deliverResult(it)
-        } ?: deliverResult(null)
+            onResult(it)
+        } ?: onResult(null)
     }
 
     val selectDoc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -264,17 +277,6 @@ private fun HandleFileDialogContent(request: HandleFileRequest) {
         }
     }
 
-    fun onResult(uri: Uri?) {
-        if (param.mode == HandleFileContract.EXPORT && uri != null) {
-            param.fileData?.let { fileData ->
-                viewModel.saveToLocal(uri, fileData.name, fileData.data) { savedUri ->
-                    deliverResult(savedUri)
-                }
-                return
-            }
-        }
-        deliverResult(uri)
-    }
 
     // 对齐原 onCancel: 非结果等待期的取消按用户取消回传 null
     fun onUserCancel() {

@@ -22,7 +22,7 @@ import platform.Foundation.NSTextCheckingResult
 import platform.Foundation._NSRange
 import platform.Foundation.enumerateMatchesInString
 import platform.Foundation.rangeAtIndex
-import platform.Foundation.replacementStringForResult
+import platform.Foundation.rangeWithName
 
 /**
  * iOS 端规则正则实现: 走系统 [NSRegularExpression] (ICU 引擎), 替代 `kotlin.text.Regex`。
@@ -86,13 +86,14 @@ object IosRuleRegex : RuleRegex {
     ): String {
         val text = source.toString()
         val ns = compileOrThrow(pattern, multiline)
+        val names = namedGroups(pattern)
         val out = StringBuilder(text.length)
         var lastEnd = 0
         val timedOut = ns.scan(text, timeout) { match ->
             val start = match.range.startIndex()
             val end = match.range.endIndex()
             out.append(text, lastEnd, start)
-            out.append(ns.replacementStringForResult(match, text, 0, replacement))
+            out.append(expandReplacement(match, text, replacement, ns.numberOfCaptureGroups.toInt(), names))
             lastEnd = end
             // replaceFirst 语义: 首个匹配替换后即停
             !replaceFirst
@@ -100,6 +101,108 @@ object IosRuleRegex : RuleRegex {
         if (timedOut) throw timeoutException(pattern, source)
         out.append(text, lastEnd, text.length)
         return out.toString()
+    }
+
+    /** Read group declarations without treating quoted text or comments as groups. */
+    private fun namedGroups(pattern: String): Set<String> {
+        val names = mutableSetOf<String>()
+        val scopes = mutableListOf<Boolean>()
+        var extended = false
+        var quoted = false
+        var classDepth = 0
+        var i = 0
+        while (i < pattern.length) {
+            val c = pattern[i]
+            if (quoted) {
+                if (pattern.startsWith("\\E", i)) { quoted = false; i += 2 } else i++
+                continue
+            }
+            if (c == '\\') {
+                if (pattern.getOrNull(i + 1) == 'Q') quoted = true
+                i += 2
+                continue
+            }
+            if (c == '[') { classDepth++; i++; continue }
+            if (c == ']' && classDepth > 0) { classDepth--; i++; continue }
+            if (classDepth > 0) { i++; continue }
+            if (extended && c == '#') {
+                while (i < pattern.length && pattern[i] != '\n' && pattern[i] != '\r') i++
+                continue
+            }
+            if (pattern.startsWith("(?#", i)) {
+                i = pattern.indexOf(')', i + 3).let { if (it < 0) pattern.length else it + 1 }
+                continue
+            }
+            if (c == '(') {
+                if (pattern.startsWith("(?<", i) && pattern.getOrNull(i + 3)?.isLetter() == true) {
+                    val end = pattern.indexOf('>', i + 3)
+                    if (end >= 0) names.add(pattern.substring(i + 3, end))
+                }
+                var flagEnd = i + 2
+                var nextExtended = extended
+                var enabling = true
+                if (pattern.startsWith("(?", i)) {
+                    while (flagEnd < pattern.length && pattern[flagEnd] in "idmsuxU-") {
+                        if (pattern[flagEnd] == '-') enabling = false
+                        if (pattern[flagEnd] == 'x') nextExtended = enabling
+                        flagEnd++
+                    }
+                    if (flagEnd > i + 2 && pattern.getOrNull(flagEnd) in listOf(':', ')')) {
+                        if (pattern[flagEnd] == ':') scopes.add(extended)
+                        extended = nextExtended
+                        i = flagEnd + 1
+                        continue
+                    }
+                }
+                scopes.add(extended)
+            } else if (c == ')' && scopes.isNotEmpty()) {
+                extended = scopes.removeAt(scopes.lastIndex)
+            }
+            i++
+        }
+        return names
+    }
+
+    /** Java/Kotlin replacement syntax, evaluated against the original match. */
+    private fun expandReplacement(match: NSTextCheckingResult, text: String, template: String, groupCount: Int, names: Set<String>): String {
+        fun captured(range: _NSRange): String =
+            if (range.location == NSNotFound.toULong()) "" else text.substring(
+                range.location.toInt(), (range.location + range.length).toInt()
+            )
+        return buildString {
+            var cursor = 0
+            while (cursor < template.length) {
+                when (val char = template[cursor++]) {
+                    '\\' -> {
+                        require(cursor < template.length) { "Trailing replacement escape" }
+                        append(template[cursor++])
+                    }
+                    '$' -> {
+                        require(cursor < template.length) { "Missing replacement group" }
+                        if (template[cursor] == '{') {
+                            val end = template.indexOf('}', cursor + 1)
+                            require(end > cursor + 1) { "Invalid named replacement group" }
+                            val name = template.substring(cursor + 1, end)
+                            require(name in names) { "Missing named replacement group $name" }
+                            match.rangeWithName(name).useContents { append(captured(this)) }
+                            cursor = end + 1
+                        } else {
+                            require(template[cursor] in '0'..'9') { "Invalid replacement group" }
+                            var group = template[cursor++].digitToInt()
+                            require(group <= groupCount) { "Missing replacement group $group" }
+                            while (cursor < template.length && template[cursor] in '0'..'9') {
+                                val next = group * 10 + template[cursor].digitToInt()
+                                if (next > groupCount) break
+                                group = next
+                                cursor++
+                            }
+                            match.rangeAtIndex(group.toULong()).useContents { append(captured(this)) }
+                        }
+                    }
+                    else -> append(char)
+                }
+            }
+        }
     }
 
     override fun find(

@@ -1161,6 +1161,9 @@ class ReadBookViewModelShared(
                     withContext(IoDispatcher) { checkLocalBookFileExist(book) }
                 }
             ) {
+                if (index == readBook.durChapterIndex.value && loadGuard.isCurrentJob(index, loadJob)) {
+                    showMessageChapter(readBook.msg ?: "Unable to open local book", index, readBook.chapterList.value.size)
+                }
                 return
             }
             val chapter = resolveChapter(book, index, readBook.chapterList.value) ?: return

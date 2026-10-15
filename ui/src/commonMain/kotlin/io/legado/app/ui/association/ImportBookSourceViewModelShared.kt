@@ -135,49 +135,51 @@ class ImportBookSourceViewModelShared(
      * @param finally 导入完成回调 (无论成功/失败均触发, 与 app 端 onFinally 一致)
      */
     fun importSelect(checked: List<Boolean>, finally: () -> Unit) {
-        Coroutine.async(scope = scope) {
-            val group = groupName?.trim()
-            val keepName = AppConfigProviders.get().importKeepName
-            val keepGroup = AppConfigProviders.get().importKeepGroup
-            val keepEnable = AppConfigProviders.get().importKeepEnable
-            val selectSource = arrayListOf<BookSource>()
-            checked.forEachIndexed { index, b ->
-                if (b) {
-                    val source = allSources[index]
-                    checkSources[index]?.let {
-                        if (keepName) source.bookSourceName = it.bookSourceName
-                        if (keepGroup) source.bookSourceGroup = it.bookSourceGroup
-                        if (keepEnable) {
-                            source.enabled = it.enabled
-                            source.enabledExplore = it.enabledExplore
-                        }
-                        source.customOrder = it.customOrder
+        Coroutine.async(scope = scope) { importSelectAwait(checked) }
+            .onFinally { finally() }
+    }
+
+    /** Returns only after persistence succeeds; failures propagate to automatic imports. */
+    suspend fun importSelectAwait(checked: List<Boolean>) {
+        val group = groupName?.trim()
+        val keepName = AppConfigProviders.get().importKeepName
+        val keepGroup = AppConfigProviders.get().importKeepGroup
+        val keepEnable = AppConfigProviders.get().importKeepEnable
+        val selectSource = arrayListOf<BookSource>()
+        checked.forEachIndexed { index, b ->
+            if (b) {
+                val source = allSources[index]
+                checkSources[index]?.let {
+                    if (keepName) source.bookSourceName = it.bookSourceName
+                    if (keepGroup) source.bookSourceGroup = it.bookSourceGroup
+                    if (keepEnable) {
+                        source.enabled = it.enabled
+                        source.enabledExplore = it.enabledExplore
                     }
-                    if (!group.isNullOrEmpty()) {
-                        source.bookSourceGroup = if (isAddGroup) {
-                            val groups = linkedSetOf<String>()
-                            source.bookSourceGroup?.splitNotBlank(AppPattern.splitGroupRegex)?.let {
-                                groups.addAll(it)
-                            }
-                            groups.add(group)
-                            groups.joinToString(",")
-                        } else {
-                            group
-                        }
-                    }
-                    selectSource.add(source)
+                    source.customOrder = it.customOrder
                 }
+                if (!group.isNullOrEmpty()) {
+                    source.bookSourceGroup = if (isAddGroup) {
+                        val groups = linkedSetOf<String>()
+                        source.bookSourceGroup?.splitNotBlank(AppPattern.splitGroupRegex)?.let {
+                            groups.addAll(it)
+                        }
+                        groups.add(group)
+                        groups.joinToString(",")
+                    } else {
+                        group
+                    }
+                }
+                selectSource.add(source)
             }
-            appDb.bookSourceDao.insert(*selectSource.toTypedArray())
-            // 批量导入会 REPLACE 已有书源行: 失效封面链路的源短时缓存
-            SourceHelp.evictAll()
-            Coroutine.async {
-                SourceHelp.adjustSortNumber()
-            }
-            ContentProcessorProviders.get().upReplaceRules()
-        }.onFinally {
-            finally.invoke()
         }
+        appDb.bookSourceDao.insert(*selectSource.toTypedArray())
+        // 批量导入会 REPLACE 已有书源行: 失效封面链路的源短时缓存
+        SourceHelp.evictAll()
+        Coroutine.async {
+            SourceHelp.adjustSortNumber()
+        }
+        ContentProcessorProviders.get().upReplaceRules()
     }
 
     /**

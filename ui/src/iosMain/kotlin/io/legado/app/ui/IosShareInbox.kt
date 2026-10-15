@@ -82,14 +82,7 @@ object IosShareInbox {
     /** 应用内接收目录名: 容器里的收件先落这里, 再由既有导入链就地读取。 */
     private const val STORE_DIR_NAME = "ShareImports"
 
-    /**
-     * 隐藏临时件的后缀 (写件侧与 [stage] 同一套: ".<原名>.part")。
-     *
-     * 这是与分享扩展 (`iosApp/ShareExtension/ShareViewController.swift` 的 `deliver`) 的跨进程命名
-     * 契约, 两侧逐字一致, 不能换名; 它不属整份写入的共享临时件契约
-     * ([io.legado.app.utils.ATOMIC_WRITE_TEMP_SUFFIX]), 因此不被按共享契约清点的方删除——残留件
-     * 只由 [discardAbandonedTemps] 在启动取件时清。
-     */
+    /** Shared staging suffix; the host never deletes unpublished extension files. */
     private const val TEMP_SUFFIX = ".part"
 
     /** "分享入口不可用"提示一次的记忆键 (未签名 ipa / 签名未勾 App Groups 的产物上会用到)。 */
@@ -136,19 +129,18 @@ object IosShareInbox {
      * 之后应用每次从后台回到前台自动再取一次 ([watchForeground])。
      *
      * 每次调用都把收件目录里当时存在的文件逐个收进应用内接收目录并交给既有导入链, 末尾对账清理
-     * 接收目录 (启动这次还顺带清掉收件目录里的残留临时件, 见 [discardAbandonedTemps])。
+     * 接收目录。
      * 只处理"当时在容器里"的文件, 收下的原件随后即被清掉, 同一件不会被收两遍。
      * 容器取不到 (无 entitlement) 或接收目录不可用时给用户可见说明并按"本次不取件"处理,
      * 原件留在容器里等下次取件 (不静默, 也不丢件)。
      */
     fun deliverPending() {
         watchForeground()
-        scope.launch { pickUp(discardInboxResidue = true) }
+        scope.launch { pickUp() }
     }
 
     /**
      * 应用从后台回到前台时也取件: 分享扩展写件时本应用只能在后台, 用户切回来就该导入。
-     * 只取件, 不清收件目录里的残留临时件 (原因见 [discardAbandonedTemps])。
      *
      * 触发用平台事件本身 ([UIApplicationWillEnterForegroundNotification]): Apple 文档说它只在整应用
      * 的聚合状态由后台进前台时发 (控制中心/来电横幅这类短暂失活不发), 冷启动直接进前台也会发一次
@@ -162,7 +154,7 @@ object IosShareInbox {
             `object` = null,
             queue = NSOperationQueue.mainQueue,
         ) {
-            scope.launch { pickUp(discardInboxResidue = false) }
+            scope.launch { pickUp() }
         }
     }
 
@@ -171,16 +163,12 @@ object IosShareInbox {
      *
      * 串行的原因: 冷启动直接进前台时平台事件照发一次, 两次取件会撞上; 并发跑会把同一件收两遍
      * (投两次导入、删两次原件)。
-     *
-     * @param discardInboxResidue 是否顺带清掉收件目录里的残留临时件 (只有启动取件清, 原因见
-     * [discardAbandonedTemps])
      */
-    private suspend fun pickUp(discardInboxResidue: Boolean) = pickUpMutex.withLock {
+    private suspend fun pickUp() = pickUpMutex.withLock {
         val inbox = inboxDirectory()
         val store = storeDirectory()
         if (inbox != null && store != null) {
             val entries = inboxEntries(inbox)
-            if (discardInboxResidue) discardAbandonedTemps(entries)
             for (file in pendingFiles(entries)) {
                 val staged = stage(file, store) ?: continue
                 stagedInProcess += staged.absolutePath
@@ -239,30 +227,8 @@ object IosShareInbox {
     private fun pendingFiles(entries: List<File>): List<File> =
         entries.filter { it.isFile && !it.name.startsWith(".") }
 
-    /**
-     * 清掉收件目录里的残留临时件: 写件侧与 [stage] 都是"先拷到 [tempNameFor] 的临时名, 成功后再
-     * 原子改名", 拷贝中途进程被系统杀掉就停在临时名上 —— 那个名字不会再改成正式名, 也没人投递它。
-     *
-     * 只在启动取件调 ([pickUp] 的 [discardInboxResidue]), 不在回到前台的取件调: 临时名本身分不出
-     * "残留"与"扩展正在写", 而扩展整个拷贝期间都停在分享面板上 —— 用户可以在拷贝没完时切走再切回
-     * 本应用, 那时清就等于删掉扩展还在写的目标 (扩展改名失败、这一次分享丢掉)。启动取件也可能落在
-     * 扩展拷贝过程中 (系统按后台任务唤起进程同样走 didFinishLaunching 这条启动链), 只是它不随用户
-     * 每次切回应用发生。
-     *
-     * 只删这种名字: 以点开头但结尾不是 [TEMP_SUFFIX] 的项, 是用户分享的文件本身就以点开头,
-     * 删掉就是丢件。
-     */
-    private fun discardAbandonedTemps(entries: List<File>) {
-        for (file in entries) {
-            if (!file.isFile || !file.isAbandonedTemp()) continue
-            if (file.delete()) AppLog.put("分享取件清理残留临时件: ${file.path}")
-            else AppLog.put("分享取件清理残留临时件失败: ${file.path}")
-        }
-    }
-
-    /** 隐藏临时件的名字形态 (见 [tempNameFor])。 */
-    private fun File.isAbandonedTemp(): Boolean =
-        name.startsWith(".") && name.endsWith(TEMP_SUFFIX)
+    // Hidden staging files belong to the extension process. Startup cannot prove
+    // abandonment, so only their writer may remove them.
 
     /**
      * 收一件: 复制进应用内接收目录, 返回落地副本; 复制失败返回 null (原件留在容器里, 下次启动重试)。

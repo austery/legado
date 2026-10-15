@@ -575,6 +575,7 @@ export function initForegroundWebBridge(
 ): void {
   foregroundController = controller;
   foregroundEventCallback = eventCallback;
+  appliedShowKey = '';
   // 宽视口默认 false (对齐 Android: useWideViewPort/loadWithOverviewMode 默认关闭, config 打开才设)
   AppStorage.setOrCreate(FOREGROUND_WIDE_VIEWPORT_KEY, false);
   // show 命令早于组件挂载到达 (pendingShow 已缓存) 时立即补执行; 组件未就绪则静默留给 onPageEnd
@@ -1042,6 +1043,8 @@ function emitForegroundEvent(result: ForegroundWebResult): void {
     return;
   }
   try {
+    if (result.url == null) result.url = currentForegroundUrl();
+    result.canGoBack = queryCanGoBack().canGoBack ?? false;
     cb(0, JSON.stringify(result));
   } catch (e) {
     console.error('[WebControllerBridge] event callback failed: ' + JSON.stringify(e));

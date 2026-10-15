@@ -67,7 +67,7 @@ identity, contrary to the accepted native identity policy.
 
 ## Validation
 
-All checks below ran against the final integration source tree on macOS with
+The initial checks below ran against the integration source tree at `6fbe03a6` on macOS with
 Xcode's iOS 27 simulator and the repository Gradle wrapper, using the existing
 JDK 21 runner runtime (JDK 17 toolchain for requested JVM tasks).
 
@@ -98,3 +98,64 @@ Separate standards and contract reviews inspected the integration hotspots and
 follow-up fixes; neither reported a blocking finding. This is a bounded review
 of compatibility adaptations, not a claim of exhaustive review of 184 upstream
 commits.
+
+
+## Independent review follow-up
+
+The independent report `pr-19v1.md` reviewed `6fbe03a6` and retained eight blockers
+and thirteen improvements. Its wider platform review supersedes the earlier
+bounded review's absence of findings; passing C1/Web checks did not cover these
+behaviors. Each retained item is treated as a claim checked against its callers.
+
+| Review item | Evidence and decision | Follow-up |
+| --- | --- | --- |
+| F01 | Accept: Android player preparation releases its current file. | Release the old player before adopting the newly downloaded file, entirely on the main thread and after generation validation. |
+| F02 | Accept: system-tree selection bypassed export persistence. | Use the same export-aware completion as the manual picker. |
+| F03 | Accept: title callbacks synchronously reentered their ArkTS event thread. | Publish URL/back-navigation state in events before listeners; foreground getters read the snapshot without a round trip. |
+| F04 | Accept: a component remount retained the prior load deduplication key. | Reset that key when binding the newly mounted component. |
+| F05 | Accept: a hidden `.part` name cannot prove an extension writer has died. | Host startup no longer deletes unpublished extension files. Orphan files are retained rather than risking a live transfer; writer-owned cleanup remains local. |
+| F06 | Accept: finally signals completion, not persistence success. | Share a suspending import operation between manual and automatic import; database exceptions propagate to the automatic caller. |
+| F07 | Accept: failed local-file checks never published the terminal current chapter. | Publish a message chapter only for the still-current chapter/job, allowing the existing headless session to close and retry. |
+| F08 | Accept: three default templates silently truncated paragraphs. | Send complete text; provider rejection is an explicit failure rather than silently skipped speech. Live provider length limits are not certified. |
+| F09 | Accept: generation rejection preceded guard cleanup. | Move rejection inside the existing try/finally ownership region; controlled dispatch regression schedules, pauses, drains and retries. |
+| F10 | Accept: the caller already extracts the first match. | Provider replace-first replaces within its supplied text without a second extraction, preserving context-sensitive unmatched text. |
+| F11 / S01 | Accept: Foundation does not expand Java named templates. | Expand named/numeric/escaped references against native match ranges; reject nonexistent names and preserve unmatched optional groups as empty. |
+| F12 | Accept: a fixed `.bak` sibling is not operation-owned. | Allocate a unique backup for each replacement; never remove an unrelated fixed-name sibling, including explicit target deletion. |
+| F13 | Accept: clearing the active token reused its sequence. | Separate the monotonic generation counter from the active loading owner. |
+| F14 | Accept: continuing after a block timeout can omit preceding text. | Propagate the timeout and abort the complete TOC scan. |
+| F15 | Defer: software-delivered signals do need different forwarding from repeating hardware faults. | Do not change Android signal disposition without a subprocess/device oracle for ART/debuggerd and restored custom handlers. This nonblocking item remains open. |
+| F16 | Defer: queue policy duplication is real, but extraction changes native lifecycle boundaries. | Separate architectural follow-up; no behavior failure established by duplication alone. This nonblocking item remains open. |
+| F17 | Accept: the palette callback captured a discarded state holder. | Include cover identity in callback lifetime keys. |
+| F18 | Accept: failed defaults advanced versions and could remove old rows. | Strictly read resources before deletion, replace transactionally, advance versions only on success, and retry independently of release-notes app-version bookkeeping. |
+| F19 | Accept: failed shelf deletion was reported as navigation success. | Exit only on successful removal; preserve state and route on failure. |
+| F20 | Accept: unshelved RSS refresh used the previous in-memory index. | Update the in-memory selection before conditionally persisting it. |
+| F21 | Accept: cancelled initialization could mutate the process-wide audio session. | Rethrow cancellation before fallback resolution and global writes. |
+
+Follow-up validation observed on the repaired source tree:
+
+- JVM: data 315, core 17, UI 241; **573 passed**, zero failures/errors/skips.
+  New regressions exercise a queued load followed by pause/retry, context-sensitive
+  first-match rules, an unrelated backup sibling on successful/failed replacement,
+  automatic import database failure/retry, strict default-resource parsing and
+  transactional rollback/version retry, and first-block TXT timeout propagation.
+- Native simulator: data **47**, core **8**, engine **36 passed**. The added engine
+  test invokes the actual Kotlin/Foundation bridge for named, numeric, escaped,
+  unmatched optional, nonexistent and extended-comment replacement groups.
+- Swift application: all **29** reading/search/restoration/save tests passed again.
+- Android `:app:compileAppDebugKotlin`, original Compose UI simulator compilation,
+  simulator/device engine frameworks, Swift test host, C1 harness and unsigned
+  device application built.
+- Offline evaluation of all three default TTS URL templates preserved the complete
+  input in **30** boundary cases (around 200/300/900 characters and longer text).
+  This evaluates the templates with an encoding stub, not a live speech provider.
+- Standards review found no blocking issue. Spec review identified a neighbor-page
+  publication hazard and invalid named-group handling in the first repair draft;
+  both were corrected and the follow-up review found no remaining blocking issue.
+
+Android playback/picker runtime, OHOS build/device behavior, native share-extension
+cross-process timing and rendered palette/navigation outcomes were not exercised.
+Those fixes have source/control-flow evidence and applicable compilation, not
+platform acceptance. F15 and F16 remain explicitly open recommendations. No user
+app, real provider, or user database was used by these fault-injection tests.
+The four interruption cases and shelf restart evidence in the initial section
+belong to `6fbe03a6`; they were not rerun for this follow-up.

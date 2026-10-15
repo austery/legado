@@ -38,18 +38,7 @@ object JvmRuleRegex : RuleRegex {
     ): String {
         val compiled = compileOrThrow(pattern, multiline)
         val text = source.toString()
-        if (replaceFirst) {
-            // 与 [DefaultRuleRegex] 同语义: 取首个匹配的文本, 再在其中替换首个
-            val outer = compiled.matcher(text)
-            if (!outer.find()) return ""
-            val matched = outer.group().orEmpty()
-            val inner = compiled.matcher(matched)
-            if (!inner.find()) return matched
-            val single = StringBuilder(matched.length)
-            inner.appendReplacement(single, replacement)
-            inner.appendTail(single)
-            return single.toString()
-        }
+        if (replaceFirst) return compiled.matcher(text).replaceFirst(replacement)
         val matcher = compiled.matcher(text)
         val out = StringBuilder(text.length)
         while (matcher.find()) {

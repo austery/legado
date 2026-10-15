@@ -248,10 +248,7 @@ object FileUtilsBase {
         return src.renameTo(tar)
     }
 
-    /**
-     * 原子替换时原文件让位用的后缀: 目标名让给新文件, 原件原样留在这份备份里。
-     * 替换被打断在"让位与重试改名之间"时它会残留在目标目录, [deleteWithReplaceBackup] 按这个名字清掉。
-     */
+    /** Unique replacement backups are owned by their creating operation, not by filename alone. */
     private const val REPLACE_BACKUP_SUFFIX = ".bak"
 
     /**
@@ -261,8 +258,7 @@ object FileUtilsBase {
      * 上目标已存在时改名不成功) 时原文件退到 [REPLACE_BACKUP_SUFFIX] 备份名让出目标名后重试 →
      * 重试成功才清掉备份, 重试失败把原文件改回原位。全程不删原文件。
      *
-     * 进来时发现有上次替换中断留下的备份: 目标还在 (备份已被新件取代) 就清掉; 目标不在就先留着,
-     * 这次替换成功后才清 (这次失败时它是原文件仅存的一份)。
+     * Only the unique backup owned by this invocation may be removed.
      *
      * [src] 与 [dst] 必须同卷 (调用方的临时文件都落在目标目录或同一应用数据分区内): 跨卷只剩
      * 整份复制一条路, 复制中断会留下半截目标。
@@ -273,10 +269,7 @@ object FileUtilsBase {
      */
     fun replaceFileAtomically(src: File, dst: File) {
         dst.parentFile?.mkdirs()
-        val backup = File(dst.parentFile, dst.name + REPLACE_BACKUP_SUFFIX)
-        if (backup.isFile && dst.exists()) {
-            backup.delete()
-        }
+        val backup = File(dst.parentFile, dst.name + "." + randomUUIDString() + REPLACE_BACKUP_SUFFIX)
         if (!src.renameTo(dst)) {
             if (!dst.exists()) {
                 throw IOException("替换落盘失败: ${dst.path}")
@@ -294,19 +287,8 @@ object FileUtilsBase {
         backup.delete()
     }
 
-    /**
-     * 删除 [target] 及其原子替换备份件。
-     *
-     * [REPLACE_BACKUP_SUFFIX] 是 [replaceFileAtomically] 的中间件: 替换被强杀在"让位与重试改名
-     * 之间"会残留, 同路径的下一次替换才会清掉它。删除替换目标的地方走本方法, 该件才随目标消失。
-     *
-     * @return [target] 本身是否删除成功 (备份件是否清掉不影响返回值)
-     */
-    fun deleteWithReplaceBackup(target: File): Boolean {
-        val deleted = target.delete()
-        File(target.parentFile, target.name + REPLACE_BACKUP_SUFFIX).delete()
-        return deleted
-    }
+    /** Delete only the requested file; adjacent backup names may belong to the user. */
+    fun deleteWithReplaceBackup(target: File): Boolean = target.delete()
 
     /**
      * 读取文本文件, 失败将返回空串

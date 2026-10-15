@@ -182,8 +182,7 @@ object DefaultRuleRegex : RuleRegex {
         val regex = compileOrThrow(pattern, multiline)
         val text = source.toString()
         return if (replaceFirst) {
-            val match = regex.find(text) ?: return ""
-            match.value.replaceFirst(regex, replacement)
+            text.replaceFirst(regex, replacement)
         } else {
             text.replace(regex, replacement)
         }

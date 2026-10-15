@@ -114,31 +114,33 @@ class ImportReplaceRuleViewModelShared(
      * @param finally 导入完成回调 (无论成功/失败均触发, 与 app 端 onFinally 一致)
      */
     fun importSelect(checked: List<Boolean>, finally: () -> Unit) {
-        Coroutine.async(scope = scope) {
-            val group = groupName?.trim()
-            val selectRules = arrayListOf<ReplaceRule>()
-            checked.forEachIndexed { index, b ->
-                if (b) {
-                    val rule = allRules[index]
-                    if (!group.isNullOrEmpty()) {
-                        if (isAddGroup) {
-                            val groups = linkedSetOf<String>()
-                            rule.group?.splitNotBlank(AppPattern.splitGroupRegex)?.let {
-                                groups.addAll(it)
-                            }
-                            groups.add(group)
-                            rule.group = groups.joinToString(",")
-                        } else {
-                            rule.group = group
+        Coroutine.async(scope = scope) { importSelectAwait(checked) }
+            .onFinally { finally() }
+    }
+
+    /** Returns only after persistence succeeds; failures propagate to automatic imports. */
+    suspend fun importSelectAwait(checked: List<Boolean>) {
+        val group = groupName?.trim()
+        val selectRules = arrayListOf<ReplaceRule>()
+        checked.forEachIndexed { index, b ->
+            if (b) {
+                val rule = allRules[index]
+                if (!group.isNullOrEmpty()) {
+                    if (isAddGroup) {
+                        val groups = linkedSetOf<String>()
+                        rule.group?.splitNotBlank(AppPattern.splitGroupRegex)?.let {
+                            groups.addAll(it)
                         }
+                        groups.add(group)
+                        rule.group = groups.joinToString(",")
+                    } else {
+                        rule.group = group
                     }
-                    selectRules.add(rule)
                 }
+                selectRules.add(rule)
             }
-            appDb.replaceRuleDao.insert(*selectRules.toTypedArray())
-        }.onFinally {
-            finally.invoke()
         }
+        appDb.replaceRuleDao.insert(*selectRules.toTypedArray())
     }
 
     /**

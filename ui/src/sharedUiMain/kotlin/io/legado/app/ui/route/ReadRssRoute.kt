@@ -479,6 +479,8 @@ fun ReadRssRoute(
                 scope.launch {
                     // 选篇对齐原版 BookInfoActivity.tocActivityResult: 先落进度 (PATCH + 内存回写)
                     // 再加载正文; 未入架书库里没有行, 不写 (对照 archive 的 inBookshelf 守卫)
+                    readingBook.durChapterIndex = index
+                    readingBook.durChapterPos = 0
                     if (!readingBook.isNotShelf) {
                         withContext(IoDispatcher) {
                             ChapterProgressStore.save(

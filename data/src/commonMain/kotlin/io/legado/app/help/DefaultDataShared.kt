@@ -85,8 +85,14 @@ object DefaultDataShared {
      */
     suspend fun importDefaultHttpTTS() {
         val appDb = AppDbProviders.get()
-        appDb.httpTTSDao.deleteDefault()
-        appDb.httpTTSDao.insert(*httpTTS.toTypedArray())
+        val replacements = KS_JSON.decodeFromString<List<HttpTTS>>(
+            DefaultDataResourceProviders.get().readResource("httpTTS.json")
+        ).toTypedArray()
+        require(replacements.isNotEmpty()) { "Default HTTP TTS resource is empty" }
+        appDb.runInTransactionSuspending {
+            appDb.httpTTSDao.deleteDefault()
+            appDb.httpTTSDao.insert(*replacements)
+        }
     }
 
     /**
@@ -98,8 +104,14 @@ object DefaultDataShared {
      */
     suspend fun importDefaultTocRules() {
         val appDb = AppDbProviders.get()
-        appDb.txtTocRuleDao.deleteDefault()
-        appDb.txtTocRuleDao.insert(*txtTocRules.toTypedArray())
+        val replacements = GSON.fromJsonArray<TxtTocRule>(
+            DefaultDataResourceProviders.get().readResource("txtTocRule.json")
+        ).getOrThrow().toTypedArray()
+        require(replacements.isNotEmpty()) { "Default TOC resource is empty" }
+        appDb.runInTransactionSuspending {
+            appDb.txtTocRuleDao.deleteDefault()
+            appDb.txtTocRuleDao.insert(*replacements)
+        }
     }
 
     /**

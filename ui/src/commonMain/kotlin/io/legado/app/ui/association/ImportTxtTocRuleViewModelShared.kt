@@ -102,17 +102,19 @@ class ImportTxtTocRuleViewModelShared(
      * @param finally 导入完成回调 (无论成功/失败均触发, 与 app 端 onFinally 一致)
      */
     fun importSelect(checked: List<Boolean>, finally: () -> Unit) {
-        Coroutine.async(scope = scope) {
-            val selectSource = arrayListOf<TxtTocRule>()
-            checked.forEachIndexed { index, b ->
-                if (b) {
-                    selectSource.add(allSources[index])
-                }
+        Coroutine.async(scope = scope) { importSelectAwait(checked) }
+            .onFinally { finally() }
+    }
+
+    /** Returns only after persistence succeeds; failures propagate to automatic imports. */
+    suspend fun importSelectAwait(checked: List<Boolean>) {
+        val selectSource = arrayListOf<TxtTocRule>()
+        checked.forEachIndexed { index, b ->
+            if (b) {
+                selectSource.add(allSources[index])
             }
-            appDb.txtTocRuleDao.insert(*selectSource.toTypedArray())
-        }.onFinally {
-            finally.invoke()
         }
+        appDb.txtTocRuleDao.insert(*selectSource.toTypedArray())
     }
 
     /**

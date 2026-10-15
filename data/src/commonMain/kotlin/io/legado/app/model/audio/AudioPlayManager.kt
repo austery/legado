@@ -366,10 +366,12 @@ class AudioPlayManager(
      * 的收位点, 作废路径 (暂停 / 停播 / 换章 / 迟到的正文) 也能把自己的位收掉。
      */
     private val loadingToken = atomic(0L)
+    private val loadingSequence = atomic(0L)
 
     /** 置位加载态并领取令牌; 收位凭它认领 ([endLoading]), 作废时不计令牌 ([clearLoading])。 */
     fun beginLoading(): Long {
-        val token = loadingToken.incrementAndGet()
+        val token = loadingSequence.incrementAndGet()
+        loadingToken.value = token
         postEvent(EventBus.AUDIO_LOADING, true)
         return token
     }
@@ -420,13 +422,13 @@ class AudioPlayManager(
         val generation = contentGeneration.value
         val load = scope.launch {
             // 世代不同 = 本轮已被暂停/停播/换章作废 (上面捕获后被自增): 不再起封面/歌词/正文
-            if (generation != contentGeneration.value) return@launch
             // 装载权交接给下面的 Coroutine.async 之前 (取目录 / 起封面歌词) 若抛错或被取消,
             // 没人再释放标记, 该章将永久拉不起来 —— 未交接的路径统一由 finally 释放
             var handedOff = false
             // 本环领到的加载态令牌 (未领到时为 0): 交接给正文协程之前就退出时由 finally 收位
             var loading = 0L
             try {
+                if (generation != contentGeneration.value) return@launch
                 AudioPlayShared.upDurChapter()
                 val chapter = AudioPlayShared.durChapter ?: return@launch
                 if (chapter.isVolume) {

@@ -20,10 +20,7 @@ import okio.IOException
  */
 fun replaceFileAtomically(src: File, dst: File) {
     dst.parentFile?.mkdirs()
-    val backup = siblingOf(dst, REPLACE_BACKUP_SUFFIX)
-    if (backup.isFile && dst.exists()) {
-        backup.delete()
-    }
+    val backup = siblingOf(dst, "." + randomUUIDString() + REPLACE_BACKUP_SUFFIX)
     if (!src.renameTo(dst)) {
         if (!dst.exists()) {
             throw IOException("替换落盘失败: ${dst.path}")

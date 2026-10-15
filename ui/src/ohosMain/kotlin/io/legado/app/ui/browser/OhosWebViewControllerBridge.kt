@@ -165,6 +165,9 @@ object OhosVisibleWebViewBridge : OhosWebViewBridge {
     /** 请求自增 ID (原子性由 [lock] 保护)。 */
     private var requestCounter = 0L
 
+    @Volatile private var currentUrl: String? = null
+    @Volatile private var backwardAvailable = false
+
     /** 页面事件监听器 (Compose slot 注册; 前台 Web 单实例)。 */
     @Volatile
     private var pageListener: OhosWebViewPageListener? = null
@@ -242,6 +245,8 @@ object OhosVisibleWebViewBridge : OhosWebViewBridge {
 
     /** 显示并加载前台 Web (含 headers/html/宽视口/登录标记)。 */
     fun show(config: WebViewConfig) {
+        currentUrl = config.url
+        backwardAvailable = false
         val payload = OhosWebViewControllerPayload(
             url = config.url,
             html = config.html,
@@ -281,17 +286,11 @@ object OhosVisibleWebViewBridge : OhosWebViewBridge {
         return parseResult(json)?.cookie
     }
 
-    /** 当前页 URL (同步; 失败返回 null, 调用方回退预取 URL)。 */
-    fun getUrl(): String? {
-        val json = invokeSync("getUrl", KS_JSON.encodeToString(OhosWebUrlPayload()))
-        return parseResult(json)?.url
-    }
+    // These getters can run inside an ArkTS event callback. Never wait for
+    // another event on that same thread; events publish state before listeners.
+    fun getUrl(): String? = currentUrl
 
-    /** 是否可后退 (同步; 失败返回 false)。 */
-    fun canGoBack(): Boolean {
-        val json = invokeSync("canGoBack", KS_JSON.encodeToString(OhosWebUrlPayload()))
-        return parseResult(json)?.canGoBack ?: false
-    }
+    fun canGoBack(): Boolean = backwardAvailable
 
     /** 后退一步 (fire-and-forget)。 */
     fun goBack() {
@@ -317,6 +316,8 @@ object OhosVisibleWebViewBridge : OhosWebViewBridge {
     fun onCallback(requestId: Long, resultJson: String) {
         if (requestId == 0L) {
             val event = parseResult(resultJson) ?: return
+            event.url?.let { currentUrl = it }
+            event.canGoBack?.let { backwardAvailable = it }
             invokeListenerSafely { pageListener?.onPageEvent(event) }
             return
         }

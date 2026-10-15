@@ -211,16 +211,19 @@ fun AudioPlayRoute(
     // 不放入书架时的移出确认 (本地书带"删除源文件"勾选, 与详情页下架共用同一套)
     var shelfDeleteRequest by remember { mutableStateOf<ShelfDeleteRequest?>(null) }
     // 移出完成: 退出音频页 (完成之后才出栈)
-    val exitAfterRemove: (Boolean?) -> Unit = {
-        AudioPlayShared.inBookshelf = false
-        navigator.pop()
+    val exitAfterRemove: (Boolean?) -> Unit = { removed ->
+        if (removed == true) {
+            AudioPlayShared.inBookshelf = false
+            navigator.pop()
+        }
     }
     // 未入架临时书清理: 只移出记录, 不碰源文件
     val removeSilentlyAndExit: () -> Unit = {
         scope.launch(IoDispatcher) {
-            runCatching { AudioPlayShared.book?.delBookCore() }
+            val removed = runCatching { AudioPlayShared.book?.delBookCore() }
                 .onFailure { AppLog.put("移出书架失败\n${it.message}", it) }
-            exitAfterRemove(null)
+                .isSuccess
+            exitAfterRemove(removed)
         }
     }
     // 不放入书架: 本地书先按需选是否删源文件再移出; 网文没有源文件可选, 直接移出记录

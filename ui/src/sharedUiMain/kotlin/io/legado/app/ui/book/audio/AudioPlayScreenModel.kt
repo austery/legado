@@ -225,6 +225,7 @@ class AudioPlayScreenModel : ScreenModel {
                             )
                         }
                     }.onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
                         AppLog.put("加载书籍失败\n${it.message}", it)
                     }.getOrNull()
                     val book = payload?.book
