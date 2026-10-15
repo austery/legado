@@ -2,7 +2,7 @@
 specId: SPEC-004
 title: Incremental Multi-Source Search and Expandable Candidates
 status: implemented-pending-device-acceptance
-revision: R5
+revision: R6
 creationDate: 2026-10-14
 lastUpdateDate: 2026-10-15
 relatedSpecs: [ADR-001, SPEC-001, SPEC-003]
@@ -22,7 +22,7 @@ R2 replaced the original draft's premature decisions to require sequential searc
 
 [SPEC-003 C3-A](https://github.com/austery/legado/pull/8) merged at `7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f`. All code findings below use that fixed baseline, not an unverified newer upstream version. The next slice follows [ADR-001](../decisions/ADR-001-native-experience-and-upstream-ownership.md): reuse existing capabilities, keep one authority per category of state, and avoid speculative storage redesign.
 
-## Implementation and acceptance checkpoint (R5)
+## Implementation and acceptance checkpoint (R6)
 
 Implementation merged in [PR #16](https://github.com/austery/legado/pull/16)
 (`8fd9921c4`); the physical reader overscroll follow-up merged in
@@ -42,9 +42,15 @@ installation by obtaining the system local-network permission prompt during a
 Bonjour diagnostic flow. This is an observed recovery, not a proven OS root cause
 or a production networking change. See [permission recovery and timed evidence](../../evidence/2026-10-14-spec004-ipad.md#follow-up-local-network-recovery-and-in-flight-selection-passed).
 
-Full device acceptance remains pending. Next priority is physical source-local
-paging/retry/restart, followed by an interactive search/shelf-resume round trip
-with explicit preservation checks. Rotation, split view and offline restart
+On 2026-10-15, a further isolated physical sequence passed source-local paging,
+failed-page retry and completed-source restart. Request logs confirmed that retry
+repeated only the failed page, exhausted peers were skipped, and restart replaced
+only the selected source's candidates. This exercised the nonempty-page fallback,
+not explicit `hasMoreRule` termination or restart during an in-flight request.
+See [paging/retry/restart evidence](../../evidence/2026-10-14-spec004-ipad.md#follow-up-isolated-paging-retry-and-restart-passed).
+
+Full device acceptance remains pending. Next priority is an interactive
+search/shelf-resume round trip with explicit preservation checks. Rotation, split view and offline restart
 remain broader reader regression gaps; importing or certifying the 66-source
 bundle and changing Loading are not prerequisites for this search slice.
 
