@@ -1,4 +1,4 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
 
 package io.legado.app.ui.book.video
 
@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.UIKitView
 import io.legado.app.constant.AppLog
@@ -20,6 +21,9 @@ import io.legado.app.help.media.AvPlayerItemStatusObserver
 import io.legado.app.help.media.maxLoadedTimeRangeEndMs
 import io.legado.app.ui.IosStatusBarHiddenKey
 import io.legado.app.ui.IosStatusBarHiddenNotification
+import io.legado.app.ui.appSupportedOrientationMask
+import io.legado.app.ui.landscapeMask
+import io.legado.app.ui.requestSceneOrientation
 import io.legado.app.utils.hasPlayableScheme
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -28,6 +32,7 @@ import kotlinx.cinterop.ObjCObjectBase.OverrideInit
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.useContents
 import kotlinx.cinterop.value
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,10 +60,12 @@ import platform.AVFoundation.setVolume
 import platform.AVFoundation.volume
 import platform.AVKit.AVPictureInPictureController
 import platform.AVKit.AVPictureInPictureControllerDelegateProtocol
+import platform.CoreGraphics.CGPointMake
 import platform.CoreGraphics.CGRect
 import platform.CoreGraphics.CGRectMake
 import platform.CoreMedia.CMTimeGetSeconds
 import platform.CoreMedia.CMTimeMake
+import platform.QuartzCore.CATransform3DMakeScale
 import platform.Foundation.NSError
 import platform.darwin.NSObject
 import platform.Foundation.NSNotificationCenter
@@ -77,6 +84,24 @@ object IosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
 
     /** 当前页面渲染面创建的画中画控制器 (单视频页, 以最新写入者为准)。 */
     internal var pipController: AVPictureInPictureController? = null
+
+    /**
+     * 当前小窗请求的结算回调 (进入成功/失败的结果送达时调用并作废); null = 没有请求在飞。
+     *
+     * 启动完成、启动失败、退出小窗三个 delegate 回调都送到这里: 请求期不能按平台态取值变化
+     * 结束 —— 启动失败时 [pipActive] 与请求前同值, 取值不变就永远等不到结束信号。
+     */
+    private var pipRequestSettled: (() -> Unit)? = null
+
+    /** 把画中画回调送来的结果结算给共享层 (无请求在飞时是 no-op)。 */
+    internal fun settlePipRequest() {
+        val settled = pipRequestSettled ?: return
+        pipRequestSettled = null
+        settled()
+    }
+
+    /** 当前渲染面视图 (手势层读画面宽高比用它; 渲染面离开组合时置空)。 */
+    private var playerLayerView: PlayerLayerView? = null
 
     override fun createController(
         screenModel: VideoPlayScreenModel,
@@ -117,6 +142,30 @@ object IosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
         DisposableEffect(pipController) {
             this@IosVideoPlayPlatformProvider.pipController = pipController
             onDispose { this@IosVideoPlayPlatformProvider.pipController = null }
+        }
+        // 渲染面引用: 手势层读画面宽高比靠它; 离开组合后置空
+        DisposableEffect(playerLayerView) {
+            this@IosVideoPlayPlatformProvider.playerLayerView = playerLayerView
+            onDispose { this@IosVideoPlayPlatformProvider.playerLayerView = null }
+        }
+
+        // 画面缩放: 手势层只写共享状态, 这里施加到 AVPlayerLayer —— UIKitView 是原生视图混排,
+        // Compose 的图层变换作用不到它; 以控制器为键, 控制器重建后也要写回一次
+        LaunchedEffect(iosController) {
+            snapshotFlow { screenModel.zoom.value }.collect {
+                playerLayerView.applyZoom(
+                    scale = it.scale.toDouble(),
+                    panX = it.panX.toDouble(),
+                    panY = it.panY.toDouble(),
+                )
+            }
+        }
+        // 画面显示矩形要等装载完成才有效: 上报比例, 由共享层按新几何重钳位置
+        LaunchedEffect(iosController, playback) {
+            val ratio = playerLayerView.playerLayer.videoRect.useContents {
+                if (size.height > 0.0) size.width / size.height else 0.0
+            }
+            screenModel.onVideoAspectRatioChanged(ratio.toFloat())
         }
 
         LaunchedEffect(url, headers) {
@@ -169,13 +218,21 @@ object IosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
                 writeVolume = { iosController.player?.setVolume(it) },
                 onToggleControls = screenModel::onToggleControls,
                 onGestureText = screenModel::onGestureText,
+                // 画面缩放: 手势只改共享状态, 由渲染面施加到 AVPlayerLayer
+                zoom = VideoZoomHandle(
+                    current = { screenModel.zoom.value },
+                    set = screenModel::onZoomChange,
+                    // 画面宽高比取 AVPlayerLayer 的 videoRect (画面 FIT 后的真实显示矩形);
+                    // 尚未就绪时为 CGRectZero, 返回 null 让手势层按铺满容器兜底
+                    aspectRatio = { screenModel.videoAspectRatio.value },
+                ),
             )
         }
     }
 
     /**
-     * iOS 没有"系统级全屏真实态"可读 (无编程改方向 / 无窗口全屏能力), 返回 null =
-     * 全屏是页面意图驱动, 共享层沿用 `UiState.isSystemFullScreen` 渲染。
+     * iOS 没有"系统级全屏真实态"可读 (无窗口全屏能力; 方向只是请求, 不是可读的真实态),
+     * 返回 null = 全屏是页面意图驱动, 共享层沿用 `UiState.isSystemFullScreen` 渲染。
      */
     @Composable
     override fun rememberSystemFullScreen(): Boolean? = null
@@ -185,11 +242,21 @@ object IosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
     override fun rememberIsInPictureInPicture(): Boolean? =
         if (AVPictureInPictureController.isPictureInPictureSupported()) pipActive else null
 
-    override fun enterPictureInPicture(controller: VideoPlayerController?) {
-        val pip = pipController ?: return
-        // layer 尚无可显示画面 (isPictureInPicturePossible=false) 时 start 由系统拒绝,
-        // 走 delegate failedToStart 落日志, 不额外建 KVO 状态机
+    override fun enterPictureInPicture(
+        controller: VideoPlayerController?,
+        onSettled: () -> Unit,
+    ): Boolean {
+        // 小窗要完整画面: 先同步把层变换复位再启动 —— 只改状态得等下一帧落层, 系统可能
+        // 已把放大裁剪的首帧抽进小窗
+        playerLayerView?.applyZoom(1.0, 0.0, 0.0)
+        // 渲染面未就绪 (无小窗控制器) 时没有可放的小窗
+        val pip = pipController ?: return false
+        // layer 尚无可显示画面时 start 会被系统拒 (走 delegate failedToStart 回滚并落日志),
+        // 先判可起性回 false: 共享层据此结束请求期, 页面回常规渲染
+        if (!pip.pictureInPicturePossible) return false
+        pipRequestSettled = onSettled
         pip.startPictureInPicture()
+        return true
     }
 
     /** 视频 AVPlayer 声画与画中画的会话前提: playback + MixWithOthers (失败落日志不阻断播放)。 */
@@ -217,9 +284,9 @@ object IosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
     }
 
     /**
-     * 系统级全屏 (对照 Android 横屏 / 鸿蒙锁向): iOS 无编程改方向能力, 能落地的只有
-     * 状态栏显隐这一条通道, 但它必须**真的有动作** —— 上一版本方法是接口默认空实现,
-     * 点一下只翻 `UiState.isSystemFullScreen`, 页面按全屏重排而系统栏纹丝不动,
+     * 系统级全屏 = 锁横屏 + 隐状态栏 (对照 Android 的 SENSOR_LANDSCAPE、鸿蒙的 2=LANDSCAPE + 隐两栏)。
+     * 状态栏那半条必须**真的有动作** —— 上一版本方法是接口默认空实现, 点一下只翻
+     * `UiState.isSystemFullScreen`, 页面按全屏重排而系统栏纹丝不动,
      * 观感上就是"进得去、画面没变、退不出去"。
      *
      * 退全屏入口: iOS 无系统返回通道 (PlatformCapabilities.supportsSystemBack=false),
@@ -228,6 +295,11 @@ object IosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
      */
     override fun applySystemFullScreen(enabled: Boolean) {
         setStatusBarHidden(enabled)
+        // 方向请求与阅读页/漫画页方向锁共用一份实现 (见 IosSceneOrientation.kt)
+        requestSceneOrientation(
+            if (enabled) landscapeMask() else appSupportedOrientationMask(),
+            "视频全屏",
+        )
     }
 
     /** 全屏观感统一通道: 经 SwiftUI 根视图 .statusBarHidden 桥, 与 WindowPolicy.setSystemBars 同源 */
@@ -663,31 +735,81 @@ class IosVideoPlayerController(
     }
 }
 
-/** 纯画面渲染视图: 挂 AVPlayerLayer 子层的 UIView, 布局变化时同步层尺寸。 */
+/**
+ * 纯画面渲染视图: 挂 AVPlayerLayer 子层的 UIView, 布局变化时同步层尺寸。
+ *
+ * 画面缩放 (双指捏合 / Ctrl+滚轮) 经 [applyZoom] 施加: 平移用层的 position, 缩放用层的
+ * transform, 二者与 bounds 相互独立 —— 不能用 setFrame, 层带非单位变换时 setFrame 会用
+ * 变换后的外接矩形反算 bounds, 把画面缩放抵消掉。
+ */
 @OptIn(ExperimentalForeignApi::class)
 private class PlayerLayerView : UIView {
     val playerLayer = AVPlayerLayer()
+
+    /** 当前画面缩放 (默认值 1.0): 布局/画面尺寸变化后按同一份比例重放, 故存在视图上 */
+    private var zoomScale = 1.0
+    private var panX = 0.0
+    private var panY = 0.0
 
     @OverrideInit
     constructor(frame: CValue<CGRect>) : super(frame = frame) {
         layer().addSublayer(playerLayer)
         backgroundColor = UIColor.blackColor
+        // 放大后的画面必须裁在视频区内, 否则会盖到控制栏/选集网格上
+        clipsToBounds = true
     }
 
     override fun layoutSubviews() {
         super.layoutSubviews()
-        playerLayer.setFrame(bounds())
+        applyTransform()
+    }
+
+    /**
+     * 画面缩放: 传比例 (与 [VideoZoom] 同口径), 像素平移量由层尺寸与画面显示矩形现场折算。
+     *
+     * @param scale 缩放倍数 (1.0 = 默认视图)
+     * @param panX 横向位置, 单位是本轴可平移范围 (0 = 居中, ±1 = 贴左/右边)
+     * @param panY 同上, 纵向
+     */
+    fun applyZoom(scale: Double, panX: Double, panY: Double) {
+        zoomScale = scale
+        this.panX = panX
+        this.panY = panY
+        applyTransform()
+    }
+
+    private fun applyTransform() {
+        val layerBounds = bounds()
+        playerLayer.setBounds(layerBounds)
+        val (containerWidth, containerHeight) = layerBounds.useContents {
+            size.width to size.height
+        }
+        // videoRect = 画面按其宽高比 FIT 后的显示矩形 (与共享手势层的边界口径一致)
+        val (videoWidth, videoHeight) = playerLayer.videoRect.useContents {
+            size.width to size.height
+        }
+        val maxPanX = ((videoWidth * zoomScale - containerWidth) / 2.0).coerceAtLeast(0.0)
+        val maxPanY = ((videoHeight * zoomScale - containerHeight) / 2.0).coerceAtLeast(0.0)
+        playerLayer.setPosition(
+            CGPointMake(
+                containerWidth / 2.0 + panX * maxPanX,
+                containerHeight / 2.0 + panY * maxPanY,
+            )
+        )
+        playerLayer.setTransform(CATransform3DMakeScale(zoomScale, zoomScale, 1.0))
     }
 }
 
-/** 画中画生命周期回调 → 共享层平台真实态 ([IosVideoPlayPlatformProvider.pipActive]) 与日志。 */
+/** 画中画生命周期回调 → 共享层平台真实态 ([IosVideoPlayPlatformProvider.pipActive])、请求结算与日志。 */
 private class IosPipDelegate : NSObject(), AVPictureInPictureControllerDelegateProtocol {
     override fun pictureInPictureControllerDidStartPictureInPicture(pictureInPictureController: AVPictureInPictureController) {
         IosVideoPlayPlatformProvider.pipActive = true
+        IosVideoPlayPlatformProvider.settlePipRequest()
     }
 
     override fun pictureInPictureControllerDidStopPictureInPicture(pictureInPictureController: AVPictureInPictureController) {
         IosVideoPlayPlatformProvider.pipActive = false
+        IosVideoPlayPlatformProvider.settlePipRequest()
     }
 
     override fun pictureInPictureController(
@@ -695,6 +817,7 @@ private class IosPipDelegate : NSObject(), AVPictureInPictureControllerDelegateP
         failedToStartPictureInPictureWithError: NSError,
     ) {
         IosVideoPlayPlatformProvider.pipActive = false
+        IosVideoPlayPlatformProvider.settlePipRequest()
         AppLog.put("iOS 画中画启动失败: ${failedToStartPictureInPictureWithError.localizedDescription}")
     }
 }

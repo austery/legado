@@ -14,8 +14,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.interop.ArkUIView2
-import androidx.compose.ui.napi.js
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import io.legado.app.help.toast.Toasters
 import io.legado.app.napi.OhosNativeBridge
 import io.legado.app.utils.KS_JSON
@@ -62,6 +62,12 @@ object OhosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
         val headers = videoUrl?.headerMap?.toMap().orEmpty()
         val ohosController = controller as? OhosVideoPlayerController
 
+        // 画面缩放: 以控制器为键 (控制器换实例后也要重发一次), 经 media 命令通道推给 ArkTS 侧 ——
+        // XComponent 是原生 surface 混排节点, Compose 的图层变换作用不到它。
+        LaunchedEffect(ohosController) {
+            snapshotFlow { screenModel.zoom.value }.collect { ohosController?.applyZoom(it) }
+        }
+
         LaunchedEffect(url, headers) {
             if (url != null) {
                 ohosController?.loadUrl(url, headers)
@@ -80,7 +86,6 @@ object OhosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
             ArkUIView2(
                 name = ARKUI_BUILDER_VIDEO_SURFACE,
                 modifier = modifier.fillMaxSize(),
-                parameter = js { "playerId"(OhosNativeBridge.PLAYER_ID_VIDEO_BOOK) },
                 background = Color.Black,
                 interactive = false,
             )
@@ -115,6 +120,12 @@ object OhosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
                 writeVolume = { ohosController.setVolume(it) },
                 onToggleControls = screenModel::onToggleControls,
                 onGestureText = screenModel::onGestureText,
+                // 画面缩放: 手势只改共享状态, 由渲染面推给 ArkTS 侧施加 (见 RenderSurface)
+                zoom = VideoZoomHandle(
+                    current = { screenModel.zoom.value },
+                    set = screenModel::onZoomChange,
+                    aspectRatio = { screenModel.videoAspectRatio.value },
+                ),
             )
         }
     }
@@ -123,8 +134,8 @@ object OhosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
     const val ARKUI_BUILDER_VIDEO_SURFACE: String = "legadoVideoSurface"
 
     override fun applyFullscreen(enabled: Boolean) {
-        OhosNativeBridge.setWindowFullScreenLayout(enabled)
-        OhosNativeBridge.setWindowSystemBarEnable(!enabled)
+        // 沉浸式布局恒开 (宿主启动时建立), 全屏只控制系统栏显隐
+        OhosNativeBridge.setWindowSystemBarEnable(!enabled, !enabled)
     }
 
     /**
@@ -138,8 +149,7 @@ object OhosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
     override fun applySystemFullScreen(enabled: Boolean) {
         // 横屏全屏: 2=LANDSCAPE / 0=UNSPECIFIED (枚举映射见 OhosPlatformServices.setOrientation)
         OhosNativeBridge.setWindowPreferredOrientation(if (enabled) 2 else 0)
-        OhosNativeBridge.setWindowFullScreenLayout(enabled)
-        OhosNativeBridge.setWindowSystemBarEnable(!enabled)
+        OhosNativeBridge.setWindowSystemBarEnable(!enabled, !enabled)
     }
 
     /**
@@ -155,12 +165,31 @@ object OhosVideoPlayPlatformProvider : VideoPlayPlatformProvider {
     /** 画中画真实态 (ArkTS PiPWindow stateChange 事件驱动, Compose 可观察)。 */
     internal var pipActive: Boolean by mutableStateOf(false)
 
+    /** 本次小窗请求的结算回调 (ArkTS 回传进入结果/失败时调用并作废); null = 没有请求在飞。 */
+    private var pipRequestSettled: (() -> Unit)? = null
+
     @Composable
     override fun rememberIsInPictureInPicture(): Boolean? = pipActive
 
-    /** 经 media 命令通道请求 ArkTS 拉起画中画 (PiPWindow); 失败由 onPipStateChanged 事件回 toast。 */
-    override fun enterPictureInPicture(controller: VideoPlayerController?) {
-        (controller as? OhosVideoPlayerController)?.enterPictureInPicture()
+    /**
+     * 经 media 命令通道请求 ArkTS 拉起画中画 (PiPWindow); 进入成功/失败由 onPipStateChanged 事件
+     * 结算, 不回送结果时由共享层超时结束请求期。
+     */
+    override fun enterPictureInPicture(
+        controller: VideoPlayerController?,
+        onSettled: () -> Unit,
+    ): Boolean {
+        val c = controller as? OhosVideoPlayerController ?: return false
+        pipRequestSettled = onSettled
+        c.enterPictureInPicture()
+        return true
+    }
+
+    /** 把 ArkTS 回传的进入结果结算给共享层 (无请求在飞时是 no-op, 用户自己开关小窗也走这里)。 */
+    internal fun settlePipRequest() {
+        val settled = pipRequestSettled ?: return
+        pipRequestSettled = null
+        settled()
     }
 }
 
@@ -575,9 +604,22 @@ class OhosVideoPlayerController(
             "onDuration" -> event.duration?.let { cachedDuration = it }
             "onPosition" -> event.position?.let { cachedPosition = it }
 
+            "onVideoSizeChange" -> {
+                // 画面显示比例: 手势层的可平移范围与质心锚点按它算 (变化时共享层重钳位置)
+                screenModel.onVideoAspectRatioChanged(
+                    event.width?.let { width ->
+                        event.height?.let { height -> if (height > 0) width.toFloat() / height else null }
+                    }
+                )
+                return
+            }
+
             "onPipStateChanged" -> {
-                // 画中画窗口态由 ArkTS PiPWindow stateChange 推来; isPip 缺省视为 false
-                OhosVideoPlayPlatformProvider.pipActive = event.isPip == true
+                // 小窗窗口态由 ArkTS PiPWindow stateChange 推来; isPip 缺省视为 false
+                val active = event.isPip == true
+                OhosVideoPlayPlatformProvider.pipActive = active
+                // 进入成功/失败的结果已到 (toast 文案随事件来): 结算请求期, 页面回常规渲染
+                OhosVideoPlayPlatformProvider.settlePipRequest()
                 event.message?.let { Toasters.get().toast(it) }
                 return
             }
@@ -616,6 +658,24 @@ class OhosVideoPlayerController(
     }
 
     /**
+     * 视频宽高比 (宽/高); 未装载或未就绪时 null (手势层边界按铺满容器兜底)。
+     */
+    /**
+     * 画面缩放: 经 media 命令通道交给 ArkTS 侧施加到 XComponent —— 混排的 surface 节点不受
+     * Compose 图层变换影响, 缩放只能在 ArkTS 侧做 (见 MediaBridgeHandler.handleSetVideoZoom)。
+     */
+    internal fun applyZoom(zoom: VideoZoom) {
+        sendCommand(
+            MediaCommand(
+                action = "setVideoZoom",
+                scale = zoom.scale,
+                panX = zoom.panX,
+                panY = zoom.panY,
+            )
+        )
+    }
+
+    /**
      * media 命令 (Kotlin → ArkTS, 与 MediaBridgeHandler.ets 的 MediaCommand 接口对齐)。
      *
      * 两条装源通道共用一个结构: `setSourceUrl` 填 [url] + [headers], `setSource` 填 [path]
@@ -635,6 +695,10 @@ class OhosVideoPlayerController(
         val position: Long? = null,
         val speed: Float? = null,
         val volume: Double? = null,
+        // 视频画面缩放 (与共享层 VideoZoom 同口径: scale 倍数, pan 为本轴可平移范围的比例 -1..1)
+        val scale: Float? = null,
+        val panX: Float? = null,
+        val panY: Float? = null,
     )
 
     @Serializable
@@ -647,6 +711,9 @@ class OhosVideoPlayerController(
         val position: Long? = null,
         // 仅 onPipStateChanged: true/false = 当前是否在画中画窗口; 带非空 message = 失败提示
         val isPip: Boolean? = null,
+        // 仅 onVideoSizeChange: 视频解码分辨率 (px)
+        val width: Int? = null,
+        val height: Int? = null,
     )
 }
 

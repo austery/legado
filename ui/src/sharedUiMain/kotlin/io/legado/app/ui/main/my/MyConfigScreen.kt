@@ -15,7 +15,10 @@ import legado.ui.generated.resources.book_source
 import legado.ui.generated.resources.book_source_manage
 import legado.ui.generated.resources.book_source_manage_desc
 import legado.ui.generated.resources.bookmark
+import legado.ui.generated.resources.dialog_preview
+import legado.ui.generated.resources.dialog_preview_summary
 import legado.ui.generated.resources.dict_rule
+import legado.ui.generated.resources.ic_baseline_sort_24
 import legado.ui.generated.resources.ic_bookmark
 import legado.ui.generated.resources.ic_bug_report
 import legado.ui.generated.resources.ic_cfg_about
@@ -34,7 +37,6 @@ import legado.ui.generated.resources.manga_extension
 import legado.ui.generated.resources.manga_extension_desc
 import legado.ui.generated.resources.other
 import legado.ui.generated.resources.other_setting
-import legado.ui.generated.resources.outline_filter_alt_24
 import legado.ui.generated.resources.read_record
 import legado.ui.generated.resources.replace_purify
 import legado.ui.generated.resources.rule_subscription
@@ -72,7 +74,7 @@ import org.jetbrains.compose.resources.stringResource
  * - `ic_other_setting`    其它设置入口
  * - `ic_cfg_source`       书源/目录规则
  * - `ic_cfg_replace`      替换净化
- * - `outline_filter_alt_24`  书源过滤
+ * - `ic_baseline_sort_24` 书源过滤
  * - `ic_translate`        字典规则
  * - `ic_import`           规则订阅
  * - `ic_bookmark`         书签
@@ -123,6 +125,10 @@ fun MyConfigScreen(
     onMangaExtensionManage: (() -> Unit)? = null,
     // 影视源 TVBox 管理 (TvBoxService 未注册端 null, 条目隐藏)
     onTvBoxManage: (() -> Unit)? = null,
+    // 弹窗预览 (仅桌面端提供入口, 其余端 null 时条目不渲染)
+    onDialogPreview: (() -> Unit)? = null,
+    // 网络服务开关是否显示 (未注册 WebServerPlatform 的端没有该服务, 条目隐藏)
+    showWebService: Boolean = false,
 ) {
     val themeModeEntries = stringArrayResource(Res.array.theme_mode)
     val themeModeValues = stringArrayResource(Res.array.theme_mode_v)
@@ -159,7 +165,7 @@ fun MyConfigScreen(
     val iconOther = painterResource(Res.drawable.ic_other_setting)
     val iconSource = painterResource(Res.drawable.ic_cfg_source)
     val iconReplace = painterResource(Res.drawable.ic_cfg_replace)
-    val iconFilter = painterResource(Res.drawable.outline_filter_alt_24)
+    val iconFilter = painterResource(Res.drawable.ic_baseline_sort_24)
     val iconTranslate = painterResource(Res.drawable.ic_translate)
     val iconImport = painterResource(Res.drawable.ic_import)
     val iconBookmark = painterResource(Res.drawable.ic_bookmark)
@@ -168,6 +174,8 @@ fun MyConfigScreen(
     val iconExtension = painterResource(Res.drawable.ic_extension)
     val iconVideo = painterResource(Res.drawable.ic_layout_video)
     val iconAbout = painterResource(Res.drawable.ic_cfg_about)
+    val titleDialogPreview = stringResource(Res.string.dialog_preview)
+    val summaryDialogPreview = stringResource(Res.string.dialog_preview_summary)
 
     AppTheme {
         PreferenceScreen {
@@ -192,16 +200,19 @@ fun MyConfigScreen(
                 icon = iconBackup,
                 onClick = onWebDavSetting,
             )
-            switchPreference(
-                prefKey = PreferKey.webService,
-                title = titleWebService,
-                summary = webServiceSummary,
-                defaultValue = false,
-                icon = iconWeb,
-                onCheckedChange = onWebServiceChange,
-                onLongClick = onWebServiceLongClick,
-                checked = webServiceChecked,
-            )
+            // 网络服务开关: 只在注册了 WebServerPlatform 的端显示 (未注册端拨了无效)
+            if (showWebService) {
+                switchPreference(
+                    prefKey = PreferKey.webService,
+                    title = titleWebService,
+                    summary = webServiceSummary,
+                    defaultValue = false,
+                    icon = iconWeb,
+                    onCheckedChange = onWebServiceChange,
+                    onLongClick = onWebServiceLongClick,
+                    checked = webServiceChecked,
+                )
+            }
             preference(
                 title = titleOtherSetting,
                 icon = iconOther,
@@ -278,6 +289,14 @@ fun MyConfigScreen(
                 icon = iconAbout,
                 onClick = onAbout,
             )
+            if (onDialogPreview != null) {
+                preference(
+                    title = titleDialogPreview,
+                    summary = summaryDialogPreview,
+                    icon = iconToolbox,
+                    onClick = { onDialogPreview.invoke() },
+                )
+            }
         }
     }
 }

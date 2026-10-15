@@ -2,7 +2,6 @@ package io.legado.app.help.http
 
 import io.legado.app.constant.AppConst
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.help.UserAgentProviders
 import io.legado.app.help.getUserAgent
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.napi.OhosNativeBridge
@@ -155,7 +154,14 @@ private class OhosBackstageWebViewHandle(
                     }
                 }
                 // 数据面: 源码/命中 URL 裸字符串 (失败路径已提前抛异常, 成功时非空)
-                StrResponse(result.url ?: url.orEmpty(), response.bodyRaw)
+                val hitUrl = result.url ?: url.orEmpty()
+                if (sourceRegex.isNullOrBlank() && overrideUrlRegex.isNullOrBlank()) {
+                    // 非嗅探: 与 app 端一致 (页面源码响应无请求头可挂)
+                    return@withContext StrResponse(hitUrl, response.bodyRaw)
+                }
+                // 嗅探命中: url 取原始解析页, body 取命中地址 (与 iOS IosBackstageWebView.hitResponse
+                // / 安卓 SnifferWebClient 同口径)
+                StrResponse(url ?: hitUrl, response.bodyRaw)
             }
         }
     }

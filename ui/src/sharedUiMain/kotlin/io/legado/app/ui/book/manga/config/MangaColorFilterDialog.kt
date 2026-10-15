@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -14,13 +13,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import io.legado.app.ui.compose.component.AppCheckbox
 import io.legado.app.ui.compose.component.AppDetailSeekBar
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
-import io.legado.app.ui.compose.component.DialogTitleBar
-import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import legado.ui.generated.resources.Res
@@ -33,7 +29,7 @@ import org.jetbrains.compose.resources.stringResource
  * 漫画颜色滤镜对话框 (KMP 共享, app + desktop 复用)。
  *
  * 对应 app 端 `io.legado.app.ui.book.manga.config.MangaColorFilterDialog`, 但去掉对
- * BaseComposeDialogFragment / WindowManager / AppConfig 的依赖, 改为纯 @Composable + 回调:
+ * 原命令式对话框基类(已删除) / WindowManager / AppConfig 的依赖, 改为纯 @Composable + 回调:
  * - 4 个 SeekBar (对比度/R/G/B) 拖动中实时回调 [onColorFilterChange]
  * - 灰度开关切换时回调 [onGrayChange]
  * - 关闭即销毁状态, 持久化由调用方在回调内完成 (对照 app 端 onDismiss 写 AppConfig)
@@ -63,86 +59,75 @@ fun MangaColorFilterDialog(
     var b by remember { mutableStateOf(config.b) }
     var gray by remember { mutableStateOf(grayEnabled) }
 
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = titleText,
         properties = AppDialogSizes.properties(),
     ) {
-        Surface(
-            shape = DesignTokens.dialogShape,
-            color = colors.fillet,
-            modifier = Modifier.appDialogSize(),
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = DesignTokens.spacingDefault)
         ) {
-            Column(Modifier.fillMaxWidth()) {
-                DialogTitleBar(
-                    title = titleText,
-                    onBack = onDismiss,
+            // 对比度: app 端 value=ct+50, max=100, 显示 it-50
+            AppDetailSeekBar(
+                title = contrastLabel,
+                value = ct + 50,
+                max = 100,
+                valueFormat = { "${it - 50}" },
+                onChanged = {
+                    ct = it - 50
+                    onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            AppDetailSeekBar(
+                title = "R",
+                value = r,
+                max = 255,
+                onChanged = {
+                    r = it
+                    onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            AppDetailSeekBar(
+                title = "G",
+                value = g,
+                max = 255,
+                onChanged = {
+                    g = it
+                    onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            AppDetailSeekBar(
+                title = "B",
+                value = b,
+                max = 255,
+                onChanged = {
+                    b = it
+                    onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        gray = !gray
+                        onGrayChange(gray)
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppCheckbox(
+                    checked = gray,
+                    onCheckedChange = {
+                        gray = it
+                        onGrayChange(it)
+                    },
                 )
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(DesignTokens.spacingLg)
-                ) {
-                    // 对比度: app 端 value=ct+50, max=100, 显示 it-50
-                    AppDetailSeekBar(
-                        title = contrastLabel,
-                        value = ct + 50,
-                        max = 100,
-                        valueFormat = { "${it - 50}" },
-                        onChanged = {
-                            ct = it - 50
-                            onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    AppDetailSeekBar(
-                        title = "R",
-                        value = r,
-                        max = 255,
-                        onChanged = {
-                            r = it
-                            onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    AppDetailSeekBar(
-                        title = "G",
-                        value = g,
-                        max = 255,
-                        onChanged = {
-                            g = it
-                            onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    AppDetailSeekBar(
-                        title = "B",
-                        value = b,
-                        max = 255,
-                        onChanged = {
-                            b = it
-                            onColorFilterChange(MangaColorFilterConfig(r, g, b, ct))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                gray = !gray
-                                onGrayChange(gray)
-                            },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AppCheckbox(
-                            checked = gray,
-                            onCheckedChange = {
-                                gray = it
-                                onGrayChange(it)
-                            },
-                        )
-                        Text(grayLabel, color = colors.primaryText)
-                    }
-                }
+                Text(grayLabel, color = colors.primaryText)
             }
         }
     }

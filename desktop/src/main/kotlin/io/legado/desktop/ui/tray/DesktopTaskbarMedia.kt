@@ -14,9 +14,11 @@ import com.sun.jna.platform.win32.WinGDI
 import com.sun.jna.platform.win32.WinUser
 import com.sun.jna.ptr.PointerByReference
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.NotificationId
 import io.legado.app.constant.Status
 import io.legado.app.help.media.RemoteMediaCommand
 import io.legado.app.help.media.SystemMediaControl
+import io.legado.app.help.notification.DesktopTaskbar
 import io.legado.app.model.AudioPlayCommanders
 import io.legado.app.service.ReadAloudControllerShared.ReadAloudState
 import io.legado.app.ui.compose.platform.syncGetString
@@ -38,6 +40,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
 
 /**
@@ -62,6 +65,9 @@ import javax.swing.SwingUtilities
  *
  * # 任务栏进度条 (SetProgressValue / SetProgressState)
  * 播放中显示进度 (对照原版通知进度条); 暂停 TBPF_PAUSED; 停止/空闲清除。
+ * 写的是全应用唯一那格进度位 (与更新书籍/书源校验共用), 故每次刷新都按 [DesktopTaskbar.showMedia]
+ * 登记为高优先级持有者 (对照鸿蒙长时任务的"音频优先级最高, 会抢占后台作业"); 退场时撤登记 (含托盘
+ * 整体卸载), 业务进度靠自己的下一次进度帧回屏。
  *
  * # 全局媒体键 (RegisterHotKey VK_MEDIA_*)
  * 对照原版 MediaButtonReceiver.handleIntent 的分发链:
@@ -72,6 +78,8 @@ import javax.swing.SwingUtilities
  * # 实现要点
  * - 独立守护线程 + 隐藏消息窗口 (仿 WebView2Loop): 收 WM_HOTKEY / WM_TASKBARCREATED
  *   (explorer 重启广播, 只清挂载标志)
+ * - 泵线程一旦结束 (消息循环退出 / 建窗失败), 句柄即失效 (窗口与热键随线程释放): 需要泵的入口
+ *   按线程存活判泵在不在, 不在就整代重建 (见 [startPumpIfDead])
  * - 缩略图按钮点击 (WM_COMMAND) 与本窗口任务栏按钮建立 (TaskbarButtonCreated) 都是发给主窗口的
  *   消息: 主窗口子类化由 native 桥 (wndchrome) 独占, 经 [DesktopWindowChromeNative.addMessageHandler]
  *   转发上来 (S3: 三层子类化收成一层; WH_GETMESSAGE 钩子因消息泵时序不可靠已弃用)。
@@ -194,6 +202,30 @@ internal object DesktopTaskbarMedia {
     @Volatile
     private var lastDurationMs: Int = 0
 
+    /**
+     * 媒体进度在任务栏登记里的条目 (通知标识 to 取用代次); 空 = 未登记。
+     *
+     * 取用只在状态刷新 (STA 泵线程); 撤登记由刷新与卸载收尾两处触发, 故原子取走 (取到的那一条才撤),
+     * 且按标识与代次撤, 只命中自己那一条。
+     */
+    private val mediaHolder = AtomicReference<Pair<Int, Long>?>(null)
+
+    /** 媒体在跑: 取用那一格, 记下本代 (退场带着它撤登记)。 */
+    private fun claimMedia(id: Int) {
+        mediaHolder.set(id to DesktopTaskbar.showMedia(id))
+    }
+
+    /**
+     * 媒体退场: 撤掉本代登记, 那一格交还业务进度 (顶替过它的业务那一条不动)。
+     *
+     * 退场出口 = 音频/朗读结束或被停止、两者互换、窗口不在、托盘整体卸载; 上屏动作成功与否都不影响
+     * 撤登记。
+     */
+    private fun releaseMedia() {
+        val holder = mediaHolder.getAndSet(null) ?: return
+        DesktopTaskbar.clear(holder.first, holder.second)
+    }
+
     /** 缩略图按钮图标列表 (comctl32 ImageList, 懒创建; 卸载时销毁)。 */
     @Volatile
     private var imageList: Pointer? = null
@@ -217,11 +249,41 @@ internal object DesktopTaskbarMedia {
 
     // ==================== 生命周期 ====================
 
-    /** 启动消息线程 (隐藏窗口 + 全局媒体键 + TaskbarCreated) (幂等; 非 Windows 跳过)。 */
-    @Synchronized
+    /**
+     * 媒体集成是否已装载 (托盘装载期间为 true; 非 Windows 亦为 true, 各入口自检平台)。
+     *
+     * 卸载即终结本次运行的媒体集成: 此后连在途的媒体刷新也不再把消息泵重建回来。
+     */
+    @Volatile
+    private var installed = false
+
+    /** 装载任务栏媒体集成并启动消息泵 (幂等; 非 Windows 跳过)。 */
     fun install() {
-        if (pumpWindow != null) return
-        if (!Platform.isWindows()) return
+        installed = true
+        startPumpIfDead()
+    }
+
+    /**
+     * 消息泵不在时整代重建 (隐藏窗口 + 全局媒体键 + TaskbarCreated)。
+     *
+     * 泵线程结束 (消息循环退出 / 建窗失败) 时, 它名下的窗口与全局热键由系统随线程释放
+     * (MSDN "Terminating a Thread": 线程拥有的窗口与钩子等资源随线程释放), 本类手里的句柄
+     * 自此失效。按句柄判泵在不在, 会让之后每一次需要泵的调用都以为泵还活着 —— 本次运行内再没有
+     * 泵可用 (媒体键、状态重放都靠它), 任务栏媒体集成不重启应用就回不来。
+     *
+     * 幂等: 泵线程还在 (含正在启动的那一代) 即返回; 重建全程持锁, 并发调用者等锁后看到新线程
+     * 已在跑, 不会起出第二份泵。上一代的窗口与热键已被系统收走, 这里只作废本地引用:
+     * [cachedTaskbarList] 是上一代 STA 套间里的对象 (套间随线程消亡), 跨代再用即跨套间调用,
+     * 交新代按需重建。
+     */
+    @Synchronized
+    private fun startPumpIfDead() {
+        if (!installed || !Platform.isWindows()) return
+        if (pumpThread?.isAlive == true) return
+        cachedTaskbarList = null
+        // 全局热键随线程释放, 新代要重新注册一次 (该标志是一代一次的闸门)
+        mediaKeysRegistered.set(false)
+        pumpWindow = null
         val ready = CountDownLatch(1)
         val thread = Thread({ runLoop(ready) }, "legado-taskbar-media")
         thread.isDaemon = true
@@ -255,7 +317,10 @@ internal object DesktopTaskbarMedia {
         runOnPump { refreshFromLastState() }
     }
 
+    @Synchronized
     fun uninstall() {
+        // 先落装载标志: 卸载途中到达的媒体刷新不得把泵重建回来
+        installed = false
         if (hooked) {
             DesktopWindowChromeNative.removeMessageHandler(messageHandler)
             hooked = false
@@ -264,23 +329,36 @@ internal object DesktopTaskbarMedia {
         buttonsAdded = false
         iconsAttached = false
         DesktopTaskbarDwm.uninstall()
-        // 释放 COM 实例 (IUnknown::Release, vtable slot 2) —— 须在创建它的 STA 线程上
-        runOnPump {
-            cachedTaskbarList?.let { list -> releaseChecked("ITaskbarList3 Release") { vtbl(list, 2) } }
-            cachedTaskbarList = null
-            imageList?.let { himl ->
-                releaseChecked("任务栏图标 ImageList_Destroy") { ComCtl32.INSTANCE.ImageList_Destroy(himl) }
-            }
-            imageList = null
-        }
+        // 释放原生资源: 泵线程还在就投给它 —— IUnknown::Release 须在创建它的 STA 线程上; 泵已不在
+        // (建窗失败/消息循环结束) 时队列没人抽取, 就地释放 —— 卸载是退出路径, 投不出去就再无下一次,
+        // 句柄会一直留到进程退出
+        if (!runOnPump { releasePumpResources() }) releasePumpResources()
         val pump = pumpWindow
         pumpWindow = null
         if (pump != null) {
             User32.INSTANCE.PostMessage(pump, WM_QUIT, WinDef.WPARAM(0), WinDef.LPARAM(0))
         }
+        // 泵线程不再抽取队列时 (消息循环已结束/收尾投递未送达) 排队的任务没人执行: 这里的撤登记是最后一笔
+        releaseMedia()
         // 命令执行器随托盘一起结束 (uninstall 只在应用退出路径调用): 留着会在进程收尾期间
         // 继续跑投递进来的任务
         commandExecutor.shutdown()
+    }
+
+    /**
+     * 释放本类持有的原生资源: 媒体进度格登记 + COM 实例 + 按钮图标列表 (幂等)。
+     *
+     * 泵线程还在时由它执行 (COM 对象归属那个 STA 套间); 泵已不在时由卸载方就地执行。
+     */
+    private fun releasePumpResources() {
+        // 媒体仍占着那一格时随托盘退场 (排在在途刷新之后)
+        releaseMedia()
+        cachedTaskbarList?.let { list -> releaseChecked("ITaskbarList3 Release") { vtbl(list, 2) } }
+        cachedTaskbarList = null
+        imageList?.let { himl ->
+            releaseChecked("任务栏图标 ImageList_Destroy") { ComCtl32.INSTANCE.ImageList_Destroy(himl) }
+        }
+        imageList = null
     }
 
     // ==================== 状态刷新 ====================
@@ -292,6 +370,8 @@ internal object DesktopTaskbarMedia {
      * 调用方线程不定 (AUDIO_PROGRESS/AUDIO_SIZE 在协程线程发), 而 ITaskbarList3 是
      * Apartment-threaded 对象: 只有在自建的 STA 泵线程上调用才能传裸 HIMAGELIST。
      * 故状态写入后, COM 操作投递到泵线程, DWM 卡片投递到 EDT。
+     * 泵线程已结束 (消息循环退出 / 建窗失败) 时, 这次投递先整代重建消息泵再刷新
+     * (见 [startPumpIfDead]) —— 媒体集成不重启应用即可恢复。
      */
     fun update(
         audioStatus: Int,
@@ -308,12 +388,19 @@ internal object DesktopTaskbarMedia {
         SwingUtilities.invokeLater {
             DesktopTaskbarDwm.update(audioStatus, aloud, progressMs, durationMs)
         }
-        // ITaskbarList3 调用必须在 STA 泵线程 (见 runOnPump 注释)
-        runOnPump { refreshFromLastState() }
+        // ITaskbarList3 调用必须在 STA 泵线程 (见 runOnPump 注释); 泵不在时这次投递会先整代重建
+        // 消息泵。投不到泵上才说明这次刷新没人抽取 (泵已结束且重建不出来): 媒体进度上不了屏,
+        // 那一格交还业务进度
+        if (!runOnPump { refreshFromLastState() }) releaseMedia()
     }
 
     private fun refreshFromLastState() {
-        val hwnd = mainHwnd ?: return
+        val hwnd = mainHwnd
+        if (hwnd == null) {
+            // 窗口不在就没有媒体那一格 (上屏本身要窗口): 撤登记, 那一格交还业务进度
+            releaseMedia()
+            return
+        }
         val audioStatus = lastAudioStatus
         // 按钮可见性挂会话寿命 (provider running, 镜像原版服务存活/通知常驻): 切章节的
         // STOP 拉流窗口里原版通知不消失, status 判据会让按钮眨眼消失再重现
@@ -328,15 +415,26 @@ internal object DesktopTaskbarMedia {
         }
         // 进度条: 对照原版通知进度 (暂停 TBPF_PAUSED, 无任务清除)
         when {
-            audioActive -> setProgress(
-                if (paused) TBPF_PAUSED else TBPF_NORMAL,
-                lastProgressMs.toLong(),
-                lastDurationMs.coerceAtLeast(1).toLong(),
-            )
+            audioActive -> {
+                // 先登记媒体持有者再上屏: 期间到达的业务进度帧一律让位
+                claimMedia(NotificationId.AudioPlayService)
+                setProgress(
+                    if (paused) TBPF_PAUSED else TBPF_NORMAL,
+                    lastProgressMs.toLong(),
+                    lastDurationMs.coerceAtLeast(1).toLong(),
+                )
+            }
 
-            aloudActive -> setProgress(if (paused) TBPF_PAUSED else TBPF_NORMAL, 0L, 1L)
+            aloudActive -> {
+                claimMedia(NotificationId.ReadAloudService)
+                setProgress(if (paused) TBPF_PAUSED else TBPF_NORMAL, 0L, 1L)
+            }
 
-            else -> setProgress(TBPF_NOPROGRESS, 0L, 0L)
+            else -> {
+                // 退场先撤登记 (撤登记不依赖上屏): 交还那一格后到达的业务进度帧直接上屏; 上屏失败也不影响归属
+                releaseMedia()
+                setProgress(TBPF_NOPROGRESS, 0L, 0L)
+            }
         }
         // 按钮集: 音频/朗读统一用简短章节 label (ThumbBar tooltip 直接可见,
         // 不能用原版通知的无障碍 label —— pref_media_button_per_next 系列是设置项标题,
@@ -508,6 +606,15 @@ internal object DesktopTaskbarMedia {
     private val mediaKeysRegistered = AtomicBoolean(false)
 
     /**
+     * 建窗失败是否已上报 (见 [runLoop] 的失败分支)。
+     *
+     * 建窗失败期间每一代都是同一条失败: 只上报第一次, 某一代真的起来时清空 (之后再失败可再上报一次)。
+     * 只由泵线程读写。
+     */
+    @Volatile
+    private var pumpStartFailureReported = false
+
+    /**
      * 泵线程 COM 任务队列。
      *
      * ITaskbarList3 是 Apartment-threaded: 必须在真正 STA 线程上调用。
@@ -522,15 +629,24 @@ internal object DesktopTaskbarMedia {
     @Volatile
     private var pumpThread: Thread? = null
 
-    /** 把 COM 操作投递到 STA 泵线程 (已在泵线程则直接执行)。 */
-    private fun runOnPump(action: () -> Unit) {
+    /**
+     * 把 COM 操作投递到 STA 泵线程 (已在泵线程则直接执行)。返回是否交到了泵上。
+     *
+     * 泵不在时先整代重建再投递 (见 [startPumpIfDead]): 只投不建会让这次刷新落在失效句柄上,
+     * 而本次运行内不会有第二次机会。
+     */
+    private fun runOnPump(action: () -> Unit): Boolean {
         if (Thread.currentThread() === pumpThread) {
             runCatching { action() }.onFailure { AppLog.put("任务栏 COM 操作失败", it) }
-            return
+            return true
         }
-        val hwnd = pumpWindow ?: return
+        startPumpIfDead()
+        val hwnd = pumpWindow ?: return false
+        // 泵线程已结束时其窗口随之销毁, 消息发不出去: 先确认窗口还在, 否则这笔排进队列也没人抽取
+        if (!User32.INSTANCE.IsWindow(hwnd)) return false
         comTasks.add(action)
         User32.INSTANCE.PostMessage(hwnd, WM_LG_RUN_COM, WinDef.WPARAM(0), WinDef.LPARAM(0))
+        return true
     }
 
     private fun drainComTasks() {
@@ -581,29 +697,45 @@ internal object DesktopTaskbarMedia {
         pumpThread = Thread.currentThread()
         // ITaskbarList3 是 Apartment-threaded: 本线程必须是真 STA, 否则 SetImageList
         // 拿到跨套间代理, 裸 HIMAGELIST 无法编组 → E_FAIL
-        runCatching { Ole32.INSTANCE.CoInitializeEx(Pointer.NULL, Ole32.COINIT_APARTMENTTHREADED) }
-        val created = runCatching {
-            // WNDCLASSEX 注册 + 屏幕外隐藏窗口的样板统一收口在 help/win/Win32MessageWindow
-            // (与 WebView2Loop 消息泵同款, 重复注册 ERROR_CLASS_ALREADY_EXISTS 无害)
-            registerMessageWindowClass(
-                className = WINDOW_CLASS,
-                wndProc = pumpProc,
-                owner = "任务栏媒体",
-            )
-            val hwnd = createHiddenMessageWindow(WINDOW_CLASS, "legado-taskbar-media")
-            pumpWindow = hwnd
-            // explorer 重启后任务栏按钮丢失, 监听 TaskbarCreated 重挂
-            taskbarCreatedMsg = User32.INSTANCE.RegisterWindowMessage(WM_TASKBARCREATED_MSG)
-            registerMediaKeys(hwnd)
-        }.onFailure {
-            AppLog.put("任务栏媒体消息泵启动失败", it)
-        }.isSuccess
-        ready.countDown()
-        if (!created) return
-        val msg = WinUser.MSG()
-        while (User32.INSTANCE.GetMessage(msg, null, 0, 0) > 0) {
-            User32.INSTANCE.TranslateMessage(msg)
-            User32.INSTANCE.DispatchMessage(msg)
+        // 初始化失败时不能配对 CoUninitialize (会把别人的引用计数减没, 同 WindowsFileDialogs)
+        val comReady = runCatching {
+            Ole32.INSTANCE.CoInitializeEx(Pointer.NULL, Ole32.COINIT_APARTMENTTHREADED).toInt() >= 0
+        }.getOrDefault(false)
+        try {
+            val created = runCatching {
+                // WNDCLASSEX 注册 + 屏幕外隐藏窗口的样板统一收口在 help/win/Win32MessageWindow
+                // (与 WebView2Loop 消息泵同款, 重复注册 ERROR_CLASS_ALREADY_EXISTS 无害)
+                registerMessageWindowClass(
+                    className = WINDOW_CLASS,
+                    wndProc = pumpProc,
+                    owner = "任务栏媒体",
+                )
+                val hwnd = createHiddenMessageWindow(WINDOW_CLASS, "legado-taskbar-media")
+                pumpWindow = hwnd
+                // explorer 重启后任务栏按钮丢失, 监听 TaskbarCreated 重挂
+                taskbarCreatedMsg = User32.INSTANCE.RegisterWindowMessage(WM_TASKBARCREATED_MSG)
+                registerMediaKeys(hwnd)
+            }.onFailure {
+                // 建窗失败后每次媒体事件都会再起一代 (重建是恢复通路), 但同一条失败不许逐代刷屏:
+                // 只上报第一次, 某一代真的起来后再重新允许上报
+                if (!pumpStartFailureReported) {
+                    pumpStartFailureReported = true
+                    AppLog.put("任务栏媒体消息泵启动失败 (后续重复失败不再逐次记日志)", it)
+                }
+            }.isSuccess
+            ready.countDown()
+            if (!created) return
+            pumpStartFailureReported = false
+            val msg = WinUser.MSG()
+            while (User32.INSTANCE.GetMessage(msg, null, 0, 0) > 0) {
+                User32.INSTANCE.TranslateMessage(msg)
+                User32.INSTANCE.DispatchMessage(msg)
+            }
+        } finally {
+            // 本代套间随线程结束 (泵会按需重建, 不能留到进程退出才释放)
+            if (comReady) {
+                runCatching { Ole32.INSTANCE.CoUninitialize() }
+            }
         }
     }
 
@@ -617,8 +749,11 @@ internal object DesktopTaskbarMedia {
             VK_MEDIA_STOP to 4,
         )
         keys.forEach { (vk, id) ->
-            runCatching { User32.INSTANCE.RegisterHotKey(hwnd, id, 0, vk) }
-                .onFailure { AppLog.put("注册全局媒体键失败 vk=$vk", it) }
+            // RegisterHotKey 失败只返回 FALSE 而不抛异常: 必须查返回值, 否则媒体键整代缺失也无痕迹
+            val ok = runCatching { User32.INSTANCE.RegisterHotKey(hwnd, id, 0, vk) }
+                .onFailure { AppLog.put("注册全局媒体键异常 vk=$vk", it) }
+                .getOrDefault(false)
+            if (!ok) AppLog.put("全局媒体键注册失败 vk=$vk")
         }
     }
 

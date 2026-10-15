@@ -170,7 +170,7 @@ class AppNavigator(
         val current = currentEntry
         if (current.route == route && current.resultKey == resultKey) return current.id
         // 任何新导航动作 (push 路由) 先自动关闭对话框类 overlay。对照原版:
-        // 新 Activity 全屏盖住后旧对话框不再与新页面叠放 (如原版屏蔽规则列表对话框跳
+        // 新 Activity 全屏盖住后旧对话框不再与新页面叠放 (如原版筛选规则列表对话框跳
         // SourceFilterRuleActivity 前先 dismiss 自己); 单页导航下路由渲染在 Overlay 之下,
         // 不关闭会被对话框遮住。Sheet 属半屏界面, 保留不关。
         // 例外: keepOnPush 对话框 (书源登录) 保留, 由内容自管挂起/恢复 (原版被盖住仍存活)。
@@ -227,16 +227,6 @@ class AppNavigator(
         return entryId
     }
 
-    /** 一级入口切换：清除子页和 Overlay，避免平台自行猜测返回目标。 */
-    fun resetRoot(route: AppRoute.Main) {
-        routeBackStack.resetRoot(route)
-        targetedResults.values.forEach { it.close() }
-        targetedResults.clear()
-        refreshHandlers.clear()
-        targetedResults[currentEntry.id] = Channel(Channel.UNLIMITED)
-        overlayBackStack.clear()
-    }
-
     fun pop(payload: RouteResultPayload = RouteResultPayload.None): Boolean {
         // 无 payload = 返回键语义: 顶层 Overlay 优先关闭 (挂起中的除外, 窗口已隐藏时返回键
         // 应作用于可见的路由层)。带 payload = 路由结果语义, 必须 pop 路由并投递给 push 它的
@@ -265,19 +255,6 @@ class AppNavigator(
                 }
                 _results.tryEmit(result)
             }
-        }
-        return popped
-    }
-
-    fun popTo(entryId: RouteEntryId, inclusive: Boolean = false): Boolean {
-        val previousIds = backStack.value.mapTo(mutableSetOf()) { it.id }
-        val popped = routeBackStack.popTo({ it.id == entryId }, inclusive)
-        if (popped) {
-            val activeIds = backStack.value.mapTo(mutableSetOf()) { it.id }
-            (previousIds - activeIds).forEach { removedId ->
-                targetedResults.remove(removedId)?.close()
-            }
-            overlayBackStack.clear()
         }
         return popped
     }

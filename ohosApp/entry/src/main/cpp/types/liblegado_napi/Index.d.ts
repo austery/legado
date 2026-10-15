@@ -19,6 +19,10 @@
 // - chapterList(bookUrl: string): string     返回章节目录 JSON 数组 (仅含 index/title/url 字段)
 // - importBookSource(json: string): number   导入书源 JSON 数组, 返回导入数量
 //
+// 宿主层异常落盘 (ArkTS → Kotlin 同步推送, 同 registerFileDir 模式):
+// - reportHostException(kind: string, detail: string): void
+//                                           把 ArkTS errorManager 捕获的 JS_CRASH 现场交给 KMP 落盘
+//
 // 同步语义注意: 业务类函数内部用 runBlocking 转 suspend, 应在 TaskPool/Worker 中调用
 
 // CPF 渲染控制器接口 (与 @cpf-kmp-cmp/compose 的 libcompose_arkui_utils.so 声明结构一致)。
@@ -117,6 +121,18 @@ export interface LegadoNativeBridge {
    */
   registerAppVersion(versionName: string): void;
 
+  // ===== 宿主层异常落盘 (ArkTS → Kotlin 同步推送, 同 FileDir 模式) =====
+  /**
+   * 把 ArkTS 侧收到的系统崩溃现场交给 KMP 落盘。
+   *
+   * 调用方是 EntryAbility.onCreate 里注册的 hiAppEvent 崩溃事件 watcher (APP_CRASH,
+   * 覆盖 JsError 与 NativeCrash)。两者是两个运行时, 现场要落到同一个崩溃日志目录只能过桥。
+   *
+   * @param kind   崩溃来源描述, 如 'ohos-system-crash'
+   * @param detail 系统给的现场文本 (含全量线程栈与故障日志内容)
+   */
+  reportHostException(kind: string, detail: string): void;
+
   // ===== 屏幕尺寸注入 (ArkTS → Kotlin 同步推送, 同 FileDir 模式) =====
   /**
    * 注入显示物理像素尺寸 (EntryAbility.onWindowStageCreate 中 loadContent 之前调用)。
@@ -175,8 +191,15 @@ export interface LegadoNativeBridge {
    * 使 KMP OhosNativeBridge.showNotification / cancelNotification 跨线程 dispatch 到此 [callback]。
    *
    * @param callback 接收 JSON payload:
-   *   - SHOW:    `{ action: 'SHOW', id, title, content, progress, max }`
-   *   - CANCEL:  `{ action: 'CANCEL', id }`
+   *   - SHOW:    `{ action: 'SHOW', id, title, content, progress, max, ongoing?, alertOnce?, buttons?,
+   *     clickAction?, continuousTask? }`
+   *     (ongoing=true 置 isOngoing/tapDismissed=false; alertOnce=true 置 isAlertOnce; buttons 每项
+   *     `{ text, action }` 渲染成 actionButtons; clickAction 非空时把点击目标换成携带
+   *     `{notificationId, action}` 的 Want; continuousTask 非空时交长时任务仲裁器申请同名长时任务
+   *     (缺省 = 本业务当前不要长时任务); 点击均由宿主经 platformEvent type='notificationAction' 回送)
+   *   - CANCEL:  `{ action: 'CANCEL', id, stopContinuousTask? }` (`stopContinuousTask=true` 时交仲裁器
+   *     释放长时任务; 长时任务被系统/用户取消时宿主经 platformEvent type='continuousTaskCancel' 回送,
+   *     带被取消方的业务通知 id)
    *   内部分支调 notificationManager.publish / notificationManager.cancel
    */
   registerNotificationCallback(callback: (json: string) => void): void;
@@ -380,7 +403,7 @@ export interface LegadoNativeBridge {
    * 由 OhosPlatformEventChannel 按 type 分发 (httpProgress → OhosDownloadProgressEvents,
    * lifecycle → OhosAppLifecycle)。事件方向恒为 ArkTS → Kotlin, 无 tsfn。
    *
-   * @param event 事件 JSON `{ type: 'httpProgress' | 'lifecycle', ... }`
+   * @param event 事件 JSON `{ type: 'httpProgress' | 'lifecycle' | ... | 'notificationAction' | 'continuousTaskCancel', ... }`
    */
   platformEvent(event: string): void;
 
@@ -555,6 +578,36 @@ export interface LegadoNativeBridge {
    * @param bodyRaw 数据面裸字符串: 源码 HTML / 命中 URL (失败或空结果时为空串 '')
    */
   webViewCallback(requestId: number, result: string, bodyRaw: string): void;
+
+  // ===== 前台 Web 控制器 tsfn 回调注册 + ArkTS → Kotlin 结果/事件回调 (可见 Web 组件, 单 JSON 协议) =====
+
+  /**
+   * 注册前台 Web 控制器回调 (KMP → ArkTS 跨线程 dispatch, Compose WebView slot 命令)。
+   *
+   * 与 [registerWebViewCallback] (后台隐藏 Web 抓取, 混合协议) 相互独立: 本链服务可见 Web 组件
+   * (WebViewRoute/ReadRssRoute/登录 Overlay), C++ 侧创建 napi_threadsafe_function 包装 [callback],
+   * 并通过 @CName legado_register_web_controller_fn 把 dispatch 函数指针注入 Kotlin
+   * OhosVisibleWebViewBridge。此后 KMP 调 show/hide/loadUrl/runJavaScript/getCookies/canGoBack
+   * 等命令时, 单 JSON 字符串跨线程 dispatch 到此 [callback]。
+   *
+   * @param callback 接收单 JSON 请求 `{ requestId, action, payload: '<JSON>' }`;
+   *   action: 'show' | 'hide' | 'loadUrl' | 'runJavaScript' | 'getCookies' | 'canGoBack' |
+   *   'getUrl' | 'goBack' | 'reload' | 'exitFullScreen'
+   */
+  registerWebControllerCallback(callback: (json: string) => void): void;
+
+  /**
+   * 前台 Web 结果/事件回调 (ArkTS → Kotlin, 单 JSON 协议)。
+   *
+   * ArkTS 完成前台 Web 命令后回送结果 (requestId > 0, 唤醒 Kotlin 等待方); 页面主动事件
+   * (onPageFinished/onUrlChanged/onReceivedTitle/onProgressChanged/onCloseWindow) 用
+   * requestId = 0 推送。
+   *
+   * @param requestId >0 = 命令响应 (与 Kotlin 生成 requestId 对应); 0 = 主动页面事件
+   * @param result 结果/事件 JSON: `{ ok, result?, cookie?, canGoBack?, url?, error?, event?,
+   *   title?, progress? }`
+   */
+  webControllerCallback(requestId: number, result: string): void;
 
   // ===== Markdown 查看器 tsfn 回调注册 + ArkTS → Kotlin 事件回调 (composeResources 直读 Web 渲染) =====
 

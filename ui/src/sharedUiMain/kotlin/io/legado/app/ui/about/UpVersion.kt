@@ -52,7 +52,7 @@ fun preferenceUpVersionStore(): UpVersionStore = object : UpVersionStore {
  * 弹窗挂起等待关闭后返回, 保持原版启动序列的串行语义。
  *
  * @param currentVersionCode 当前运行版本号 (app=AppConst.appInfo.versionCode,
- *   desktop=DesktopAppInfo.versionCode, iOS/鸿蒙=versionNameToVersionCode 解析)
+ *   desktop=DesktopAppInfo.versionCode, iOS/鸿蒙=[io.legado.app.help.versionNameToVersionCode] 解析)
  * @param isDebug 当前是否 DEBUG 构建
  * @param store 版本号/首次打开标志存储
  */
@@ -77,16 +77,4 @@ suspend fun upVersion(
             list.none { it.key == updateLogDocName }
         }
     }
-}
-
-/**
- * versionName → 数字版本号 (major*10000 + minor*100 + patch, 与桌面端
- * DesktopAppInfo.versionCode 同一算法), 供无包信息 API 的端 (iOS/鸿蒙) 从
- * 版本名推导比对基准; 段缺失/非数字按 0 计, 仅作"版本是否变化"的指纹。
- */
-fun versionNameToVersionCode(versionName: String): Long {
-    val parts = versionName.split('.')
-    return (parts.getOrNull(0)?.toLongOrNull() ?: 0L) * 10000L +
-        (parts.getOrNull(1)?.toLongOrNull() ?: 0L) * 100L +
-        (parts.getOrNull(2)?.toLongOrNull() ?: 0L)
 }

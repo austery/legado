@@ -226,7 +226,7 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
 
     // ---- 换源业务 ----
     override var changeSourceCheckAuthor: Boolean
-        get() = prefs.getBoolean(PreferKey.changeSourceCheckAuthor, true)
+        get() = prefs.getBoolean(PreferKey.changeSourceCheckAuthor, false)
         set(value) = prefs.putBoolean(PreferKey.changeSourceCheckAuthor, value)
 
     override var changeSourceLoadInfo: Boolean
@@ -321,6 +321,16 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
     override val isEInkMode: Boolean
         get() = themeModeCache.get() == "3"
 
+    /**
+     * 系统深浅色变化入口 (由窗口收到的系统设置变更消息触发)。
+     *
+     * 注册表探测结果带 TTL 缓存, 不先失效就读到旧值 —— 那样重算出来的还是旧日/夜的颜色。
+     * 失效后同一次调用里的 [isNightTheme] 即读注册表真值。
+     */
+    fun invalidateSystemNightMode() {
+        sysNightCacheAt = -1L
+    }
+
     // 注册表探测结果 (themeMode="0" 时 isNightTheme 的来源), 带 TTL 缓存
     override val systemNightTheme: Boolean
         get() = systemNightMode()
@@ -389,11 +399,12 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
         prefs.putInt(PreferKey.bitmapCacheSize, value)
     }
 
-    // 与 app 端 AppConfig.sourceEditMaxLine 语义一致: <10 视为不限制
+    // 与 app 端 AppConfig.sourceEditMaxLine 语义一致: 设置界面 range 5..30,
+    // 存储值不在该区间一律视为不限制, 返回 Int.MAX_VALUE 供 maxLines 直接消费
     override val sourceEditMaxLine: Int
         get() {
             val maxLine = prefs.getInt(PreferKey.sourceEditMaxLine, Int.MAX_VALUE)
-            return if (maxLine < 10) Int.MAX_VALUE else maxLine
+            return if (maxLine in 5..30) maxLine else Int.MAX_VALUE
         }
 
     // 不钳制: 存储值原样使用 (四端口径一致, 见 commonMain AppConfigAccessor.welcomeShowTime)
@@ -409,7 +420,7 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
     @Volatile
     private var sysNightValue: Boolean = false
 
-    /** 注册表读取结果缓存时长 (毫秒): 系统主题切换不频繁, 10s 足够平滑。 */
+    /** 当前系统深色模式 (读注册表 + 缓存, 见 [SYS_NIGHT_TTL_MS])。 */
     private fun systemNightMode(): Boolean {
         val now = System.currentTimeMillis()
         if (sysNightCacheAt != -1L && now - sysNightCacheAt < SYS_NIGHT_TTL_MS) {
@@ -432,8 +443,8 @@ class DesktopAppConfigAccessor : AppConfigAccessor {
         systemNightModeDetector?.invoke() ?: false
 
     companion object {
-        /** 系统深色模式检测缓存时长 (毫秒)。 */
-        const val SYS_NIGHT_TTL_MS = 10_000L
+        /** 注册表读取结果缓存时长 (毫秒): 系统主题切换不频繁, 10s 足够平滑。 */
+        private const val SYS_NIGHT_TTL_MS = 10_000L
 
         /** 系统深色模式检测器 (JNA 注册表版由 :desktop 注册; headless 不注册, 恒回落日间)。 */
         @Volatile

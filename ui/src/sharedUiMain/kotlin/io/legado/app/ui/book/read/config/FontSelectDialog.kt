@@ -123,7 +123,7 @@ fun FontSelectDialog(
                                 showTypefaceDialog = true
                             }
                         }
-                        .padding(vertical = DesignTokens.spacingDefault, horizontal = DesignTokens.spacingMd),
+                        .padding(vertical = DesignTokens.spacingDefault),
                 )
                 Spacer(Modifier.weight(1f))
                 topBarTrailing?.invoke()
@@ -131,7 +131,7 @@ fun FontSelectDialog(
 
             extraTopContent?.invoke()
 
-            // 字体列表限高 0.7 屏高 (原版 isFullHeight = true, 长列表效果等同全高)
+            // 字体列表限高 0.8 屏高 (原版 isFullHeight = true, 长列表效果等同全高)
             LazyColumn(
                 Modifier.fillMaxWidth().heightIn(max = AppDialogSizes.fullHeight()),
             ) {
@@ -187,7 +187,7 @@ private fun FontRow(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = DesignTokens.spacingLg, vertical = if (preview != null) DesignTokens.spacingXs else DesignTokens.spacingDefault),
+            .padding(vertical = if (preview != null) DesignTokens.spacingXs else DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(

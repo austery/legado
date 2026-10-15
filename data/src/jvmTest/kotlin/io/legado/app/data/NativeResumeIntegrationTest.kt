@@ -187,8 +187,8 @@ class NativeResumeIntegrationTest {
     }
 
     @Test
-    fun schema88And89UpgradePreserveDataAndValidateNewSchema() = runBlocking {
-        for (version in listOf(88,89)) {
+    fun schema88Through90UpgradePreservesDataAndResume() = runBlocking {
+        for (version in listOf(88,89,90)) {
             val path = path(); val driver = BundledSQLiteDriver()
             val fixture = requireNotNull(javaClass.getResource("/schema$version-fixture.sql")).readText()
             driver.open(path).use { connection ->
@@ -197,20 +197,29 @@ class NativeResumeIntegrationTest {
                 connection.execSQL("INSERT INTO chapters(url,title,isVolume,bookUrl,`index`,isVip,isPay) VALUES('chapter','Saved',0,'old',4,0,0)")
                 connection.execSQL("INSERT INTO cookies(url,cookie) VALUES('source','test=value')")
                 connection.execSQL("INSERT INTO book_sources(bookSourceUrl,bookSourceName,bookSourceType,lastUpdateTime,respondTime,weight) VALUES('source','Saved source',0,0,0,0)")
+                if (version == 90) {
+                    connection.execSQL("INSERT INTO native_reading_resume VALUES('old','source','chapter',4,'native-body-v1','preserved-hash',4,0,7,1234)")
+                }
                 connection.execSQL("PRAGMA user_version=$version")
             }
             var db = open(path)
             try {
                 assertEquals(37, db.bookDao.getBook("old")?.durChapterPos)
                 assertEquals("Saved",db.bookChapterDao.getChapter("old",4)?.title)
-                assertNull(db.nativeResumeDao.get("old"))
-                val saved = db.nativeResumeDao.save("source","old","chapter",4,"body",0,0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("old"))))
+                if (version == 90) {
+                    val retained = assertNotNull(db.nativeResumeDao.get("old"))
+                    assertEquals(7L, retained.revision)
+                    assertEquals("preserved-hash", retained.textSha256)
+                    assertEquals(1234L, retained.savedAt)
+                } else assertNull(db.nativeResumeDao.get("old"))
+                val saved = db.nativeResumeDao.save("source","old","chapter",4,"body",0,if (version == 90) 7 else 0, NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("old"))))
                 db.close(); db = open(path)
                 assertEquals(saved,db.nativeResumeDao.get("old"))
                 driver.open(path).use { connection ->
-                    connection.prepare("PRAGMA user_version").use { assertTrue(it.step()); assertEquals(90,it.getInt(0)) }
+                    connection.prepare("PRAGMA user_version").use { assertTrue(it.step()); assertEquals(91,it.getInt(0)) }
                     connection.prepare("SELECT cookie FROM cookies WHERE url='source'").use { assertTrue(it.step()); assertEquals("test=value",it.getText(0)) }
                     connection.prepare("SELECT bookSourceName FROM book_sources WHERE bookSourceUrl='source'").use { assertTrue(it.step()); assertEquals("Saved source",it.getText(0)) }
+                    connection.prepare("SELECT bookSourceIcon FROM book_sources WHERE bookSourceUrl='source'").use { assertTrue(it.step()); assertTrue(it.isNull(0)) }
                     connection.prepare("PRAGMA integrity_check").use { assertTrue(it.step()); assertEquals("ok",it.getText(0)) }
                     connection.prepare("PRAGMA foreign_key_check").use { assertFalse(it.step()) }
                 }

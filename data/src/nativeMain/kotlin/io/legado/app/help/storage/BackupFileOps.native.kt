@@ -1,8 +1,11 @@
 package io.legado.app.help.storage
 
+import io.legado.app.help.writeTextAtomically
 import io.legado.app.utils.File
 import io.legado.app.utils.InputStream
+import io.legado.app.utils.copyFileAtomically
 import okio.FileSystem
+import okio.IOException
 import okio.Path.Companion.toPath
 import okio.buffer
 
@@ -20,11 +23,13 @@ import okio.buffer
  * - [exists]: [File.exists]
  * - [createFolderIfNotExist]: [File.mkdirs] (递归创建)
  * - [createFileIfNotExist]: [File.parentFile]?.mkdirs() + [File.createNewFile]
- * - [writeText]: [File.writeText] (UTF-8)
+ * - [writeText]: 同目录临时件 + 整份改名就位 ([writeTextAtomically]; 与 JVM 端同一落盘机制:
+ *   写入中途失败时目标原内容照旧并抛错)
  * - [readText]: [File.readText] (UTF-8), 文件不存在抛 IllegalStateException
  * - [listFiles]: [File.listFiles]?.map { it.path } (目录不存在返回 null)
- * - [copyFile]: [File.copyTo] (overwrite, 父目录 mkdirs, 与 JVM 流式 copyTo 等价)
- * - [zipFiles]: [NativeZipCodec.zipFiles] (STORED 无压缩, 生成的 zip 可被 JVM/Android/桌面解压)
+ * - [copyFile]: 同目录唯一临时件 + 整份改名就位 ([copyFileAtomically]; 中途失败时目标原内容照旧)
+ * - [zipFiles]: [NativeZipCodec.zipFiles] (DEFLATE 固定 Huffman, 压不小/回读校验不过时回落 STORED,
+ *   生成的 zip 可被 JVM/Android/桌面解压)
  * - [unZipToPath]: [NativeZipCodec.unZipToPath] (支持 STORED + DEFLATE, 可解压 JVM 端备份 zip)
  *
  * # 下沉说明
@@ -33,7 +38,6 @@ import okio.buffer
  * 合并到 nativeMain, iOS/鸿蒙共用。
  *
  * - 路径分隔符: 恒为 "/" (POSIX, iOS/鸿蒙一致)
- * - 原子写: kotlin.io.File 无原子写 API, 直接 writeText/writeBytes (与 jvmMain Files.write 行为一致)
  * - zip: 用 [NativeZipCodec] (纯 Kotlin 实现, 移植自原 IosZipCodec/OhosZipCodec, 逻辑一致)
  *
  * 备份/恢复 zip 流程已打通 (BackupShared/RestoreShared 调用链可用)。
@@ -75,11 +79,11 @@ actual object BackupFileOps {
     }
 
     actual fun writeText(path: String, text: String) {
-        val file = File(path)
-        // 父目录不存在则递归创建 (与 jvmAndAndroidMain FileUtilsBase.createFileIfNotExist 行为对齐)
-        file.parentFile?.mkdirs()
-        // 直接 writeText (默认 UTF-8) (kotlin.io.File 无原子写 API, 与 JVM Files.write 行为一致)
-        file.writeText(text)
+        // 整份落盘 (同目录临时件 + 改名就位): 直接覆盖写会在写完之前把目标截断, 与此同时按同一
+        // 路径整读该文件的一方 (备份/恢复/配置读取) 会拿到半截内容; 失败保持目标原内容并如实上抛
+        if (!writeTextAtomically(path, text)) {
+            throw IOException("写入文件失败: $path")
+        }
     }
 
     actual fun readText(path: String): String {
@@ -137,21 +141,20 @@ actual object BackupFileOps {
     }
 
     actual fun copyFile(srcPath: String, destPath: String) {
-        // 父目录不存在则递归创建 (与 jvmAndAndroid createFileIfNotExist 行为对齐)
-        val dest = File(destPath)
-        dest.parentFile?.mkdirs()
-        // kotlin.io.File.copyTo 流式复制 (overwrite 覆盖已存在目标, 与 JVM 流式 copyTo 等价)
-        File(srcPath).copyTo(dest, overwrite = true)
+        // 整份复制替换目标 (共享实现): 临时件每次唯一 + 整份改名就位 —— 直接覆盖写在复制中途被打断
+        // 会留下半截目标 (备份 zip 被截断即读不出的坏包), 失败时目标原内容照旧并抛错
+        copyFileAtomically(File(srcPath), File(destPath))
     }
 
     /**
-     * zip 压缩 (委托 [NativeZipCodec.zipFiles], STORED 无压缩)。
+     * zip 压缩 (委托 [NativeZipCodec.zipFiles])。
      *
      * 生成的 zip 可被 jvmAndAndroidMain [io.legado.app.utils.compress.ZipUtils.unZipToPath]
      * / 标准 zip 工具解压, 解除备份 P1 阻塞 (BackupShared.backUp 调用链打通)。
      *
      * 实现细节见 [NativeZipCodec] (纯 Kotlin 写 ZIP 文件格式, 不依赖 minizip / zlib /
-     * Compression.framework; 压缩用 STORED 无压缩, 备份场景 JSON 文本体积代价可接受)。
+     * Compression.framework; 每个 entry 用 DEFLATE 固定 Huffman 压缩, 压不小或回读校验不过时
+     * 回落 STORED —— 不是“只支持 STORED”)。
      */
     actual fun zipFiles(srcPaths: List<String>, zipPath: String): Boolean {
         return NativeZipCodec.zipFiles(srcPaths, zipPath)

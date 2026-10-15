@@ -3,11 +3,9 @@ package io.legado.app.ui.dialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.InputTransformation
@@ -15,13 +13,8 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
-import androidx.compose.material.Slider
-import androidx.compose.material.SliderDefaults
-import androidx.compose.material.Surface
-import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -35,10 +28,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.legado.app.ui.compose.component.AppDialog
-import io.legado.app.ui.compose.component.AppDialogSizes
-import io.legado.app.ui.compose.component.AppTextButton
-import io.legado.app.ui.compose.component.appDialogSize
+import io.legado.app.ui.compose.component.AlertButton
+import io.legado.app.ui.compose.component.AppAlertDialog
+import io.legado.app.ui.compose.component.AppSlider
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import legado.ui.generated.resources.Res
@@ -50,7 +42,6 @@ import legado.ui.generated.resources.plus
 import legado.ui.generated.resources.reduce
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
-import kotlin.math.roundToInt
 
 /**
  * 数字选择对话框 (Compose Multiplatform / sharedUiMain)。
@@ -72,16 +63,20 @@ import kotlin.math.roundToInt
  * - [neutralButtonText]: 可选, 中性按钮文案 (如 "默认"); 传入后显示在左侧
  * - [onNeutral]: 可选, 中性按钮点击回调
  *
- * # 布局 (自上而下, 自绘 [AppDialog] + [Surface], 对齐项目 AppAlertDialog 模式)
+ * # 布局 ([AppAlertDialog]: 标题纯文字, 正文槽放控件, 按钮走 alert 三槽)
  *
- * 1. 标题 (16sp primaryText, 左对齐)
+ * 对齐原版 `showNumberPicker` (androidx `AlertDialog.Builder` + `customView(NumberPicker)`
+ * + `okButton`/`cancelButton`/`neutralButton`):
+ *
+ * 1. 标题: alert 自绘纯文字标题 —— **无返回箭头、无工具条顶栏** (原版无 `dialog_title_bar`,
+ *    关闭靠取消/点外部/返回键)
  * 2. `[-] [数字输入框] [+]` 同一行: 步进按钮移到数字左右两侧, 数字恒为输入框
  *    (纯文本形态, 无下划线/无 label/hint, 与旧版编辑态一致, 不加底色)
- * 3. Slider: 与底部按钮条仅隔 8dp (不再隔 28dp, 消除"操控悬在上部"的观感)
- * 4. 底部按钮条: 中性按钮("默认")靠左, 取消+确定靠右 (取消/确定之间 8dp)
+ * 3. Slider: 与按钮行仅隔 8dp (不再隔 28dp, 消除"操控悬在上部"的观感)
+ * 4. 按钮: 中性按钮("默认")在 alert 中性槽 (靠左), 取消/确定走 negative/positive 槽 (靠右)
  *
- * 改用自绘布局的原因: M2 AlertDialog 的 text 槽自带 28dp 底部 padding (TextPadding),
- * 无法收紧"滑条-按钮"间距; [AppDialog] 同时带来全项目统一的进入/退出动画、
+ * 不用 M2 AlertDialog 的 text 槽: 它自带 28dp 底部 padding (TextPadding), 无法收紧
+ * "滑条-按钮"间距; [AppAlertDialog] 同时带来全项目统一的进入/退出动画、
  * 返回键拦截与 E-Ink 分支。
  *
  * # 交互
@@ -95,9 +90,8 @@ import kotlin.math.roundToInt
  *
  * # 大范围精度说明
  *
- * Slider valueRange 用 Float 表示。对于 [range] 跨度极大的极端情况 (如 1024..60000
- * 端口场景), Float 精度约 7 位有效数字, 拖动定位到大致范围后
- * 可用 -/+ 按钮精确调整。
+ * 滑条按手指位置换算整数刻度 (四舍五入)。[range] 跨度极大时 (如 1024..60000 端口场景)
+ * 一个像素宽度对应几百个刻度, 拖动只能定位到大致范围, 精确值用 -/+ 按钮或输入框调。
  *
  * @param title 对话框标题
  * @param value 初始值 (会被钳制到 [range] 内)
@@ -123,11 +117,7 @@ fun NumberPickerDialog(
     val colors = AppTheme.colors
     val initial = value.coerceIn(range.first, range.last)
     var currentValue by remember { mutableIntStateOf(initial) }
-    // Slider 原始位置 (Float): M2 Slider 是受控渲染 (thumb 位置只由 value 驱动),
-    // 若在 onValueChange 里取整去重后再回写, 截断死区内的更新会被丢弃, thumb 冻结;
-    // 且 toInt() 向下截断造成方向不对称 (往大调须跨满整格才被接受)。故此状态
-    // 无条件跟随手势保证跟手, 整数化只派生业务值; 松手/步进/提交时吸附回整数。
-    var sliderValue by remember { mutableFloatStateOf(initial.toFloat()) }
+    // 滑条位置由 AppSlider 自己按手指位置持有并取整, 这里只留业务值与输入框文本
     // 数字恒为输入框 (不再"点按数字才进入编辑态"): 输入框文本是唯一数据源,
     // Slider 拖动 / -+ 步进都直接改写文本 (调整控件即修改文本值)。
     val editState = remember { TextFieldState(initial.toString()) }
@@ -138,7 +128,6 @@ fun NumberPickerDialog(
         val clamped = typed.coerceIn(range.first, range.last)
         // 无条件把钳制结果写回输入框, 越界/非法输入不再滞留界面
         editState.edit { replace(0, length, clamped.toString()) }
-        sliderValue = clamped.toFloat()
         if (clamped != currentValue) {
             currentValue = clamped
             onValueChange(clamped)
@@ -152,146 +141,103 @@ fun NumberPickerDialog(
         // 判断对 base 而非 currentValue: 输 51 (越界未提交) 后点减号必须能写回 50
         if (stepped != base) {
             currentValue = stepped
-            sliderValue = stepped.toFloat()
             editState.edit { replace(0, length, stepped.toString()) }
             onValueChange(stepped)
         }
     }
 
-    AppDialog(
+    val okText = stringResource(Res.string.ok)
+    val cancelText = stringResource(Res.string.cancel)
+
+    AppAlertDialog(
         onDismissRequest = onDismiss,
-        properties = AppDialogSizes.properties(),
+        title = title,
+        // 原版 okButton: setPositiveButton 点击后默认 dismiss; 回调里先提交编辑值再回传
+        okButton = AlertButton(text = okText) {
+            commitEdit()
+            onConfirm(currentValue)
+        },
+        cancelButton = AlertButton(text = cancelText),
+        // 原版 neutralButton: setNeutralButton 在左侧槽位, 点击后同样 dismiss
+        neutralButton = if (neutralButtonText != null && onNeutral != null) {
+            AlertButton(text = neutralButtonText, onClick = onNeutral)
+        } else null,
     ) {
-        Surface(
-            modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.dialogShape,
-            color = colors.fillet,
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(DesignTokens.spacingDefault),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(DesignTokens.spacingDefault),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(DesignTokens.spacingLg),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(DesignTokens.spacingDefault),
+            // [- ] [数字输入框] [ +]: 步进按钮移到数字左右, 输入框居中
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                // 标题 (对齐项目其他对话框: 左对齐 16sp primaryText)
-                Text(
-                    text = title,
-                    color = colors.primaryText,
-                    fontSize = 16.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = DesignTokens.spacingXs),
-                )
-                // [- ] [数字输入框] [ +]: 步进按钮移到数字左右, 输入框居中
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+                IconButton(
+                    onClick = { stepBy(-1) },
+                    modifier = Modifier.size(40.dp),
                 ) {
-                    IconButton(
-                        onClick = { stepBy(-1) },
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            painter = painterResource(Res.drawable.ic_reduce),
-                            contentDescription = stringResource(Res.string.reduce),
-                            tint = colors.accent,
-                        )
-                    }
-                    // 常驻数字输入框: 点击即聚焦编辑 (无需二次点击);
-                    // 纯文本形态 (无下划线/无 label/hint), 与显示态外观一致
-                    BasicTextField(
-                        state = editState,
-                        lineLimits = TextFieldLineLimits.SingleLine,
-                        inputTransformation = InputTransformation {
-                            val filtered = asCharSequence().toString().filter { it.isDigit() }
-                            if (filtered.length != length) {
-                                replace(0, length, filtered)
-                            }
-                        },
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
-                            imeAction = ImeAction.Done,
-                        ),
-                        onKeyboardAction = { commitEdit() },
-                        textStyle = TextStyle(
-                            fontSize = 32.sp,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                            color = colors.accent,
-                        ),
-                        cursorBrush = SolidColor(colors.accent),
-                        modifier = Modifier.weight(1f),
+                    Icon(
+                        painter = painterResource(Res.drawable.ic_reduce),
+                        contentDescription = stringResource(Res.string.reduce),
+                        tint = colors.accent,
                     )
-                    IconButton(
-                        onClick = { stepBy(1) },
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            painter = painterResource(Res.drawable.ic_add),
-                            contentDescription = stringResource(Res.string.plus),
-                            tint = colors.accent,
-                        )
-                    }
                 }
-                // Slider 拖动调整 (连续值, 适合大范围); 拖动直接改写输入框文本
-                Slider(
-                    value = sliderValue,
-                    onValueChange = {
-                        // 无条件接受原始位置, thumb 全程跟手; 整数化只用于业务值
-                        sliderValue = it
-                        val newValue = it.roundToInt().coerceIn(range.first, range.last)
-                        if (newValue != currentValue) {
-                            currentValue = newValue
-                            // 同步输入框文本: 调整滑条即修改文本值
-                            editState.edit { replace(0, length, newValue.toString()) }
-                            onValueChange(newValue)
+                // 常驻数字输入框: 点击即聚焦编辑 (无需二次点击);
+                // 纯文本形态 (无下划线/无 label/hint), 与显示态外观一致
+                BasicTextField(
+                    state = editState,
+                    lineLimits = TextFieldLineLimits.SingleLine,
+                    inputTransformation = InputTransformation {
+                        val filtered = asCharSequence().toString().filter { it.isDigit() }
+                        if (filtered.length != length) {
+                            replace(0, length, filtered)
                         }
                     },
-                    onValueChangeFinished = {
-                        // 松手后吸附到当前整数, 与输入框显示保持一致
-                        sliderValue = currentValue.toFloat()
-                    },
-                    valueRange = range.first.toFloat()..range.last.toFloat(),
-                    colors = SliderDefaults.colors(
-                        thumbColor = colors.accent,
-                        activeTrackColor = colors.accent,
-                        inactiveTrackColor = colors.accent.copy(alpha = 0.2f),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done,
                     ),
-                    modifier = Modifier.fillMaxWidth(),
+                    onKeyboardAction = { commitEdit() },
+                    textStyle = TextStyle(
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        color = colors.accent,
+                    ),
+                    cursorBrush = SolidColor(colors.accent),
+                    modifier = Modifier.weight(1f),
                 )
-                // 底部按钮条: 紧贴滑条下方 (spacedBy 8dp), 不再隔 28dp
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+                IconButton(
+                    onClick = { stepBy(1) },
+                    modifier = Modifier.size(40.dp),
                 ) {
-                    if (neutralButtonText != null && onNeutral != null) {
-                        AppTextButton(
-                            text = neutralButtonText,
-                            onClick = onNeutral,
-                            color = colors.accent,
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    AppTextButton(
-                        text = stringResource(Res.string.cancel),
-                        onClick = onDismiss,
-                        color = colors.accent,
-                    )
-                    Spacer(Modifier.width(DesignTokens.spacingDefault))
-                    AppTextButton(
-                        text = stringResource(Res.string.ok),
-                        onClick = {
-                            commitEdit()
-                            onConfirm(currentValue)
-                            // 对齐原版 setPositiveButton: 点击后默认 dismiss
-                            onDismiss()
-                        },
-                        color = colors.accent,
+                    Icon(
+                        painter = painterResource(Res.drawable.ic_add),
+                        contentDescription = stringResource(Res.string.plus),
+                        tint = colors.accent,
                     )
                 }
             }
+            // Slider 拖动调整 (连续值, 适合大范围); 拖动直接改写输入框文本
+            AppSlider(
+                value = currentValue,
+                min = range.first,
+                max = range.last,
+                onValueChange = { newValue ->
+                    if (newValue != currentValue) {
+                        currentValue = newValue
+                        // 同步输入框文本: 调整滑条即修改文本值
+                        editState.edit { replace(0, length, newValue.toString()) }
+                        onValueChange(newValue)
+                    }
+                },
+                color = colors.accent,
+                trackColor = colors.accent.copy(alpha = 0.2f),
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

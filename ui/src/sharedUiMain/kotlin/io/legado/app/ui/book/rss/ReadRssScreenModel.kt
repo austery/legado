@@ -103,7 +103,15 @@ sealed interface ReadRssUiEvent {
  */
 interface ReadRssUiActions {
     fun onRefresh()
+
+    /** 目录: 弹 [io.legado.app.ui.route.TocDialogHost] (文章列表)。 */
+    fun onToc()
+
     fun onToggleStar()
+
+    /** 标题栏点击: 进当前书/文章的详情页 (对照本仓文本阅读菜单顶栏与视频播放页顶栏)。 */
+    fun onOpenBookInfo()
+
     fun onShare()
     fun onReadAloud()
     fun onOpenInBrowser()

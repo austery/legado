@@ -1,13 +1,16 @@
 package io.legado.app.help.archive
 
+import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.exception.SecurityException
 import io.legado.app.help.FileUtilsCommon
 import io.legado.app.help.storage.NativeZipCodec
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.model.fileBook.RangedSource
 import io.legado.app.model.fileBook.RemoteZipCore
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.File
+import io.legado.app.utils.atomicWriteTempPath
 import okio.Buffer
 import okio.GzipSource
 
@@ -49,11 +52,12 @@ object NativeArchiveProvider : ArchiveProvider {
                 }
             }
 
-            // 单文件 gzip: 直接解压成同 base 名文件
+            // 单文件 gzip: 解压成同 base 名文件 (与 gzipToFile 同口径: 唯一临时件 + 改名就位)
             name.endsWith(".gz", true) -> {
                 val out = destDir + "/" + name.removeSuffix(".gz")
-                File(out.substringBeforeLast('/')).mkdirs()
-                File(out).writeBytes(gzipDecompress(File(archivePath).readBytes()))
+                if (!writeBytesAtomically(out, gzipDecompress(File(archivePath).readBytes()))) {
+                    throw NoStackTraceException("gzip 解压写入失败: $out")
+                }
             }
 
             // zip/cbz: 项目已有 NativeZipCodec
@@ -71,10 +75,19 @@ object NativeArchiveProvider : ArchiveProvider {
         return result
     }
 
-    /** gzip 解压到同目录临时 tar 文件 (okio native GzipSource)。 */
+    /**
+     * gzip 解压到同目录中间件 (okio native GzipSource), 解完由调用方删掉。
+     *
+     * 中间件名走整份写入的共享契约 ([atomicWriteTempPath]: 目标名 + 随机唯一串 + 契约后缀): 同名源被
+     * 两次解压时不会共用一条路径 (共用同名 .tar 时, 后写的那次会截断前一次正在读的中间件, 还会互相
+     * 删掉对方的那份)。中间件没有对外成品名, 不需要再改名就位。
+     */
     private fun gzipToFile(src: File): File {
-        val tmp = File(src.path + ".tar")
-        tmp.writeBytes(gzipDecompress(src.readBytes()))
+        val tmp = File(atomicWriteTempPath(src.path + ".tar"))
+        if (!FileUtilsCommon.writeBytes(tmp.path, gzipDecompress(src.readBytes()))) {
+            FileUtilsCommon.delete(tmp.path)
+            throw NoStackTraceException("gzip 解压写入失败: ${src.path}")
+        }
         return tmp
     }
 
@@ -157,6 +170,40 @@ object NativeArchiveProvider : ArchiveProvider {
                 zip.close()
             }
         }.getOrNull()
+    }
+
+    /**
+     * 列举压缩包内条目名 (仅 zip/cbz)。
+     *
+     * 复用 [RemoteZipCore] 的 central directory 解析, 不整包解压。
+     *
+     * # 与 app 端差异
+     * - rar/7z/bz2/xz/lzma 无 native 解码器 (见本文件 deCompress 的同类限制), 无条目可列,
+     *   返回空列表并由 [AppLog] 记下原因 (不静默); 调用方对空列表的展示与 app 端读失败一致
+     * - [filter] 为 null 直接返回空列表, 对齐 app 端 `LibArchiveUtils.getFilesName` 语义
+     */
+    override fun getFilesName(archivePath: String, filter: ((String) -> Boolean)?): List<String> {
+        if (filter == null) return emptyList()
+        val file = File(archivePath)
+        val name = file.name
+        if (!name.endsWith(".zip", true) && !name.endsWith(".cbz", true)) {
+            AppLog.put("iOS/鸿蒙端仅支持 zip/cbz 列出条目, 不支持 $name")
+            return emptyList()
+        }
+        return runCatching {
+            val bytes = file.readBytes()
+            val zip = RemoteZipCore(bytesRangedSource(bytes), name, bytes.size.toLong())
+            try {
+                zip.ensureMeta().values
+                    .map { it.entry.name }
+                    .filter { !it.endsWith("/") && filter(it) }
+            } finally {
+                zip.close()
+            }
+        }.getOrElse {
+            AppLog.put("列举压缩包条目失败: $archivePath\n${it.message}", it)
+            emptyList()
+        }
     }
 
     private fun collectFiles(dir: File, out: MutableList<String>) {

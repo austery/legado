@@ -56,7 +56,9 @@ import io.legado.app.model.manga.MangaSourceDelegateImpl
 import io.legado.app.model.webBook.PluginSourceDelegates
 import io.legado.app.utils.RegexReplacer
 import io.legado.app.utils.RegexReplacers
+import io.legado.app.utils.RuleRegexes
 import io.legado.app.utils.isNightMode
+import io.legado.app.utils.registerRuleRegexForJsonPath
 import io.legado.app.utils.replace
 import io.legado.app.utils.sysConfiguration
 import okhttp3.Cookie
@@ -93,7 +95,7 @@ object WebBookProvidersImpl :
     override val bookDao get() = appDb.bookDao
     override val bookSourceDao get() = appDb.bookSourceDao
     override val bookChapterDao get() = appDb.bookChapterDao
-    // BookInfoViewModelShared.loadGroup 用 (查询分组名)
+    // 详情页读分组名 / 书架分组流用 (bookGroupDao)
     override val bookGroupDao get() = appDb.bookGroupDao
     override val keywordHighlightDao get() = appDb.keywordHighlightDao
     override val replaceRuleDao get() = appDb.replaceRuleDao
@@ -349,7 +351,7 @@ object WebBookProvidersImpl :
         BookHelp.saveContent(bookSource, book, bookChapter, content)
     }
 
-    // CacheBookShared 下沉新增: 漫画/插画图片保存 (app 端真实实现, 桌面端默认 no-op)
+    // CacheBookShared 下沉新增: 漫画/插画图片保存 (委托 BookHelp.saveImages, 四端同一共享编排)
     override suspend fun saveImages(
         bookSource: io.legado.app.data.entities.BookSource,
         book: io.legado.app.data.entities.Book,
@@ -360,7 +362,7 @@ object WebBookProvidersImpl :
         BookHelp.saveImages(bookSource, book, bookChapter, content, concurrency)
     }
 
-    // CacheBookShared 下沉新增: 图片完整性检测 (app 端真实实现, 桌面端默认 false)
+    // CacheBookShared 下沉新增: 图片完整性检测 (委托 BookHelp.hasImageContent, 按章节校验图片完整性)
     override fun hasImageContent(
         book: io.legado.app.data.entities.Book,
         bookChapter: io.legado.app.data.entities.BookChapter
@@ -415,10 +417,11 @@ object WebBookProvidersImpl :
     // ---- RegexReplacer ----
     override fun replace(
         source: CharSequence,
-        regex: Regex,
+        pattern: String,
+        multiline: Boolean,
         replacement: String,
         timeout: Long
-    ): String = source.replace(regex, replacement, timeout)
+    ): String = source.replace(pattern, multiline, replacement, timeout)
 
     // ---- OkHttpClientProvider ----
     // 书源栈 (SharedCookieJarBridge/CookieStore 体系) 加挂 CF 挑战拦截器 (决策 1a):
@@ -549,6 +552,11 @@ fun registerAndroidWebBookProviders() {
     BookHelpProviders.register(impl)
     IntentDataProviders.register(impl)
     RegexReplacers.register(impl)
+    // 规则正则: 安卓用默认实现 (kotlin.text.Regex → java.util.regex.Pattern/ICU) ——
+    // libcore 的 Matcher 分组量词迭代长度固定时走循环而非递归, 且 Pattern 编译期有
+    // StackOverflowError 包装; rjpath 的 match() 同样接上本实现
+    RuleRegexes.register(null)
+    registerRuleRegexForJsonPath()
     OkHttpClientProviders.register(impl)
     // CbzFile 下沉新增: 注册 BitmapProvider (封面提取 BitmapFactory) + ZipFileWrapperFactory (zip 工厂)
     BitmapProviders.register(BitmapProviderImpl)

@@ -19,10 +19,53 @@ import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.analyzeRule.RuleData
 import io.legado.app.model.analyzeRule.UrlOptionSerializer
 import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.RuleRegexes
 import io.legado.app.utils.decodeOrNull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+
+/**
+ * 列表翻页游标: 页码 + 上一页解析出的下一页地址。
+ *
+ * 发现页/单源搜索页与主页无限流共用同一份翻页裁决 (对照 app 端 ExploreShowViewModel.explore):
+ * - 配了"下一页地址"规则的源直接请求上一页解析出的地址, 未配置/取不到时回落到页码模板;
+ * - 从第 2 页起, 去重后列表不再增长即认定为到底 (源忽略页码时不会反复请求同一页)。
+ */
+class BookListPager {
+
+    /** 下一次请求的页码 (1-based)。 */
+    var page: Int = 1
+        private set
+
+    /** 上一页解析出的下一页地址 (null = 按页码模板翻页)。 */
+    var nextPageUrl: String? = null
+        private set
+
+    /** 是否还有下一页 (重载第 1 页后、本次请求出结果前为 true)。 */
+    var hasNextPage: Boolean = true
+        private set
+
+    /** 重载第 1 页: 页码、下一页地址、到底标记一并复位。 */
+    fun reset() {
+        page = 1
+        nextPageUrl = null
+        hasNextPage = true
+    }
+
+    /**
+     * 提交一页结果并推进游标。
+     *
+     * @param result 本页解析结果 (下一页地址 + 是否还有下一页)
+     * @param prevSize 本页合并去重前的条数
+     * @param curSize 本页合并去重后的条数
+     */
+    fun advance(result: BookListPage, prevSize: Int, curSize: Int) {
+        hasNextPage = result.hasNextPage && (page == 1 || curSize > prevSize)
+        nextPageUrl = result.nextPageUrl
+        page++
+    }
+}
 
 /**
  * webBook 编排层入口。
@@ -39,6 +82,9 @@ import kotlinx.coroutines.ensureActive
  */
 object WebBook {
 
+    /** 书源 URL 匹配规则的单次匹配上限 (毫秒), 与替换规则默认超时同口径。 */
+    private const val RULE_REGEX_TIMEOUT = 3000L
+
     /**
      * 搜索和发现
      */
@@ -52,6 +98,7 @@ object WebBook {
         onUrlResolved: ((AnalyzeUrlCore) -> Unit)? = null,
         selectedOptions: Map<String, String>? = null,
         pluginFilters: PluginFilterSession? = null,
+        nextPageUrl: String? = null,
     ): BookListPage {
         // 插件虚拟源无规则可解析, 命中即转交委派 (搜索走 isSearch=true, 发现走 isSearch=false;
         // 发现路径的 key 即 exploreUrl 分类的 url 段, 交委派自行分派取数面;
@@ -65,6 +112,8 @@ object WebBook {
             if (bookSource.searchUrl.isNullOrBlank()) throw NoStackTraceException("搜索url不能为空")
             else url = bookSource.searchUrl!!
         }
+        // 上一页解析出的下一页地址优先 (配置了下一页地址规则的源不再按页码拼地址)
+        if (!nextPageUrl.isNullOrBlank()) url = nextPageUrl
         val ruleData = RuleData()
         val variables = buildMap<AppConst.JsVarName, Any> {
             if (isSearch) put(AppConst.JsVarName.KEY, key)
@@ -153,7 +202,12 @@ object WebBook {
             }
         }else AppDbProviders.get().bookSourceDao.getBookSourceAddBook(baseUrl)
             ?: AppDbProviders.get().bookSourceDao.hasBookUrlPattern().find { source ->
-            bookUrl.matches(source.bookUrlPattern!!.toRegex())
+            // 经 [RuleRegexes] 以模式串匹配 (带时间上限): 模式串来自书源, 原写法每次重新编译
+            // 且在 native 端编译/匹配都会递归爆栈
+            val pattern = source.bookUrlPattern ?: return@find false
+            RuleRegexes.get().matchesEntire(
+                bookUrl, pattern, multiline = false, timeout = RULE_REGEX_TIMEOUT
+            )
         }
         // 原版把"没匹配到书源"和"抓取失败"一起裹进 catch-all, 两者都报"未找到匹配书源",
         // 且 source 为 null 时是 `source!!` 抛 NPE 被顺带吞掉。这里把两种失败分开:
@@ -447,7 +501,8 @@ object WebBook {
             getBookListAwait(
                 bookSource, name,
                 filter = { fName, fAuthor -> fName == name && fAuthor == author },
-                shouldBreak = { it > 0 }
+                shouldBreak = { it > 0 },
+                pluginFilters = pluginFilterSessionOf(bookSource),
             ).books.firstOrNull()?.let { searchBook ->
                 currentCoroutineContext().ensureActive()
                 return@runCatching searchBook.toBook()

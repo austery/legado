@@ -82,6 +82,7 @@ include(":headless")
 if (enableOhosTarget) {
     include(":modules:ksoup-ohos")
     include(":modules:epub4kmp-ohos")
+    include(":modules:reorderable-ohos")
 }
 
 // Independent Swift-callable iOS runtime.

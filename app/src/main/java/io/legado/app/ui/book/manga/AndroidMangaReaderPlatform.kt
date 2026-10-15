@@ -11,15 +11,13 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.book.BookHelp
-import io.legado.app.help.image.MangaImageBytesLoader
 import io.legado.app.ui.book.manga.config.MangaColorFilterConfig
 import io.legado.app.ui.book.manga.entities.MangaCellState
 import io.legado.app.ui.book.manga.render.MangaCoilImage
 import io.legado.app.ui.book.manga.render.preloadMangaImageAndroid
 import io.legado.app.ui.root.PlatformServiceProviders
-import io.legado.app.ui.root.imageExtension
+import io.legado.app.utils.writeDocumentBytesAtomically
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 
 object AndroidMangaReaderPlatform : MangaReaderScreenModel.Platform {
@@ -74,27 +72,17 @@ object AndroidMangaReaderPlatform : MangaReaderScreenModel.Platform {
         )
     }
 
-    // 保存图片: 先取得原始字节, 以实际格式生成 SAF 文件名 (对齐原版 FileUtils.saveImage(File, Uri) 的魔数命名)
+    // 保存图片: 只导出已缓存的图 (对照原版 BaseReadViewModel.saveImage 的读取段), 落点走 SAF 单文件
+    // (写盘整份归位与回落条件见 [writeDocumentBytesAtomically])
     override suspend fun saveImage(
         url: String,
         book: Book?,
         source: BookSource?,
     ): Boolean? = withContext(Dispatchers.IO) {
-        book ?: return@withContext false
-        val files = PlatformServiceProviders.get().files
-        runCatching {
-            val bytes = MangaImageBytesLoader.load(url, book, source, currentCoroutineContext())
-                ?: return@runCatching false
-            val name = "manga-${System.currentTimeMillis()}${imageExtension(bytes, url)}"
-            val destPath = files.saveFile(name)
-                ?: return@runCatching null
-            val uri = destPath.toUri()
-            App.instance.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                ?: return@runCatching false
-            true
-        }.getOrElse {
-            io.legado.app.constant.AppLog.put("保存图片出错\n${it.localizedMessage}", it)
-            false
+        saveCachedMangaImage(url, book) { name, bytes ->
+            val destPath = PlatformServiceProviders.get().files.saveFile(name)
+                ?: return@saveCachedMangaImage null
+            writeDocumentBytesAtomically(App.instance, destPath.toUri(), name, bytes)
         }
     }
 }

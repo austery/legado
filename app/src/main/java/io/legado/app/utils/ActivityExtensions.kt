@@ -25,28 +25,6 @@ import io.legado.app.ui.compose.dialogs.alert
 import io.legado.app.ui.root.AppNavigatorProviders
 import io.legado.app.ui.root.AppOverlay
 
-inline fun <reified T : DialogFragment> AppCompatActivity.showDialogFragment(
-    arguments: Bundle.() -> Unit = {}
-) {
-    val dialog = T::class.java.newInstance()
-    val bundle = Bundle()
-    bundle.apply(arguments)
-    dialog.arguments = bundle
-    dialog.show(supportFragmentManager, T::class.simpleName)
-}
-
-inline fun <reified T : DialogFragment> AppCompatActivity.dismissDialogFragment() {
-    supportFragmentManager.fragments.forEach {
-        if (it is T) {
-            it.dismissAllowingStateLoss()
-        }
-    }
-}
-
-fun AppCompatActivity.showDialogFragment(dialogFragment: DialogFragment) {
-    dialogFragment.show(supportFragmentManager, dialogFragment::class.simpleName)
-}
-
 val WindowManager.windowSize: DisplayMetrics
     get() {
         val displayMetrics = DisplayMetrics()
@@ -96,8 +74,9 @@ fun WindowManager.realScreenSize(): android.graphics.Point {
  *
  * 只留官方一条开关 —— 旧实现 `setDecorFitsSystemWindows(true)` 与手写
  * `LAYOUT_FULLSCREEN|LAYOUT_STABLE` 语义相反 (前者要 decor 代为避让, 后者要铺满)。
- * 不用 androidx `enableEdgeToEdge()`: 它会改两栏颜色与 navigationBarContrastEnforced,
- * 而这两项归 ThemeStore (setStatusBarColorAuto / setNavigationBarColorAuto)。
+ * 不用 androidx `enableEdgeToEdge()`: 它会按 SystemBarStyle 自己决定两栏底色与
+ * 对比度保护, 而底色归 ThemeStore (setStatusBarColorAuto / setNavigationBarColorAuto),
+ * 两者叠加会出现系统栏底色与主题色不一致。
  */
 fun Activity.edgeToEdge() {
     WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -106,6 +85,22 @@ fun Activity.edgeToEdge() {
                 or WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION
     )
     window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+    // 挖孔模式: Android 15 起非浮动窗口一律按 ALWAYS 解释, 这里显式声明同一意图,
+    // 不依赖系统兜底 (API 30+ 有 ALWAYS; 28/29 用 SHORT_EDGES 让内容进入挖孔区)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        window.attributes.layoutInDisplayCutoutMode =
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        window.attributes.layoutInDisplayCutoutMode =
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+    }
+    // 系统栏对比度保护: 状态栏与三键导航栏默认会盖一层半透明底, 关掉后系统栏区域
+    // 完全透出内容 (底栏色/阅读背景色直通), 与手势导航行为一致 —— 对照官方
+    // "Display content edge-to-edge in views" 的 Create transparent system bars
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        window.isStatusBarContrastEnforced = false
+        window.isNavigationBarContrastEnforced = false
+    }
 }
 
 /**

@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.sp
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.DirUsage
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.AppWebDavShared
 import io.legado.app.help.config.AppConfigProviders
@@ -206,7 +207,9 @@ fun BackupConfigRoute(
                 } else if (backupPath.isNullOrBlank()) {
                     // 没设路径: SAF 选目录, 选完写 prefs + 立即备份 (对照 app 端 backupDir.launch)
                     screenModel.scope.launch {
-                        val path = withContext(IoDispatcher) { services.files.pickDirectory() }
+                        val path = withContext(IoDispatcher) {
+                            services.files.pickDirectory(DirUsage.Backup)
+                        }
                         if (path != null) {
                             pref.putString(PreferKey.backupPath, path)
                             screenModel.dispatch(
@@ -219,14 +222,14 @@ fun BackupConfigRoute(
                     // 对照 app 端 backup(): 已设路径先 checkWrite, 不可写则重新选目录再备份
                     screenModel.scope.launch {
                         val canWrite = withContext(IoDispatcher) {
-                            services.files.checkWrite(backupPath)
+                            services.files.checkWrite(backupPath, DirUsage.Backup)
                         }
                         if (canWrite) {
                             startBackup(backupPath, uploadToWebDav)
                         } else {
                             // 对照 app 端 backupDir.launch(): 重新选目录, 选完写 prefs + 立即备份
                             val path = withContext(IoDispatcher) {
-                                services.files.pickDirectory()
+                                services.files.pickDirectory(DirUsage.Backup)
                             }
                             if (path != null) {
                                 pref.putString(PreferKey.backupPath, path)
@@ -298,7 +301,7 @@ fun BackupConfigRoute(
             onSelectBackupPath = {
                 screenModel.scope.launch {
                     val path = withContext(IoDispatcher) {
-                        PlatformServiceProviders.get().files.pickDirectory()
+                        PlatformServiceProviders.get().files.pickDirectory(DirUsage.Backup)
                     }
                     if (path != null) {
                         pref.putString(PreferKey.backupPath, path)
@@ -313,7 +316,7 @@ fun BackupConfigRoute(
 
     // 对照 app 端 init: 初始化 6 个动态 summary
     LaunchedEffect(Unit) {
-        // 对照 app 端 onViewCreated: 首次进入弹 webDavHelp (LocalConfig.backupHelpVersionIsLast)
+        // 对照原版 onViewCreated: 首次进入弹 webDavHelp (LocalConfig.backupHelpVersionIsLast)
         // 版本标记存 "local" prefs (LocalConfigStore), 与 app 端 LocalConfig 同存储, 老用户升级不重复弹
         val local = LocalConfigProviders.get()
         val isLastHelp = LocalConfigShared.isLastVersion(
@@ -423,7 +426,7 @@ fun BackupConfigRoute(
                 showRestoreIgnore = false
             },
         ) {
-            // 多选列表 (对照 app 端 multiChoiceItems 交互; 样式为 Compose 近似: 24/8 padding + 12 间距 + toggleable Checkbox)
+            // 多选列表 (对照 app 端 multiChoiceItems 交互; 样式为 Compose 近似: 左右不叠加额外边距(内容槽 8dp) + 上下 8 + 12 间距 + toggleable Checkbox)
             Column {
                 titles.forEachIndexed { index, title ->
                     Row(
@@ -437,7 +440,7 @@ fun BackupConfigRoute(
                                     BackupConfigShared.ignoreConfig[keys[index]] = it
                                 },
                             )
-                            .padding(horizontal = DesignTokens.spacingXl, vertical = DesignTokens.spacingDefault),
+                            .padding(vertical = DesignTokens.spacingDefault),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(DesignTokens.spacingMd),
                     ) {

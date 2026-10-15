@@ -72,6 +72,14 @@ expect object FileUtilsCommon {
     fun delete(path: String, deleteRootDir: Boolean = true): Boolean
 
     /**
+     * 文件大小 (字节); 不存在或不是普通文件返回 0。
+     *
+     * 供"缓存文件是否有效"类判据使用 (图片缓存的存在性判据即"存在且非空"): 整份写入
+     * 后目标名上不会出现写一半的半截内容, 剩下的退化情况只有零字节文件, 判非空即可把它与可用缓存分开。
+     */
+    fun length(path: String): Long
+
+    /**
      * 列出目录下所有文件 (不含子目录) 的绝对路径。
      * 非目录或不存在返回空列表 (与原 folder.listFiles 行为对齐)。
      */
@@ -96,7 +104,22 @@ expect object FileUtilsCommon {
     fun listSubDirs(path: String): List<String>
 
     /**
+     * 单层目录是否"不存在或为空" (只列一层, 不递归)。
+     *
+     * 与 [listFiles] / [listSubDirs] 的关键差别是**不吞 IO 错误**: 那两个方法把 `list` 返回 null
+     * 一律当空列表, 对"是目录但读目录出错"会误报空目录; 本方法把那种情况当"非空"(返回 false)。
+     *
+     * 语义与下沉前桌面端 `DesktopCore.dirAbsentOrEmpty` 逐字一致 (启动期清理的早退判据专用):
+     * "File.list() 在'是目录但读目录出错'时也返回 null, 这种情况按非空处理让清理照原样跑,
+     * 不用空判掩盖 IO 错误造成漏清"。
+     */
+    fun isDirAbsentOrEmpty(path: String): Boolean
+
+    /**
      * 递归统计目录下所有普通文件的大小总和 (字节); 文件返回自身大小, 不存在返回 0。
+     *
+     * 整份写入的临时件不计入 ([io.legado.app.utils.isAtomicWriteTempName]): 消费方是缓存条目
+     * 占用统计 (漫画缓存 512MB 预算 / 单本书缓存大小展示), 临时件不是条目。
      */
     fun getDirSize(path: String): Long
 
@@ -108,4 +131,18 @@ expect object FileUtilsCommon {
      * 尾部带分隔符的路径返回空串。
      */
     fun getName(path: String): String
+
+    /**
+     * 用 [srcPath] 整份替换 [dstPath] (同卷原子改名), 成功返回 true。
+     *
+     * 供"先把字节写同目录临时件, 再改名就位"的写入方使用: 调用期间 [dstPath] 要么是完整的
+     * 旧内容、要么是完整的新内容, 并发读方不会读到已截断或写一半的文件。
+     *
+     * [srcPath] 与 [dstPath] 必须同卷 (临时件要落在目标同目录); 改名不复制字节, [srcPath]
+     * 成功后就位为 [dstPath]。失败保持 [dstPath] 原内容可用并返回 false, [srcPath] 由调用方清理。
+     *
+     * 平台实现: jvmAndAndroidMain 委托 [io.legado.app.utils.FileUtilsBase.replaceFileAtomically],
+     * nativeMain 委托 [io.legado.app.utils.replaceFileAtomically] (两端同一语义)。
+     */
+    fun replaceFileAtomically(srcPath: String, dstPath: String): Boolean
 }

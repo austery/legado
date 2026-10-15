@@ -24,6 +24,9 @@ import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.ScreenModel
 import io.legado.app.ui.root.screenModelScope
 import io.legado.app.utils.ConvertUtils
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.incrementAndFetch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -53,6 +56,7 @@ import org.jetbrains.compose.resources.getString
  * 桌面/iOS 端可直接构造本类复用。派生状态 (isLandscape/useDevFeat/isDarkTheme/menuState)
  * 由宿主在 Composition 时经 [BookInfoUiState.copy] 覆盖, 不走 dispatch。
  */
+@OptIn(ExperimentalAtomicApi::class)
 class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
 
     private val appDb get() = AppDbProviders.get()
@@ -94,13 +98,19 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
     )
     val state: StateFlow<BookInfoUiState> = _state.asStateFlow()
 
-    // 等待对话框显隐 (对照 BookInfoViewModelShared._waitDialogData, webFile 流程的加载指示)
+    // 等待对话框显隐 (原 app 端 waitDialogData, webFile 流程的加载指示)
     private val _waitDialog = MutableStateFlow<Boolean?>(null)
     val waitDialog: StateFlow<Boolean?> = _waitDialog.asStateFlow()
 
-    // 动作事件 (对照 BookInfoViewModelShared._actionLive, webFile 流程的 selectBooksDir 回调)
+    // 动作事件 (原 app 端 actionLive, webFile 流程的 selectBooksDir 回调)。
+    //
+    // replay = 0 (不是 LiveData → signalFlow 惯用的 1): 这是一次性**请求**而不是粘性状态,
+    // 唯一的消费者是 BookInfoRoute 的组合期收集协程 —— 它随本页被压栈/Lazy 回收而结束、
+    // 返回本页时重新收集。若保留 replay = 1, 用户处理完 (或取消) 那次请求后去别的页面再回来,
+    // 缓存的"去设置目录"会被重放, 每次返回都平白弹一次目录选择器。
+    // 发出点全部在同页用户操作 (点"阅读"/"上架") 触发的协程里, 消费者必然已就位, 不会丢事件。
     private val _actionLive = MutableSharedFlow<String>(
-        replay = 1,
+        replay = 0,
         extraBufferCapacity = 8,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
@@ -125,9 +135,24 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
      * 落地加载是否已开工。放在 ScreenModel 而不是 remember: 模型随路由 entry 存活
      * (ScreenModelStore.retain), 从阅读页/目录页/编辑页返回本页时组合体重建而模型不重建 ——
      * 对照原版 `BookInfoViewModel.initData` 的 `curBook != null → return`, 不重复查库/回源,
-     * 也不再二次执行 rss 书的 tocUrl/bookUrl 换位 (二次执行会把 bookUrl 写成 "data:")。
+     * 也不再二次执行 rss 书的 tocUrl 补位。
      */
     var bootStarted: Boolean = false
+
+    /**
+     * 当前书籍展示版本 (每次 [BookInfoUiEvent.ShowBook] 递增)。
+     *
+     * 落地加载的多条链工作线程不同, 而字数链是"先算后交", 算出值的线程与交回值的线程可能不同;
+     * 用原子量保证"递增与读取"看到的是同一个先后顺序。
+     */
+    private val bookVersion = AtomicInt(0)
+
+    /**
+     * 供并行链开工时记版: 与目录链并行推进的字数计算结果上屏前要按此比对
+     * (目录链完成时已换上刷新后的书, 再回填刷新前的字数会把新的覆盖掉),
+     * 陈旧结果直接丢弃。
+     */
+    fun currentBookVersion(): Int = bookVersion.load()
 
     fun dispatch(event: BookInfoUiEvent) {
         when (event) {
@@ -137,14 +162,17 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
             // 书籍数据更新 (bookData observe 触发)。**不**顺带 bump coverTick:
             // 封面重载只由真换了封面驱动 (BumpCoverTick / getDisplayCover 变化后 remember 重启),
             // 否则每次刷新都销毁封面子树 → 首帧退回默认封面
-            is BookInfoUiEvent.ShowBook -> _state.update {
-                it.copy(
-                    book = event.book,
-                    bookTick = it.bookTick + 1,
-                    lastedTitle = event.lastedTitle,
-                    // refreshing 不在这里复位: 收口在 [launchRefreshing] 的 finally,
-                    // 否则刷新的两步 (ShowBook/UpdateToc) 各自复位一次, 只是重复
-                )
+            is BookInfoUiEvent.ShowBook -> {
+                bookVersion.incrementAndFetch()
+                _state.update {
+                    it.copy(
+                        book = event.book,
+                        bookTick = it.bookTick + 1,
+                        lastedTitle = event.lastedTitle,
+                        // refreshing 不在这里复位: 收口在 [launchRefreshing] 的 finally,
+                        // 否则刷新的两步 (ShowBook/UpdateToc) 各自复位一次, 只是重复
+                    )
+                }
             }
 
             is BookInfoUiEvent.UpdateToc -> _state.update {
@@ -162,8 +190,9 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
                 it.copy(groupName = event.groupName)
             }
 
-            is BookInfoUiEvent.UpdateWordCount -> _state.update {
-                it.copy(wordCountText = event.text)
+            is BookInfoUiEvent.UpdateWordCount -> _state.update { cur ->
+                if (event.bookVersion != bookVersion.load()) cur
+                else cur.copy(wordCountText = event.text)
             }
 
             BookInfoUiEvent.RefreshDone -> _state.update {
@@ -315,7 +344,7 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
                 lastedTitle = if (toc.isEmpty()) null else lasted,
             )
         )
-        dispatch(BookInfoUiEvent.UpdateWordCount(wordCountTextOf(book)))
+        dispatch(BookInfoUiEvent.UpdateWordCount(wordCountTextOf(book), currentBookVersion()))
     }
 
     /** 对照 app 端 BaseReadViewModel.loadBookInfo。 */
@@ -432,8 +461,13 @@ sealed interface BookInfoUiEvent {
     /** 分组名更新 */
     data class UpdateGroup(val groupName: String) : BookInfoUiEvent
 
-    /** 字数信息更新 */
-    data class UpdateWordCount(val text: String?) : BookInfoUiEvent
+    /**
+     * 字数信息更新。
+     *
+     * [bookVersion] 为计算开工时的 [currentBookVersion] 快照: 展示中的书已换代 (回源/换源/刷新回写了新书)
+     * 时丢弃该陈旧结果。
+     */
+    data class UpdateWordCount(val text: String?, val bookVersion: Int) : BookInfoUiEvent
 
     /** book 原地可变后驱动重组 (toggleCanUpdate / toggleSplitLongChapter) */
     object BumpBookTick : BookInfoUiEvent

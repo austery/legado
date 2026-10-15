@@ -35,6 +35,7 @@
     <string name="import_local">Import local</string>
     <string name="import_on_line">Import online</string>
     <string name="group_sources_by_domain">Group by domain</string>
+    <string name="show_source_icon">Show source icons</string>
     <string name="update_log">What\'s new</string>
     <string name="help">Help</string>
     <string name="edit">Edit</string>
@@ -62,6 +63,7 @@
     <string name="progress_bar_behavior">Progress bar behavior</string>
     <string name="text_full_justify">Text justified</string>
     <string name="text_bottom_justify">Text align bottom</string>
+    <string name="hang_first_punctuation">Hang punctuation at paragraph start</string>
     <string name="volume_key_page_on_play">Volume keys to turn page when reading</string>
     <string name="page_touch_slop_title">Sliding Page Threshold</string>
     <string name="auto_change_source">Change source automatically</string>
@@ -77,8 +79,6 @@
     <string name="pause_read_aloud_while_phone_calls_summary">Pause speech during calls, requires phone state permission</string>
     <string name="read_aloud_wake_lock">Read aloud service wake-up lock</string>
     <string name="read_aloud_wake_lock_summary">The wake-up lock is enabled when reading aloud is enabled, and the wake-up lock on some mobile phones will be killed in the background.</string>
-    <string name="system_media_control_compatibility_change">System Media Control Compatibility Change</string>
-    <string name="system_media_control_compatibility_change_summary">If system media controls do not appear on the lock screen, you can try enabling this, for example on OneUI 7.0 or Vivo devices.</string>
     <string name="pref_media_button_per_next">Media Buttons • Previous | Next</string>
     <string name="pref_media_button_per_next_summary">Previous Paragraph|Next Paragraph/Previous Chapter|Next Chapter</string>
     <string name="read_aloud_by_page">Speak by pages</string>
@@ -131,7 +131,7 @@
     <string name="add">Add</string>
     <string name="close">Close</string>
     <string name="source_filter_rule_manage">Manage all</string>
-    <string name="source_filter_rule_no_match">No block rules apply to this scope.</string>
+    <string name="source_filter_rule_no_match">No filter rules apply to this scope.</string>
     <string name="select_font">Select fonts</string>
     <string name="default_font">Default font</string>
     <string name="other_folder">Other folder</string>
@@ -172,6 +172,7 @@
     <string name="timeout_millisecond">Timed out milliseconds</string>
     <string name="respondTime">respondTime: %1$d ms</string>
     <string name="rule_subscription">Rule Subscription</string>
+    <string name="rule_sub_auto_update">Update daily</string>
     <string name="rss_sources">RSS</string>
     <string name="dict_rule">Dict rule</string>
     <string name="enable_selection">Enable selected</string>
@@ -230,7 +231,6 @@
     <string name="publish_lyric">Lyrics on car display</string>
     <string name="publish_lyric_summary">Push the current lyric line to the now-playing title (car display / Bluetooth / lock screen); it replaces the chapter name</string>
     <string name="all_source">All Sources</string>
-    <string name="groups_or_source">Multi-group / book source</string>
     <string name="precision_search">Precise search</string>
     <string name="screen">Filter</string>
     <string name="search_book_key">Search book name/author</string>
@@ -241,7 +241,7 @@
     <string name="search_style_by_book">Group by book</string>
     <string name="search_style_by_source">Group by source</string>
     <string name="searchHistory">Search history</string>
-    <string name="source_filter_rule">Block rules</string>
+    <string name="source_filter_rule">Filter rules</string>
     <string name="start">Start</string>
     <string name="stop">Stop</string>
     <string name="refresh">Refresh</string>
@@ -552,6 +552,7 @@
     <string name="reading_completed">Read-aloud completed</string>
     <string name="reading_error">Read-aloud error</string>
     <string name="read_aloud">Speech</string>
+    <string name="channel_media_play">Media Playback</string>
     <string name="aloud_stop">Speak Stopped</string>
     <string name="select_cover_image">Select cover image</string>
     <string name="input_new_cover_url">Enter the new cover URL</string>
@@ -591,6 +592,7 @@
     <string name="source_name">Source Name(sourceName)</string>
     <string name="source_group">Source group(sourceGroup)</string>
     <string name="comment">Source comment(sourceComment)</string>
+    <string name="source_icon">Icon(bookSourceIcon)</string>
     <string name="login_check_js">Login check js(loginCheckJs)</string>
     <string name="book_url_pattern">Book url pattern(bookUrlPattern)</string>
     <string name="source_http_header">HTTP Header</string>
@@ -607,6 +609,7 @@
     <string name="rule_cover_url">CoverUrl(coverUrl)</string>
     <string name="r_book_url">Details page url(bookUrl)</string>
     <string name="rule_has_more">Has more(hasMoreRule)</string>
+    <string name="rule_next_page_url">Next page url(nextPageUrl)</string>
     <string name="r_find_url">Discover url(url)</string>
     <string name="rule_book_info_init">Book info init(bookInfoInit)</string>
     <string name="rule_toc_url">TOC url(tocUrl)</string>
@@ -714,7 +717,6 @@
     <string name="time_format_seconds">%1$d seconds</string>
     <string name="book_source_tutorial">Book source tutorial</string>
     <string name="js_tutorial">JS tutorial</string>
-    <string name="regex_tutorial">Regex tutorial</string>
     <string name="debug_search_hint">Debug search&gt;&gt;input keyword, e.g.:</string>
     <string name="debug_explore_hint">Debug explore&gt;&gt;input explore URL, e.g.:</string>
     <string name="debug_book_info_hint">Debug detail&gt;&gt;input detail page URL, e.g.:</string>
@@ -933,7 +935,7 @@
     <string name="reply_review">Reply</string>
     <string name="review_replies_detail_title">Comment detail</string>
     <string name="review_replies_section_title">All replies · %1$d</string>
-    <string name="review_list_section_title">All comments · %1$s</string>
+    <string name="review_title_with_count">Comments (%1$s)</string>
     <string name="review_sort_hot">Hot</string>
     <string name="review_sort_latest">Latest</string>
     <string name="review_expand">Expand</string>
@@ -966,7 +968,7 @@
     <string name="import_replace_rule">Import replace rules</string>
     <string name="import_dict_rule">Import dict rule</string>
     <string name="import_txt_toc_rule">Import txt directory rules</string>
-    <string name="import_source_filter_rule">Import block rules</string>
+    <string name="import_source_filter_rule">Import filter rules</string>
     <string name="import_theme">Import theme</string>
     <string name="select_new_source">Select new source</string>
     <string name="select_update_source">Select update source</string>
@@ -1003,6 +1005,7 @@
     <string name="upload_url_not_configured">Upload URL not configured</string>
     <string name="download_url_rule_not_configured">Download URL rule not configured</string>
     <string name="upload_failed_with_body">Upload failed: %1$s</string>
+    <string name="upload_compress_failed_with_name">Compress failed: %1$s</string>
     <string name="desktop_backstage_webview_unsupported">BackstageWebView is not supported on desktop (depends on android.webkit.WebView). Use HTTP paths or book sources that do not rely on WebView instead</string>
     <string name="book_info_copied">Book info copied</string>
     <string name="need_more_time_load_content">When the body length is too long, it may take more time to load the text.</string>
@@ -1128,12 +1131,12 @@
     <string name="export_txt_toc_rule_user_cancelled">Export TXT TOC rules: user cancelled the selection</string>
     <string name="export_txt_toc_rule_done_log">Export TXT TOC rules completed, %1$s in total -&gt; %2$s</string>
     <string name="export_txt_toc_rule_failed">Failed to export TXT TOC rules</string>
-    <string name="source_filter_rule_load_data_failed_log">Failed to load data in the block rule screen\n%1$s</string>
-    <string name="import_source_filter_rule_user_cancelled">Import block rules: user cancelled the selection</string>
-    <string name="export_source_filter_rule_no_selection">Export block rules: no rules selected</string>
-    <string name="export_source_filter_rule_user_cancelled">Export block rules: user cancelled the selection</string>
-    <string name="export_source_filter_rule_done_log">Export block rules completed, %1$s in total -&gt; %2$s</string>
-    <string name="export_source_filter_rule_failed">Failed to export block rules</string>
+    <string name="source_filter_rule_load_data_failed_log">Failed to load data in the filter rule screen\n%1$s</string>
+    <string name="import_source_filter_rule_user_cancelled">Import filter rules: user cancelled the selection</string>
+    <string name="export_source_filter_rule_no_selection">Export filter rules: no rules selected</string>
+    <string name="export_source_filter_rule_user_cancelled">Export filter rules: user cancelled the selection</string>
+    <string name="export_source_filter_rule_done_log">Export filter rules completed, %1$s in total -&gt; %2$s</string>
+    <string name="export_source_filter_rule_failed">Failed to export filter rules</string>
     <string name="mpv_not_found">mpv player not detected</string>
     <string name="mpv_install_guide">Video playback depends on mpv (https://mpv.io)\nWindows: winget install shinchiro.mpv or scoop install mpv,\nor download it from the official site and add the directory of mpv.exe to PATH,\nor specify the full path in the mpvPath config item</string>
     <string name="mpv_open_website">Open the mpv official website</string>
@@ -1239,7 +1242,6 @@
     <string name="unsupport_archivefile_entry">Cannot find supported files in archive</string>
     <string name="error_decode_bitmap">Fail to decode bitmap</string>
     <string name="error_image_url_empty">Image url is empty, check replacement rules</string>
-    <string name="check_source_config_summary">Check timeout: %1$ss\nCheck item:%2$s</string>
     <string name="data_loading">Loading…</string>
     <string name="toc_updateing">Updating Chapters</string>
     <string name="webdav_application_authorization_error">Fail to authorize WebDav application</string>
@@ -1307,7 +1309,7 @@
     <string name="share_layout">Shared layout</string>
     <string name="share_selected_source">Share selected sources</string>
     <string name="source_edit_max_line_summary">%s,Setting the number of rows less than the maximum number of rows that can be displayed on the screen makes it easier to slide to other fields for editing.</string>
-    <string name="source_filter_rule_delete_all_confirm">Delete all block rules?</string>
+    <string name="source_filter_rule_delete_all_confirm">Delete all filter rules?</string>
     <string name="source_filter_rule_empty">No rules. Tap + to add.</string>
     <string name="style_name">Style name:</string>
     <string name="sure_clear_search_history">Are you sure to clear all search history</string>
@@ -1605,6 +1607,7 @@
     <string name="open_fun">open function</string>
     <string name="use_browser_open">Is it opened in an external browser?</string>
     <string name="open_sys_dir_picker_error">Error opening system folder selector, automatically open application folder selector</string>
+    <string name="book_storage_help">Android restricts folder selection: the root of internal storage, the root of an SD card, and the Download folder itself cannot be picked (to use Download, pick a subfolder such as Download/Books).\nAny other folder works, including subfolders of the storage root (for example /sdcard/books).\nWithout a book storage location, copying and downloading local books and WebDAV books will not work.</string>
     <string name="select_book_folder">Select the folder where the books are saved</string>
     <string name="general">General</string>
     <string name="copy_all">Copy all</string>
@@ -1760,4 +1763,16 @@
     <string name="keyword_highlight_exclude_scope">Exclude range, optional book name or source URL</string>
     <string name="video_lock">Lock</string>
     <string name="video_unlock">Unlock</string>
+    <string name="close_to_tray_title">Minimize to tray when closing</string>
+    <string name="close_to_tray_summary">The window hides while background tasks keep running; reopen it from the tray icon</string>
+    <string name="close_window">Close window</string>
+    <string name="close_to_tray_prompt">Minimize to the tray? The app and its background tasks keep running, and you can reopen it from the tray icon.</string>
+    <string name="close_to_tray">Minimize to tray</string>
+    <string name="show_main_window">Show main window</string>
+    <string name="dialog_preview">Pop-up preview</string>
+    <string name="dialog_preview_summary">Browse every dialog and sheet style one by one (debug only; data is a copy)</string>
+    <string name="dialog_preview_group_alert">Confirm / message boxes</string>
+    <string name="dialog_preview_group_dialog">Dialogs</string>
+    <string name="dialog_preview_group_sheet">Bottom sheets</string>
+    <string name="dialog_preview_group_base">Base shells</string>
 </resources>

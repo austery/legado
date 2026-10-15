@@ -7,6 +7,7 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.rule.BookListRule
 import io.legado.app.data.entities.rule.ExploreKind
 import io.legado.app.exception.NoStackTraceException
+import io.legado.app.exception.RegexTimeoutException
 import io.legado.app.help.i18n.AppStringKey
 import io.legado.app.help.i18n.appString
 import io.legado.app.help.source.SourceDebugLoggers
@@ -17,6 +18,7 @@ import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.model.analyzeRule.RuleData
 import io.legado.app.utils.HtmlFormatter
 import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.RuleRegexes
 import io.legado.app.utils.StringUtils.wordCountFormat
 import io.legado.app.utils.decodeListWithFallbackOrNull
 import kotlinx.coroutines.currentCoroutineContext
@@ -62,7 +64,14 @@ object BookList {
         }
         if (isSearch) bookSource.bookUrlPattern?.let {
             currentCoroutineContext().ensureActive()
-            if (baseUrl.matches(it.toRegex())) {
+            // 经 [RuleRegexes] 以模式串匹配 (带时间上限): 模式串来自书源, 原写法
+            // `matches(it.toRegex())` 每次调用都重新编译, 且在 native 端编译/匹配都会递归爆栈
+            val m = try {
+                RuleRegexes.get().matchesEntire(baseUrl, it, multiline = false, timeout = RULE_REGEX_TIMEOUT)
+            } catch (_: RegexTimeoutException) {
+                false
+            }
+            if (m) {
                 SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "≡链接为详情页")
                 getInfoItem(
                     bookSource,
@@ -153,7 +162,32 @@ object BookList {
             SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "└$raw")
             WebBookRuleUtils.parseBoolean(raw)
         }
-        return BookListPage(bookList, hasNextPage)
+        // 下一页地址规则 (对照原版订阅源列表的下一页规则): 从当前页响应里取链接,
+        // 取到则下一次翻页直接请求它; 未配置/取不到不影响 hasNextPage 与按页码翻页
+        val nextPageUrlRule = bookListRule.nextPageUrl
+        val nextPageUrl = if (nextPageUrlRule.isNullOrBlank()) {
+            null
+        } else {
+            analyzeRule.setContent(body)
+            SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "┌获取下一页地址")
+            val raw = runCatching { analyzeRule.getString(nextPageUrlRule) }.getOrNull()
+            SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "└$raw")
+            // 先在原字符串上挡掉空锚点/脚本链接 (各端地址拼接实现不同, 拼完再比会漏)
+            raw?.trim()
+                ?.takeIf {
+                    it.isNotEmpty() &&
+                        !it.startsWith("#") &&
+                        !it.startsWith("javascript:", ignoreCase = true)
+                }
+                ?.let { NetworkUtils.getAbsoluteURL(baseUrl, it) }
+                // 解析出的地址就是本页时视为没有下一页, 否则触底会反复请求同一页且列表不再增长
+                ?.takeIf {
+                    it.isNotEmpty() &&
+                        it.trimEnd('#') != baseUrl.trimEnd('#') &&
+                        it != analyzeUrl.ruleUrl
+                }
+        }
+        return BookListPage(bookList, hasNextPage, nextPageUrl)
     }
 
     @Throws(Exception::class)
@@ -313,4 +347,6 @@ object BookList {
         }
     }
 
+    /** 书源 URL 匹配规则的单次匹配上限 (毫秒), 与替换规则默认超时同口径。 */
+    private const val RULE_REGEX_TIMEOUT = 3000L
 }

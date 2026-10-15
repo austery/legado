@@ -356,7 +356,7 @@ fun ShelfBooksContent(
         val eInk = LocalEInk.current
         when (spec.tier) {
             ShelfTier.LIST -> FastScrollLazyVerticalGrid(
-                // 列表档也响应式拆列: 400dp→1 列, 800dp→2 列多列列表 (行内布局不变)
+                // 列表档也响应式拆列: 400dp→1 列, 640dp→2 列多列列表 (行内布局不变)
                 columns = rememberResponsiveColumns(1),
                 state = scroll.list,
                 modifier = Modifier.fillMaxSize(),
@@ -686,7 +686,6 @@ fun ShelfListItem(
                 if (refreshing && !book.isLocal) {
                     CircularProgressIndicator(
                         color = colors.accent,
-                        strokeWidth = 2.dp,
                         modifier = Modifier.size(26.dp),
                     )
                 } else if (!hideUnread && appConfig.showUnread) { // durChapterPos 必须在 key 中: 停在章末时其落库为负值, 未读要减 1,
@@ -810,7 +809,6 @@ fun ShelfGridItem(
         if (refreshing && !book.isLocal) {
             CircularProgressIndicator(
                 color = colors.accent,
-                strokeWidth = 2.dp,
                 modifier = Modifier.align(Alignment.TopEnd).size(22.dp),
             )
         } else if (appConfig.showUnread) {

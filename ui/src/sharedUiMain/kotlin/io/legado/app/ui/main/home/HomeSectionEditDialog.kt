@@ -2,20 +2,18 @@
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,15 +38,14 @@ import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.compose.component.AppCheckbox
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppPickDialog
 import io.legado.app.ui.compose.component.AppRadioButton
-import io.legado.app.ui.compose.component.AppSearchField
 import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.AppUnderlineTextField
-import io.legado.app.ui.compose.component.DialogTitleBar
 import io.legado.app.ui.compose.component.FastScrollLazyColumn
-import io.legado.app.ui.compose.component.appDialogSize
+import io.legado.app.ui.compose.component.rememberAppDialogSearchState
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.utils.postEvent
@@ -258,119 +255,112 @@ fun HomeSectionEditDialog(
         favoriteOptions = pinnedExplores
     }
 
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = stringResource(
+            if (editing != null) Res.string.home_edit_section
+            else Res.string.home_add_section
+        ),
         properties = AppDialogSizes.properties(),
+        contentPadding = PaddingValues(0.dp),
+        bottomBar = {
+            if (editing != null) {
+                AppTextButton(text = stringResource(Res.string.delete)) { delete() }
+            }
+            Spacer(Modifier.weight(1f))
+            AppTextButton(
+                text = stringResource(Res.string.cancel),
+                color = colors.secondaryText,
+                onClick = onDismiss,
+            )
+            AppTextButton(text = stringResource(Res.string.ok)) { save() }
+        },
     ) {
-        // 不能套 fillMaxSize: 撑满窗口会让整窗都算"框内", 点外部永远关不掉; 居中由 RootMeasurePolicy 负责。
-        // 自适应高度, 上限 0.7 屏高
-        Surface(
-            modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState())
+                // 底不留白: 底栏槽自身已给 8dp, 正文再给一份会叠成 16dp
+                .padding(
+                    start = DesignTokens.spacingDefault,
+                    top = DesignTokens.spacingDefault,
+                    end = DesignTokens.spacingDefault,
+                ),
         ) {
-            Column(Modifier.fillMaxWidth()) {
-                DialogTitleBar(
-                    title = stringResource(
-                        if (editing != null) Res.string.home_edit_section
-                        else Res.string.home_add_section
-                    ),
-                    onBack = onDismiss,
+            AppUnderlineTextField(
+                value = title,
+                onValueChange = { title = it },
+                label = stringResource(Res.string.home_section_title),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            // 结果显示区 (对照 tv_result: 48dp 高, 未选时显示 hint)
+            Box(
+                Modifier.fillMaxWidth().height(DesignTokens.viewHeightXl),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    text = resultText.ifEmpty { selectSourceText },
+                    color = if (resultText.isEmpty()) {
+                        colors.secondaryText
+                    } else {
+                        colors.primaryText
+                    },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState())
-                        .padding(DesignTokens.spacingDefault),
-                ) {
-                    AppUnderlineTextField(
-                        value = title,
-                        onValueChange = { title = it },
-                        label = stringResource(Res.string.home_section_title),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    // 结果显示区 (对照 tv_result: 48dp 高, 未选时显示 hint)
-                    Box(
-                        Modifier.fillMaxWidth().height(DesignTokens.viewHeightXl),
-                        contentAlignment = Alignment.CenterStart,
-                    ) {
-                        Text(
-                            text = resultText.ifEmpty { selectSourceText },
-                            color = if (resultText.isEmpty()) {
-                                colors.secondaryText
-                            } else {
-                                colors.primaryText
-                            },
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    // 操作按钮区 (对照三个 TextView: 收藏 / 书源 / 分类)
-                    Row(Modifier.fillMaxWidth()) {
-                        PickEntry(pickFavoriteText, true) { pickFavorite() }
-                        PickEntry(selectSourceText, true) { pickSource() }
-                        PickEntry(selectCategoryText, selectedSource != null) { pickCategory() }
-                    }
-                    Text(
-                        text = stringResource(Res.string.home_style),
-                        color = colors.accent,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(top = DesignTokens.spacingDefault),
-                    )
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        StyleRadio(
-                            stringResource(Res.string.home_style_cover_row),
-                            style == HomeSection.STYLE_COVER_ROW,
-                        ) { style = HomeSection.STYLE_COVER_ROW }
-                        StyleRadio(
-                            stringResource(Res.string.home_style_rank_list),
-                            style == HomeSection.STYLE_RANK_LIST,
-                        ) { style = HomeSection.STYLE_RANK_LIST }
-                        StyleRadio(
-                            stringResource(Res.string.home_style_four_row),
-                            style == HomeSection.STYLE_FOUR_ROW,
-                        ) { style = HomeSection.STYLE_FOUR_ROW }
-                        StyleRadio(
-                            stringResource(Res.string.home_style_infinite_grid),
-                            style == HomeSection.STYLE_INFINITE_GRID,
-                        ) { style = HomeSection.STYLE_INFINITE_GRID }
-                    }
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = DesignTokens.spacingDefault)
-                            .clickable { coverVideo = !coverVideo },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AppCheckbox(checked = coverVideo, onCheckedChange = { coverVideo = it })
-                        Text(
-                            text = stringResource(Res.string.home_cover_video),
-                            color = colors.primaryText,
-                        )
-                    }
-                }
-                // 底栏: 删除(编辑模式) 靠左, 取消/确定 靠右
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = DesignTokens.spacingDefault),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (editing != null) {
-                        AppTextButton(text = stringResource(Res.string.delete)) { delete() }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    AppTextButton(text = stringResource(Res.string.cancel), onClick = onDismiss)
-                    AppTextButton(text = stringResource(Res.string.ok)) { save() }
-                }
+            }
+            // 操作按钮区 (对照三个 TextView: 收藏 / 书源 / 分类)
+            Row(Modifier.fillMaxWidth()) {
+                PickEntry(pickFavoriteText, true) { pickFavorite() }
+                PickEntry(selectSourceText, true) { pickSource() }
+                PickEntry(selectCategoryText, selectedSource != null) { pickCategory() }
+            }
+            Text(
+                text = stringResource(Res.string.home_style),
+                color = colors.accent,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(top = DesignTokens.spacingDefault),
+            )
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                StyleRadio(
+                    stringResource(Res.string.home_style_cover_row),
+                    style == HomeSection.STYLE_COVER_ROW,
+                ) { style = HomeSection.STYLE_COVER_ROW }
+                StyleRadio(
+                    stringResource(Res.string.home_style_rank_list),
+                    style == HomeSection.STYLE_RANK_LIST,
+                ) { style = HomeSection.STYLE_RANK_LIST }
+                StyleRadio(
+                    stringResource(Res.string.home_style_four_row),
+                    style == HomeSection.STYLE_FOUR_ROW,
+                ) { style = HomeSection.STYLE_FOUR_ROW }
+                StyleRadio(
+                    stringResource(Res.string.home_style_infinite_grid),
+                    style == HomeSection.STYLE_INFINITE_GRID,
+                ) { style = HomeSection.STYLE_INFINITE_GRID }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = DesignTokens.spacingDefault)
+                    .clickable { coverVideo = !coverVideo },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppCheckbox(checked = coverVideo, onCheckedChange = { coverVideo = it })
+                Text(
+                    text = stringResource(Res.string.home_cover_video),
+                    color = colors.primaryText,
+                )
             }
         }
     }
 
-    // ─── 三个选择弹窗 (对照原版泛型 searchPick: 搜索框 + 360dp 列表) ─────────
+    // ─── 三个选择弹窗 (对照原版泛型 searchPick: 搜索框 + 列表) ─────────
     favoriteOptions?.let { options ->
         HomeSearchPickDialog(
             title = pickFavoriteText,
@@ -469,7 +459,8 @@ private fun StyleRadio(text: String, selected: Boolean, onClick: () -> Unit) {
 
 /**
  * 通用搜索选择弹窗，下沉自原版私有泛型 `searchPick`：
- * 搜索框即时按 label 模糊过滤，列表 360dp 高，点击回调后关闭。
+ * 搜索框在顶栏内 (放大镜进搜索态, 退出叉退搜索态) 即时按 label 模糊过滤，
+ * 列表撑满正文区，点击回调后关闭。
  */
 @Composable
 private fun <T> HomeSearchPickDialog(
@@ -480,67 +471,45 @@ private fun <T> HomeSearchPickDialog(
     onPick: (T) -> Unit,
 ) {
     val colors = AppTheme.colors
-    var query by remember { mutableStateOf("") }
+    val searchState = rememberAppDialogSearchState()
+    val query = searchState.query
     val shown = remember(items, query) {
         if (query.isEmpty()) items else items.filter { label(it).contains(query, true) }
     }
-    AppDialog(
+    AppPickDialog(
         onDismissRequest = onDismiss,
+        title = title,
+        searchState = searchState,
+        searchHint = stringResource(Res.string.search),
         properties = AppDialogSizes.properties(),
+        bottomBar = {
+            AppTextButton(
+                text = stringResource(Res.string.cancel),
+                color = colors.secondaryText,
+                onClick = onDismiss,
+            )
+        },
     ) {
-        // 不能套 fillMaxSize: 撑满窗口会让整窗都算"框内", 点外部永远关不掉; 居中由 RootMeasurePolicy 负责。
-        Surface(
-            modifier = Modifier.appDialogSize(),
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
+        FastScrollLazyColumn(
+            state = rememberLazyListState(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(top = DesignTokens.spacingDefault),
         ) {
-            Column(
-                Modifier.fillMaxWidth().padding(top = DesignTokens.spacingLg, bottom = DesignTokens.spacingDefault)
-            ) {
+            items(shown) { item ->
                 Text(
-                    text = title,
+                    text = label(item),
                     color = colors.primaryText,
-                    fontSize = 18.sp,
-                    modifier = Modifier.padding(
-                        horizontal = DesignTokens.spacingDefault,
-                        vertical = DesignTokens.spacingXs
-                    ),
-                )
-                AppSearchField(
-                    value = query,
-                    onValueChange = { query = it },
-                    hint = stringResource(Res.string.search),
-                    modifier = Modifier.fillMaxWidth()
-                        .padding(horizontal = DesignTokens.spacingDefault),
-                )
-                FastScrollLazyColumn(
-                    state = rememberLazyListState(),
+                    fontSize = 16.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .fillMaxWidth()
-                        // 对照原版 searchPick 的 ListView 固定 360dp 高
-                        .heightIn(max = 360.dp)
-                        .padding(top = DesignTokens.spacingDefault),
-                ) {
-                    items(shown) { item ->
-                        Text(
-                            text = label(item),
-                            color = colors.primaryText,
-                            fontSize = 16.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onPick(item) }
-                                .padding(horizontal = DesignTokens.spacingXl, vertical = DesignTokens.spacingMd),
-                        )
-                    }
-                }
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = DesignTokens.spacingDefault),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    AppTextButton(text = stringResource(Res.string.cancel), onClick = onDismiss)
-                }
+                        .clickable { onPick(item) }
+                        // 本弹窗正文列不带统一内边距, 8dp 由各子项自带 (与顶栏同值)
+                        .padding(horizontal = DesignTokens.spacingDefault, vertical = DesignTokens.spacingMd),
+                )
             }
         }
     }

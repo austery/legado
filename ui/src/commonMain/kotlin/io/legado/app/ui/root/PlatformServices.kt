@@ -2,11 +2,13 @@ package io.legado.app.ui.root
 
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.DirUsage
 import io.legado.app.constant.fileNameFormat
 import io.legado.app.help.FileUtilsCommon
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.resolveImagePath
 import io.legado.app.help.file.AppFilesDirs
+import io.legado.app.help.writeBytesAtomically
 import io.legado.app.model.bakeCoverImageFile
 import io.legado.app.model.bakedImagePath
 import io.legado.app.model.probeDecodeImage
@@ -50,15 +52,36 @@ object PlatformServiceProviders {
 interface FilePickerService {
     fun pickFile(filter: FileFilter): String?
     fun pickFiles(filter: FileFilter): List<String>
+
+    /**
+     * 取一个可写目标路径 (调用方自行写盘)。各端按平台形制决定怎么取得:
+     * 安卓 SAF 单文件另存为 / 桌面保存对话框 / iOS 沙盒可见目录 / 鸿蒙选目录
+     * (原版导出形制是选目录后把文件写进该目录, 见 HandleFileContract.EXPORT + FileUtils.exportFile)。
+     *
+     * @return 用户取消选择返回 null (调用方静默)
+     */
     fun saveFile(suggestedName: String, defaultDir: String? = null): String?
 
     /**
-     * 保存图片字节到用户选择的位置（图片查看器长按保存，对照 master PhotoDialog.doSaveImage）。
-     * 各端: app=SAF CreateDocument → contentResolver 写入; desktop=保存对话框 → File 写入。
+     * 保存图片字节到本端的图片落点 (书签分享卡片导出; 图片查看器长按保存在
+     * [imageViewerSavesToAlbum]=true 的端也走这条)。
+     * 各端: app=SAF CreateDocument → contentResolver 写入; desktop=保存对话框 → File 写入;
+     * iOS=沙盒导出目录; 鸿蒙=系统相册。
      * 返回: true=写入成功; false=写入失败; null=用户取消选择位置（调用方应静默）。
      * 未实现端返回 false（调用方 toast 失败）。
      */
     fun saveImageBytes(suggestedName: String, bytes: ByteArray): Boolean? = false
+
+    /**
+     * 图片查看器长按保存的落点是否为系统相册。
+     *
+     * true 的端 (鸿蒙) 走 [saveImageBytes] 落系统相册; false 的端走
+     * [saveImageRememberingDir] 的目录记忆 (对照原版 PhotoDialog.initEvent 读图片目录键后直写)。
+     *
+     * 鸿蒙落系统相册是用户指定要求 (与原版 PhotoDialog 的目录记忆不同, 不是对齐原版的改动)。
+     * 漫画图片保存不受本项影响: 那条路径始终用目录记忆 (对照原版 ReadMangaActivity.saveImage)。
+     */
+    val imageViewerSavesToAlbum: Boolean get() = false
 
     /**
      * 是否支持"把字节写进指定目录" (决定图片保存能不能记住上次目录):
@@ -99,7 +122,7 @@ interface FilePickerService {
             prefs.getString(AppConst.imagePathKey).takeIf { it.isNotEmpty() }
         }
         val dir = remembered
-            ?: pickDirectory()?.also { prefs.putString(AppConst.imagePathKey, it) }
+            ?: pickDirectory(DirUsage.ImageSave)?.also { prefs.putString(AppConst.imagePathKey, it) }
             ?: return null
         if (writeImageToDir(dir, fileName, bytes)) return true
         // 目录被删/权限丢失: 忘掉记忆目录, 下次重新选 (对照 app 端 onError → ACache.remove)
@@ -107,16 +130,25 @@ interface FilePickerService {
         return false
     }
 
-    // 选目录 (对照 app 端 HandleFileContract.DIR_SYS / OpenDocumentTree),
-    // 各端按需实现, 默认返回 null 由调用方降级
-    fun pickDirectory(): String? = null
+    /**
+     * 选目录 (对照 app 端 HandleFileContract.DIR_SYS / OpenDocumentTree)。
+     *
+     * [usage] 为本次选择的用途: 受沙盒约束的端 (iOS/鸿蒙) 按用途登记目录授权, 该目录只放行同用途的
+     * 访问; 安卓的系统权限按树 URI 授予、本身没有用途维度, 由应用侧按用途登记选定目录, 本地书文件访问
+     * 据此判定目录归属; 桌面为普通文件路径、选定目录不产生系统授权, 忽略该参数。
+     *
+     * 各端按需实现, 默认返回 null 由调用方降级
+     */
+    fun pickDirectory(usage: DirUsage): String? = null
 
     /**
-     * 备份目录可写性预检 (对照 app 端 BackupConfigFragment.backup 的 FileDoc.checkWrite)。
+     * 目录可写性预检 (对照 app 端 BackupConfigFragment.backup 的 FileDoc.checkWrite)。
+     * [usage] 同 [pickDirectory]: 受沙盒约束的端该目录须在同用途下已授权才可写。
+     *
      * Android SAF content:// 目录用 DocumentFile 判断可写性, 不可写返回 false 由调用方引导重新选目录;
      * 无 SAF 概念的平台 (桌面等普通路径) 默认视为可写。
      */
-    fun checkWrite(path: String): Boolean = true
+    fun checkWrite(path: String, usage: DirUsage): Boolean = true
 
     /**
      * 处理启动闪屏背景图 (选图后调用)：原图复制进图集目录 (备份链路) + 按本端启动界面
@@ -165,7 +197,8 @@ interface FilePickerService {
      */
     fun importBackgroundImage(srcPath: String, isNight: Boolean): String? {
         // 内容特征值命名 (非固定名): 换图不同大小各留一文件, 同大小复用; 旧文件交由
-        // clearBg 白名单清理, 不在导入时删——日夜可能引用同一份文件, 导入侧删会误伤
+        // 启动期缓存清理的白名单 (ThemeConfigProviders.clearBg) 回收, 不在导入时删
+        // ——日夜可能引用同一份文件, 导入侧删会误伤
         val ref = importImageSetFile(srcPath)
             ?: return null
         val abs = resolveImagePath(ref) ?: return ref
@@ -221,9 +254,10 @@ fun importImageSetFile(srcPath: String): String? = runCatching {
     val suffix = normalizeImageSuffix(srcName.substringAfterLast('.', "").take(8))
     val fileName = bytes.size.toString() + if (suffix.isBlank()) "" else ".$suffix"
     val dest = FileUtilsCommon.getPath(dir, fileName)
-    // 同名 (同字节数=同内容) 已存在则复用不重复拷贝 (拷贝数=图集文件数, 换同名图零 IO)
+    // 同名 (同字节数=同内容) 已存在则复用不重复拷贝 (拷贝数=图集文件数, 换同名图零 IO);
+    // 落盘整份归位: 半截文件会被上面的存在性判定当成有效图集条目, 之后不再重新生成
     if (!FileUtilsCommon.exist(dest)) {
-        if (!FileUtilsCommon.writeBytes(dest, bytes)) return@runCatching null
+        if (!writeBytesAtomically(dest, bytes)) return@runCatching null
     }
     fileName
 }.getOrNull()
@@ -311,6 +345,15 @@ interface WindowController {
      * 故其余端走默认空实现。
      */
     fun setLightIconOverlay(enabled: Boolean) {}
+
+    /**
+     * 阅读页系统栏外观 (对照原版 `BaseReadBookActivity.upSystemUiVisibility` 的图标明暗分支
+     * 与 `ReadBookActivity.upNavigationBarColor`)。[appearance] 为 null 表示离开阅读页可见期,
+     * 按本端非阅读页规则恢复 (主题状态栏/导航栏色, 有壁纸时按贴边像素亮度)。
+     *
+     * 无系统栏的端 (desktop) 走默认空实现。
+     */
+    fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {}
 }
 
 /** 软输入法控制（hide/resize）。

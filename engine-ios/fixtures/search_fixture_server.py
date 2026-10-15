@@ -70,15 +70,17 @@ class Handler(BaseHTTPRequestHandler):
         with state.lock:
             state.counts[key] += 1
             count = state.counts[key]
-        if action == 'search':
+        if action in ('search', 'cursor'):
             state.release(namespace + ':entered:' + source)
             if source == 'slow' or (source == 'restart' and count == 1):
                 state.wait(namespace)
             if source == 'timeout':
                 time.sleep(25)
-            if source == 'failure' or (source == 'paged' and page == 2 and count == 1):
+            if source == 'cursor' and page == 2 and action != 'cursor':
+                return self.send(400, 'Continuation URL was not used')
+            if source == 'failure' or (source in ('paged', 'cursor') and page == 2 and count == 1):
                 return self.send(503, 'Controlled source failure')
-            if source == 'empty' or page > (2 if source == 'paged' else 1):
+            if source == 'empty' or page > (2 if source in ('paged', 'cursor') else 1):
                 return self.send(200, '<main data-more="false"></main>')
             if query not in ('work', 'Shared work', 'Fixture author', 'Shared work Fixture author', 'replacement'):
                 return self.send(200, '<main data-more="false"></main>')
@@ -94,7 +96,9 @@ class Handler(BaseHTTPRequestHandler):
             body = ''.join(f'<article><a class="book" href="/{namespace}/info/{source}/{book}">{escape(name)}</a>'
                            f'<span class="author">{escape(writer)}</span><p class="intro">{source} search result</p></article>'
                            for book, name, writer in books)
-            more = str(source == 'paged' and page == 1).lower()
+            more = str(source in ('paged', 'cursor') and page == 1).lower()
+            if source == 'cursor' and page == 1:
+                body += f'<a class="next" href="/{namespace}/cursor/cursor?page=2&amp;key=work">Next</a>'
             return self.send(200, f'<main data-more="{more}">{body}</main>')
         if action == 'info':
             book = parts[3] if len(parts) > 3 else 'book'

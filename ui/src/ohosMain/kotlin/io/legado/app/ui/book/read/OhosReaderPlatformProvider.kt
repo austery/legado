@@ -11,6 +11,7 @@ import io.legado.app.data.entities.Bookmark
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.AppWebDavShared
 import io.legado.app.help.showSourceLogin
+import io.legado.app.help.book.BookImageDownloadShared
 import io.legado.app.help.book.isEpub
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalTxt
@@ -21,7 +22,6 @@ import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ThemeConfigProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.file.saveImageToAlbum
-import io.legado.app.help.image.ImageBitmapLoader
 import io.legado.app.help.storage.BackupShared
 import io.legado.app.help.toast.Toasters
 import io.legado.app.help.tts.OhosReadAloudHost
@@ -57,8 +57,9 @@ import kotlinx.serialization.Serializable
  * 鸿蒙端 [ReaderPlatformProvider]: 电池电量经 napi Battery 桥查询 @ohos.batteryInfo,
  * 菜单状态/导航回调对齐 iOS [IosReadMenuState] (visibleState 可切, click 经 navigator/screenModel)。
  *
- * ArkTS 侧 TODO: legado_napi.cpp 实现 registerBatteryCallback + BatteryBridgeHandler.ets
- * 桥未就绪时 getBatteryLevel 回落 100 (电量恒显示, 用户拍板 2026-08, 与 desktop 一致)。
+ * ArkTS 侧 callback 已在 EntryAbility 启动时注册 (EntryAbility.ets →
+ * legado.registerBatteryCallback → BatteryBridgeHandler.ets 取 @ohos.batteryInfo.batterySOC);
+ * 桥未就绪/超时 getBatteryLevel 回落 100 (电量恒显示, 用户拍板 2026-08, 与 desktop 一致)。
  */
 object OhosReaderPlatformProvider : ReaderPlatformProvider {
 
@@ -178,13 +179,14 @@ object OhosReaderPlatformProvider : ReaderPlatformProvider {
         )
     }
 
-    /** 保存到相册: 下载解码 (带书源防盗链 header) → photoAccessHelper 写入 (仅 ArkTS 可调, 经文件桥)。 */
+    /** 保存到相册: 读已缓存图片字节 → photoAccessHelper 写入 (仅 ArkTS 可调, 经文件桥)。 */
     private fun saveImage(screenModel: ReaderScreenModel, src: String) {
         val book = screenModel.currentBook
-        val bookSource = screenModel.viewModel.bookSource.value
         Toasters.get().toast("正在保存")
         scope.launch {
-            val bytes = ImageBitmapLoader().loadBytes(src, book, bookSource)
+            val bytes = book?.let {
+                BookImageDownloadShared.imageBytesToSave(it, src, screenModel.currentChapter)
+            }
             if (bytes == null) {
                 Toasters.get().toast("图片保存失败")
                 return@launch

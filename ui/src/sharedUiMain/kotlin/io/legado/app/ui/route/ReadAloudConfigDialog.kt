@@ -1,43 +1,60 @@
 package io.legado.app.ui.route
 
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.Surface
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.HttpTTS
+import io.legado.app.help.DefaultDataShared
+import io.legado.app.help.IntentData
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
+import io.legado.app.help.storage.BackupFileOps
+import io.legado.app.help.tts.OneShotTts
+import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.book.read.config.ReadAloudConfigScreen
 import io.legado.app.ui.book.read.config.SpeakEngineDialog
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
-import io.legado.app.ui.compose.component.appDialogSize
-import io.legado.app.ui.compose.theme.AppTheme
+import io.legado.app.ui.root.AppNavigatorProviders
+import io.legado.app.ui.root.AppOverlay
+import io.legado.app.ui.root.FileFilter
 import io.legado.app.ui.root.PlatformCapabilityProviders
+import io.legado.app.ui.root.PlatformServiceProviders
+import io.legado.app.ui.association.DeepLinkImportType
+import io.legado.app.ui.widget.dialog.OnlineImportUrlDialog
+import io.legado.app.utils.GSON
+import io.legado.app.utils.toJson
+import io.legado.app.utils.isAbsUrl
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import legado.ui.generated.resources.Res
+import legado.ui.generated.resources.aloud_config
+import legado.ui.generated.resources.export_success
 import legado.ui.generated.resources.system_tts
 import org.jetbrains.compose.resources.stringResource
 
 /**
- * 朗读设置对话框形态 (对照原版 ReadAloudConfigDialog: BasePrefDialogFragment 居中对话框,
- * 背景用 backgroundColor, 无标题栏)。由朗读控制面板"设置"按钮弹起。
+ * 朗读设置对话框形态 (公共对话框基类: 0.9 宽居中 + fillet 底色 + shapeDefault 8dp 圆角 +
+ * 标准顶栏; 2026-10-11 用户拍板偏离原版 BasePrefDialogFragment 的
+ * 无圆角/无标题形态, 对齐其他对话框)。由朗读控制面板"设置"按钮弹起。
+ *
+ * 顶栏进标准壳体 ([AppDialogScaffold] 的 title), 无底栏; 正文 = 设置条目列表。
  *
  * 暂无对应 ScreenModel, 电话暂停开关/朗读引擎摘要等状态用 remember { mutableStateOf } 暂存,
  * 待宿主下沉后替换为 ScreenModel 统一管理。
@@ -49,23 +66,15 @@ import org.jetbrains.compose.resources.stringResource
 fun ReadAloudConfigDialogHost(
     onDismiss: () -> Unit,
 ) {
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = stringResource(Res.string.aloud_config),
         properties = AppDialogSizes.properties(),
+        contentPadding = PaddingValues(0.dp),
     ) {
-        AppTheme {
-            // 原版 BasePrefDialogFragment: 0.9 宽居中 + applyFilletBackground=false 无圆角,
-            // 背景 backgroundColor (createPrefContainer); 内容边距由 preference 列表自带
-            Surface(
-                shape = RoundedCornerShape(0.dp),
-                color = AppTheme.colors.background,
-                modifier = Modifier.appDialogSize(),
-            ) {
-                ReadAloudConfigContent(
-                    onSysTtsConfig = { PlatformCapabilityProviders.get().openTtsSettings() },
-                )
-            }
-        }
+        ReadAloudConfigContent(
+            onSysTtsConfig = { PlatformCapabilityProviders.get().openTtsSettings() },
+        )
     }
 }
 
@@ -97,6 +106,25 @@ private fun ReadAloudConfigContent(
         mutableStateOf(appConfig.ttsEngine.ifBlank { null })
     }
     var showSpeakEngineDialog by remember { mutableStateOf(false) }
+    var showTtsUrlInput by remember { mutableStateOf(false) }
+
+    // 朗读试听器 (行/编辑器测试共用; 关闭对话框时停声)
+    // 一次性朗读器 (行/编辑器试听共用, 强制指定引擎不走配置; 关闭对话框时停声)
+    val oneShotTts = remember { OneShotTts() }
+    DisposableEffect(Unit) {
+        onDispose { oneShotTts.stop() }
+    }
+    // 试听文本 = 固定双语探针 (中文+英文, 先中文, 不随应用语言)
+    val testSpeakText = OneShotTts.TEST_TEXT
+    val exportSuccessText = stringResource(Res.string.export_success)
+
+    // 统一 TTS 源导入入口: 文本/URL 交共享勾选导入对话框 (深链导入同一条链)
+    fun showTtsImport(sourceText: String) {
+        val payload = IntentData.put(sourceText)
+        AppNavigatorProviders.get().showOverlay(
+            AppOverlay.Dialog(key = "*Import:" + DeepLinkImportType.HTTP_TTS.name, payload = payload)
+        )
+    }
 
     val systemTtsStr = stringResource(Res.string.system_tts)
     // 朗读引擎摘要 (对照 app 端 ReadAloudConfigDialog.speakEngineSummary)
@@ -141,7 +169,47 @@ private fun ReadAloudConfigContent(
                     appDb.httpTTSDao.delete(httpTTS)
                 }
             },
+            // 统一登录入口: URL 登录直开 WebView, 表单登录弹登录表单 (与 TTS 编辑器同一条链)
+            onLogin = { engine -> engine.showLoginDialog() },
+            onTestSpeak = { engine -> oneShotTts.speakWith(engine, testSpeakText) },
+            onImportLocal = {
+                scope.launch {
+                    val path = withContext(IoDispatcher) {
+                        PlatformServiceProviders.get().files.pickFile(FileFilter.Text)
+                    } ?: return@launch
+                    val text = withContext(IoDispatcher) { BackupFileOps.readText(path) }
+                    showTtsImport(text)
+                }
+            },
+            onImportOnline = { showTtsUrlInput = true },
+            onImportDefault = {
+                scope.launch(IoDispatcher) {
+                    DefaultDataShared.importDefaultHttpTTS()
+                }
+            },
+            onExport = {
+                scope.launch {
+                    val json = GSON.toJson(engines)
+                    val path = withContext(IoDispatcher) {
+                        PlatformServiceProviders.get().files.saveFile("httpTts.json")
+                    } ?: return@launch
+                    withContext(IoDispatcher) { BackupFileOps.writeText(path, json) }
+                    Toasters.get().toast(exportSuccessText)
+                }
+            },
             onDismiss = { showSpeakEngineDialog = false },
+        )
+    }
+
+    // 在线导入 URL 输入 (历史记录键对照原版 ttsUrlKey)
+    if (showTtsUrlInput) {
+        OnlineImportUrlDialog(
+            recordKey = "ttsUrlKey",
+            onConfirm = { url ->
+                showTtsUrlInput = false
+                if (url.isAbsUrl()) showTtsImport(url)
+            },
+            onDismiss = { showTtsUrlInput = false },
         )
     }
 }

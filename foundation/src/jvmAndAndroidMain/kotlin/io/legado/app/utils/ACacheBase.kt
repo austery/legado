@@ -74,14 +74,23 @@ object ACacheProviders {
  *
  * app 端 [ACache] 继承本类, 添加 Bitmap/Drawable/JSONObject/JSONArray 重载 + myPid() 后缀。
  *
+ * 条目落盘必须是整份的: 读方按同一路径整读该条目 (命中即整份消费, 拿不出可判别的错误),
+ * 直接覆盖写会在写完之前把条目截断, 并发读方拿到半截内容并被当成完整值。本类内没有直接
+ * 覆盖写路径, 整份写入的实现由构造方注入 (本类在 :foundation, 看不到 :data 的落盘机制)。
+ *
  * @param cacheDir 缓存目录
  * @param maxSize 最大缓存字节数
  * @param maxCount 最大缓存文件数
+ * @param writeFileAtomically 整份写入条目 (同目录临时件 + 改名就位) 的实现, 成功返回 true;
+ *   各端注入的入口形如 `io.legado.app.help.writeBytesAtomically`。临时件名契约见
+ *   [io.legado.app.utils.atomicWriteTempPath], 启动清点 ([ACacheManager]) 时会排除这些
+ *   非条目文件并回收已成孤儿的那些。
  */
 open class ACacheBase protected constructor(
     cacheDir: File,
     maxSize: Long,
-    maxCount: Int
+    maxCount: Int,
+    private val writeFileAtomically: (path: String, data: ByteArray) -> Boolean,
 ) {
 
     companion object {
@@ -118,8 +127,11 @@ open class ACacheBase protected constructor(
         mCache?.let { mCache ->
             try {
                 val file = mCache.newFile(key)
-                file.writeText(value)
-                mCache.put(file)
+                if (writeFileAtomically(file.path, value.encodeToByteArray())) {
+                    mCache.put(file)
+                } else {
+                    throw IOException("缓存写入失败: ${file.path}")
+                }
             } catch (e: Exception) {
                 e.printStackTraceOnDebug()
             }
@@ -181,7 +193,9 @@ open class ACacheBase protected constructor(
     fun put(key: String, value: ByteArray) {
         mCache?.let { mCache ->
             val file = mCache.newFile(key)
-            file.writeBytes(value)
+            if (!writeFileAtomically(file.path, value)) {
+                throw IOException("缓存写入失败: ${file.path}")
+            }
             mCache.put(file)
         }
     }
@@ -408,7 +422,12 @@ open class ACacheBase protected constructor(
         }
 
         /**
-         * 计算 cacheSize和cacheCount
+         * 计算 cacheSize 和 cacheCount。
+         *
+         * 整份写入被强杀留下的临时件不是条目 (不被任何读取方按名读取, 也不受写入方管理), 计入
+         * 大小/条数会让 LRU 提前淘汰正常条目, 故清点时排除; 已成孤儿的那份在本趟一并回收
+         * (正在写的那份刚创建, 判不成孤儿)。目录里其它非条目的残留 (如替换备份件) 仍按原样
+         * 计入, 由产生它的替换/删除路径自行清理。
          */
         private fun calculateCacheSizeAndCacheCount() {
             Thread {
@@ -418,7 +437,14 @@ open class ACacheBase protected constructor(
                     var count = 0
                     val cachedFiles = cacheDir.listFiles()
                     if (cachedFiles != null) {
+                        val now = System.currentTimeMillis()
                         for (cachedFile in cachedFiles) {
+                            if (isAtomicWriteTempName(cachedFile.name)) {
+                                if (isOrphanAtomicWriteTemp(cachedFile.name, cachedFile.lastModified(), now)) {
+                                    cachedFile.delete()
+                                }
+                                continue
+                            }
                             size += calculateSize(cachedFile).toInt()
                             count += 1
                             lastUsageDates[cachedFile] = cachedFile.lastModified()

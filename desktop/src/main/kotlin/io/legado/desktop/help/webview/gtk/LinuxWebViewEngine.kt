@@ -54,23 +54,18 @@ internal object LinuxWebViewEngine : DesktopWebViewEngineBase() {
 
     override val platformLabel = PLATFORM_LABEL
 
-    @Volatile
-    private var probed = false
-
     /** 系统是否装了 webkit2gtk-4.1 (供 [io.legado.desktop.help.webview.DesktopWebViewEngines.installGuide])。 */
     fun runtimeInstalled(): Boolean = GtkLibs.webkitPath() != null
 
-    override fun isAvailable(): Boolean {
-        if (probed) return available
-        available = runCatching {
-            GtkLibs.ensureLoaded() && GtkLoop.ensureStarted()
-        }.getOrDefault(false)
-        probed = true
-        return available
-    }
-
-    @Volatile
-    private var available = false
+    /**
+     * 引擎是否可用: 库能加载且 GTK 线程能迭代主循环。
+     *
+     * 不缓存结论: 启动失败与主循环随线程结束都由 [GtkLoop.ensureStarted] 在下一次调用时整代
+     * 重建重试, 缓存 false 会把可恢复的失败固化成本次运行内不可用。
+     */
+    override fun isAvailable(): Boolean = runCatching {
+        GtkLibs.ensureLoaded() && GtkLoop.ensureStarted()
+    }.getOrDefault(false)
 
     override suspend fun fetch(request: WebViewFetchRequest): WebViewFetchResult {
         if (!isAvailable()) throw NoStackTraceException("WebKitGTK 引擎不可用")
@@ -134,17 +129,17 @@ internal object LinuxWebViewEngine : DesktopWebViewEngineBase() {
         request: WebViewFetchRequest,
     ): WebViewFetchResult {
         val hit = CompletableDeferred<Pair<String, Map<String, String>>>()
-        val (overrideRegex, sourceRegex) = snifferRegexes(request)
+        val (overridePattern, sourcePattern) = snifferPatterns(request)
         // cookie 注入同 runHtml: 嗅探也是真实导航, 命中前页面已按请求携带登录态
         injectWebViewCookies(request.url, platformLabel) { domain, cookie ->
             GtkLoop.await { session.addCookies(domain, cookie, COOKIE_TIMEOUT_MS) }
         }
         GtkLoop.await {
             session.onUriChanged = { uri ->
-                if (overrideRegex?.matches(uri) == true) hit.complete(uri to emptyMap())
+                if (snifferMatches(uri, overridePattern)) hit.complete(uri to emptyMap())
             }
             session.onResourceStarted = { uri, headers ->
-                if (sourceRegex?.matches(uri) == true) hit.complete(uri to headers())
+                if (snifferMatches(uri, sourcePattern)) hit.complete(uri to headers())
             }
             session.onLoadChanged = { _, event ->
                 if (event == WEBKIT_LOAD_FINISHED) {
@@ -272,7 +267,11 @@ private class GtkWindowHandle(
                                     created.cookies(url, DesktopWebViewEngineBase.COOKIE_TIMEOUT_MS)
                                 }
                             }
-                            runCatching { request.onNavigated(url) }
+                            // 只在导航完成时回调: LOAD_COMMITTED 也命中本分支, 提前回调会在
+                            // DOM 就绪前多执行一次; 与 Windows/macOS 引擎的同名回调语义对齐
+                            if (event == WEBKIT_LOAD_FINISHED) {
+                                runCatching { request.onNavigated(url) }
+                            }
                             val toolbar = created.toolbar
                             toolbar?.setLoading(false)
                             if (isLoginChecking()) {

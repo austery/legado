@@ -4,6 +4,11 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.res.Resources
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.os.Build
 import androidx.core.content.pm.PackageInfoCompat
 import eu.kanade.tachiyomi.animesource.AnimeSource
@@ -13,17 +18,22 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
 import io.legado.app.constant.AppLog
 import io.legado.app.help.coroutine.IoDispatcher
+import io.legado.app.help.extension.EXTENSION_ICON_MAX_PIXEL_SIZE
 import io.legado.app.help.extension.ExtensionApkInfo
+import io.legado.app.help.extension.ExtensionInstallScaffold
+import io.legado.app.help.extension.ExtensionManifestContract
 import io.legado.app.help.extension.isValidExtensionPackageName
 import io.legado.app.help.extension.model.ContentWarning
 import io.legado.app.help.extension.model.MangaExtension
 import io.legado.app.help.extension.requireValidExtensionPackageName
 import io.legado.app.help.extension.trust.TrustHelper
+import io.legado.app.utils.FileUtilsBase
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 
@@ -41,37 +51,19 @@ import java.security.MessageDigest
  */
 internal object ExtensionLoader {
 
-    private const val EXTENSION_FEATURE = "tachiyomi.extension"
-    private const val ANIME_EXTENSION_FEATURE = "tachiyomi.animeextension"
-    private const val METADATA_SOURCE_CLASS = "tachiyomi.extension.class"
-    private const val METADATA_SOURCE_FACTORY = "tachiyomi.extension.factory"
-    private const val METADATA_NSFW = "tachiyomi.extension.nsfw"
-    private const val ANIME_METADATA_SOURCE_CLASS = "tachiyomi.animeextension.class"
-    private const val ANIME_METADATA_SOURCE_FACTORY = "tachiyomi.animeextension.factory"
-    private const val ANIME_METADATA_NSFW = "tachiyomi.animeextension.nsfw"
-
-    private const val METADATA_NAME = "tachiyomix.name"
-    private const val METADATA_EXTENSION_LIB = "tachiyomix.extensionLib"
-    private const val METADATA_CONTENT_WARNING = "tachiyomix.contentWarning"
-
-    /** 漫画扩展受支持的扩展库版本 (tachiyomix 契约)。 */
-    private val SUPPORTED_LIB_VERSIONS = listOf(1.4, 1.6)
-
-    /** 视频扩展受支持的扩展库版本 (Aniyomi 整数系; extensions-lib 无 15 tag 但 app 0.15 在用, 保留)。 */
-    private val ANIME_SUPPORTED_LIB_VERSIONS = listOf(14.0, 15.0, 16.0, 17.0)
-
-    /** 扩展家族: 由 feature 键判定 (两 feature 不会同时声明)。 */
-    private enum class ExtensionKind { MANGA, ANIME }
-
     @Suppress("DEPRECATION")
     private val PACKAGE_FLAGS = PackageManager.GET_CONFIGURATIONS or
         PackageManager.GET_META_DATA or
         PackageManager.GET_SIGNATURES or
         (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else 0)
 
+    /** 图标位图算不出可用边长 (固有尺寸非正或超过上限) 时的兜底边长 (典型 xxxhdpi 启动图标 192px)。 */
+    private const val ICON_FALLBACK_SIZE = 192
+
     private const val PRIVATE_EXTENSION_EXTENSION = "ext"
 
-    private fun getPrivateExtensionDir(context: Context) = File(context.filesDir, "exts")
+    /** 私有扩展文件所在目录 (扩展文件与安装临时件都在这棵目录下; 安装器落盘与卸载清理共用)。 */
+    fun getPrivateExtensionDir(context: Context) = File(context.filesDir, "exts")
 
     /**
      * 扩展安装包元信息 (覆盖校验面)。Android 侧由 PackageManager 查询, 与桌面端的
@@ -94,17 +86,14 @@ internal object ExtensionLoader {
     /**
      * 将已通过 `checkExtensionInstallable` 校验的扩展 apk 落为私有扩展文件
      * (Android 14+ 只读), 并按新增/覆盖通知重扫。
+     *
+     * 落盘用原子替换: 覆盖已装扩展时旧文件在新文件整份就位后才消失, 任一步失败旧扩展原样可用。
      */
     fun installPrivateExtensionFile(context: Context, file: File, pkgName: String, replaced: Boolean) {
         requireValidExtensionPackageName(pkgName)
         val target = File(getPrivateExtensionDir(context), "$pkgName.$PRIVATE_EXTENSION_EXTENSION")
-        try {
-            target.delete()
-            file.copyAndSetReadOnlyTo(target)
-        } catch (e: Exception) {
-            target.delete()
-            throw e
-        }
+        FileUtilsBase.replaceFileAtomically(file, target)
+        target.setReadOnly()
         if (replaced) {
             ExtensionInstallReceiver.notifyReplaced(context, pkgName)
         } else {
@@ -112,9 +101,16 @@ internal object ExtensionLoader {
         }
     }
 
+    /**
+     * 卸载私有扩展: 扩展文件、原子替换备份件与安装临时件一并清掉 (备份件是替换被强杀留下的旧副本,
+     * 卸载时不清会一直留在磁盘上)。重扫由调用方触发。
+     */
     fun uninstallPrivateExtension(context: Context, pkgName: String) {
         requireValidExtensionPackageName(pkgName)
-        if (File(getPrivateExtensionDir(context), "$pkgName.$PRIVATE_EXTENSION_EXTENSION").delete()) {
+        val dir = getPrivateExtensionDir(context)
+        ExtensionInstallScaffold.discardInstallTemps(dir, pkgName)
+        val target = File(dir, "$pkgName.$PRIVATE_EXTENSION_EXTENSION")
+        if (FileUtilsBase.deleteWithReplaceBackup(target)) {
             ExtensionInstallReceiver.notifyRemoved(context, pkgName)
         }
     }
@@ -201,6 +197,73 @@ internal object ExtensionLoader {
         }
     }
 
+    /**
+     * 插件包内启动图标的 PNG 字节 (插件源虚拟行行首图标用)。
+     *
+     * 共享扩展与私有扩展共一条链: [getExtensionPackageInfoFromPkgName] 选出生效形态并回填
+     * 私有 apk 路径, 再按清单声明的图标资源 id 在本进程内读该包资源。不走
+     * `PackageManager.getApplicationIcon`: 它在取不到图标时回落系统默认图标, 会把"没有图标"
+     * 显示成有图标; 这里取不到就返回 null, 由调用方回落书源名首字占位。
+     *
+     * 尺寸超过 [EXTENSION_ICON_MAX_PIXEL_SIZE] 的图标按没有图标处理 (位图图标在解码前就被认出来,
+     * 只在读不出尺寸时才按兜底边长绘制): 清单可以声明任意大的图标, 按声明尺寸建位图会被拉到巨量分配。
+     *
+     * 包信息读取/资源解析/编码任何一环出错都收敛为 null: 调用方在书源列表流里逐行取图,
+     * 异常漏出去会终结整条列表流 (此后不再随插件与书源库更新)。
+     */
+    fun readExtensionIcon(context: Context, pkgName: String): ByteArray? =
+        runCatching { readIconPngBytes(context, pkgName) }
+            .getOrElse { e ->
+                // 落日志自身也要写文件, 再套一层: 日志失败同样不能让异常漏出本方法
+                runCatching { AppLog.put("扩展图标读取失败: $pkgName", e) }
+                null
+            }
+
+    /** [readExtensionIcon] 的实现体 (允许抛出, 由外层收容)。 */
+    private fun readIconPngBytes(context: Context, pkgName: String): ByteArray? {
+        val appInfo = getExtensionPackageInfoFromPkgName(context, pkgName)?.applicationInfo
+            ?: return null
+        val resId = appInfo.icon
+        if (resId == 0) return null
+        val resources = context.packageManager.getResourcesForApplication(appInfo)
+        // 位图图标先只看声明尺寸: 超上限直接跳过, 不让系统按声明尺寸解码出巨量位图
+        if (declaredIconTooLarge(resources, resId)) return null
+        val drawable = resources.getDrawable(resId, null) ?: return null
+        return drawable.toPngBytes()
+    }
+
+    /**
+     * 清单声明的位图图标是否超过尺寸上限 (只解图像头, 不解像素)。
+     *
+     * 矢量图与自适应图标读不出位图尺寸, outWidth/outHeight 保持非正, 真值走 Drawable 路径;
+     * 读尺寸本身出错同样返回 false, 不影响正常图标。
+     */
+    private fun declaredIconTooLarge(resources: Resources, resId: Int): Boolean {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching { BitmapFactory.decodeResource(resources, resId, options) }
+        return options.outWidth > EXTENSION_ICON_MAX_PIXEL_SIZE ||
+            options.outHeight > EXTENSION_ICON_MAX_PIXEL_SIZE
+    }
+
+    /** Drawable 画到同尺寸位图后编码为 PNG (图标可能是矢量/自适应图标, 不能直接取原字节)。*/
+    private fun Drawable.toPngBytes(): ByteArray? = runCatching {
+        val width = intrinsicWidth.takeIf { it > 0 } ?: ICON_FALLBACK_SIZE
+        val height = intrinsicHeight.takeIf { it > 0 } ?: ICON_FALLBACK_SIZE
+        // 超过上限按兜底边长绘制: 不按固有尺寸分配位图
+        val tooLarge = width > EXTENSION_ICON_MAX_PIXEL_SIZE || height > EXTENSION_ICON_MAX_PIXEL_SIZE
+        val targetWidth = if (tooLarge) ICON_FALLBACK_SIZE else width
+        val targetHeight = if (tooLarge) ICON_FALLBACK_SIZE else height
+        val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        setBounds(0, 0, targetWidth, targetHeight)
+        draw(canvas)
+        ByteArrayOutputStream().use { out ->
+            if (bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) out.toByteArray() else null
+        }
+    }.onFailure {
+        AppLog.put("扩展图标编码失败", it)
+    }.getOrNull()
+
     fun getExtensionPackageInfoFromPkgName(context: Context, pkgName: String): PackageInfo? {
         // 包名参与私有扩展文件路径拼接, 非法包名直接视为不存在
         if (!isValidExtensionPackageName(pkgName)) return null
@@ -265,26 +328,27 @@ internal object ExtensionLoader {
         val pkgName = pkgInfo.packageName
         val kind = extensionKindOf(pkgInfo)
 
-        val extName = metaData?.getString(METADATA_NAME)
+        val extName = metaData?.getString(ExtensionManifestContract.METADATA_NAME)
             ?: appInfo?.let {
-                pkgManager.getApplicationLabel(it).toString()
-                    .substringAfter("Aniyomi: ").substringAfter("Tachiyomi: ")
+                ExtensionManifestContract.stripLabelPrefix(
+                    pkgManager.getApplicationLabel(it).toString()
+                )
             }
             ?: pkgName
         val versionName = pkgInfo.versionName
         val versionCode = PackageInfoCompat.getLongVersionCode(pkgInfo)
         val signatures = getSignatures(pkgInfo).orEmpty()
-        val nsfwKey = if (kind == ExtensionKind.ANIME) ANIME_METADATA_NSFW else METADATA_NSFW
+        val nsfwKey =
+            if (kind == ExtensionManifestContract.ExtensionKind.ANIME) {
+                ExtensionManifestContract.ANIME_METADATA_NSFW
+            } else {
+                ExtensionManifestContract.METADATA_NSFW
+            }
         val contentWarning = when {
             metaData == null -> ContentWarning.SAFE
-            metaData.containsKey(METADATA_CONTENT_WARNING) -> {
-                when (metaData.getInt(METADATA_CONTENT_WARNING)) {
-                    1 -> ContentWarning.MIXED
-                    2 -> ContentWarning.NSFW
-                    else -> ContentWarning.SAFE
-                }
-            }
-            metaData.getInt(nsfwKey) == 1 -> ContentWarning.NSFW
+            metaData.containsKey(ExtensionManifestContract.METADATA_CONTENT_WARNING) ->
+                ExtensionManifestContract.contentWarningOfDeclared(metaData.getInt(ExtensionManifestContract.METADATA_CONTENT_WARNING))
+            ExtensionManifestContract.isNsfwFlag(metaData.getInt(nsfwKey)) -> ContentWarning.NSFW
             else -> ContentWarning.SAFE
         }
 
@@ -315,18 +379,16 @@ internal object ExtensionLoader {
 
         // 校验扩展库版本; metadata 未声明时回退 versionName 前两段 (视频扩展实测无 tachiyomix.* 元数据,
         // 版本名即 lib 代系: "14.10"→14.0)
-        val libVersion = metaData.getFloat(METADATA_EXTENSION_LIB)
-            .takeUnless { it == 0.0f }
-            ?.toString()
-            ?.toDouble()
-            ?: versionName.substringBeforeLast('.').toDoubleOrNull()
-        val supportedVersions =
-            if (kind == ExtensionKind.ANIME) ANIME_SUPPORTED_LIB_VERSIONS else SUPPORTED_LIB_VERSIONS
-        if (libVersion == null || libVersion !in supportedVersions) {
+        val declaredLibVersion = ExtensionManifestContract.parseLibVersion(
+            metaData?.getFloat(ExtensionManifestContract.METADATA_EXTENSION_LIB), versionName
+        )
+        val libVersion = ExtensionManifestContract.supportedLibVersion(kind, declaredLibVersion)
+        if (libVersion == null) {
             AppLog.put(
-                "扩展库版本 $libVersion 不受支持, 仅支持 ${supportedVersions.joinToString()}: $extName"
+                "扩展库版本 $declaredLibVersion 不受支持, " +
+                    "仅支持 ${ExtensionManifestContract.supportedLibVersions(kind).joinToString()}: $extName"
             )
-            return notLoaded(MangaExtension.NotLoaded.Reason.UnsupportedLibVersion, libVersion)
+            return notLoaded(MangaExtension.NotLoaded.Reason.UnsupportedLibVersion, declaredLibVersion)
         }
 
         if (signatures.isEmpty()) {
@@ -356,7 +418,11 @@ internal object ExtensionLoader {
         }
 
         val sourceClassKey =
-            if (kind == ExtensionKind.ANIME) ANIME_METADATA_SOURCE_CLASS else METADATA_SOURCE_CLASS
+            if (kind == ExtensionManifestContract.ExtensionKind.ANIME) {
+                ExtensionManifestContract.ANIME_METADATA_SOURCE_CLASS
+            } else {
+                ExtensionManifestContract.METADATA_SOURCE_CLASS
+            }
         val sourceClasses = metaData.getString(sourceClassKey)
         if (sourceClasses.isNullOrBlank()) {
             AppLog.put("扩展缺少源类声明: $extName")
@@ -366,16 +432,8 @@ internal object ExtensionLoader {
         // 分号分隔, "." 开头为扩展包内相对类名; 漫画/视频源按实例类型分流
         val mangaSources = ArrayList<Source>()
         val animeSources = ArrayList<AnimeSource>()
-        sourceClasses
-            .split(";")
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .forEach { sourceClass ->
-                val className = if (sourceClass.startsWith(".")) {
-                    pkgInfo.packageName + sourceClass
-                } else {
-                    sourceClass
-                }
+        ExtensionManifestContract.expandSourceClassNames(sourceClasses, pkgName)
+            .forEach { className ->
                 try {
                     when (val obj = Class.forName(className, false, classLoader)
                         .getDeclaredConstructor().newInstance()) {
@@ -405,7 +463,11 @@ internal object ExtensionLoader {
         }
 
         val factoryKey =
-            if (kind == ExtensionKind.ANIME) ANIME_METADATA_SOURCE_FACTORY else METADATA_SOURCE_FACTORY
+            if (kind == ExtensionManifestContract.ExtensionKind.ANIME) {
+                ExtensionManifestContract.ANIME_METADATA_SOURCE_FACTORY
+            } else {
+                ExtensionManifestContract.METADATA_SOURCE_FACTORY
+            }
         return MangaExtension.Loaded(
             name = extName,
             pkgName = pkgName,
@@ -443,17 +505,14 @@ internal object ExtensionLoader {
 
     private fun isPackageAnExtension(pkgInfo: PackageInfo): Boolean {
         return pkgInfo.reqFeatures.orEmpty().any {
-            it.name == EXTENSION_FEATURE || it.name == ANIME_EXTENSION_FEATURE
+            ExtensionManifestContract.isExtensionFeature(it.name)
         }
     }
 
     /** 两 feature 不会同时声明, 视频键优先判定。 */
-    private fun extensionKindOf(pkgInfo: PackageInfo): ExtensionKind {
-        return if (pkgInfo.reqFeatures.orEmpty().any { it.name == ANIME_EXTENSION_FEATURE }) {
-            ExtensionKind.ANIME
-        } else {
-            ExtensionKind.MANGA
-        }
+    private fun extensionKindOf(pkgInfo: PackageInfo): ExtensionManifestContract.ExtensionKind {
+        return ExtensionManifestContract.extensionKindOf(pkgInfo.reqFeatures.orEmpty().map { it.name })
+            ?: ExtensionManifestContract.ExtensionKind.MANGA
     }
 
     /**
@@ -491,16 +550,6 @@ internal object ExtensionLoader {
         if (publicSourceDir == null) {
             publicSourceDir = apkPath
         }
-    }
-
-    private fun File.copyAndSetReadOnlyTo(target: File) {
-        target.parentFile?.mkdirs()
-        inputStream().use { input ->
-            target.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-        target.setReadOnly()
     }
 
     private data class ExtensionInfo(

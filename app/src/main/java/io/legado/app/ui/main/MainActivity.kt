@@ -13,7 +13,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.TextPaint
-import android.text.format.DateUtils
 import android.view.WindowManager
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,11 +39,12 @@ import io.legado.app.BuildConfig
 import io.legado.app.base.BaseComposeActivity
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.DirUsage
 import io.legado.app.constant.IntentAction
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.appInfo
 import io.legado.app.data.entities.Book
-import io.legado.app.help.AppWebDav
+import io.legado.app.help.StartupMaintenanceShared
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
@@ -52,6 +52,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.LocalReadConfigProviders
 import io.legado.app.help.config.ReadConfigProviders
+import io.legado.app.help.config.rememberBookExportDir
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.i18n.androidAppString
 import io.legado.app.help.image.registerReaderImageResolver
@@ -62,14 +63,17 @@ import io.legado.app.model.fileBook.FileBook
 import io.legado.app.help.extension.AndroidMangaExtensionHost
 import io.legado.app.help.extension.MangaExtensionHostProviders
 import io.legado.app.help.extension.MangaExtensionManager
+import io.legado.app.help.file.AndroidDirAuthorizations
 import io.legado.app.model.manga.AndroidMangaExtensionPlatform
 import io.legado.app.receiver.MediaButtonReceiver
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.service.ExportBookService
 import io.legado.app.ui.about.UpVersionStore
 import io.legado.app.ui.about.checkUpdateAndPrompt
+import io.legado.app.ui.about.notifyAppCrash
 import io.legado.app.ui.about.upVersion
 import io.legado.app.ui.association.DeepLinkImportHost
+import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.association.LegadoDeepLink
 import io.legado.app.ui.association.LegadoDeepLinkHandler
 import io.legado.app.ui.book.audio.AudioPlayPlatformProviders
@@ -90,6 +94,7 @@ import io.legado.app.ui.book.read.ReaderPlatformProviders
 import io.legado.app.ui.book.read.ReaderScreenModelRegistry
 import io.legado.app.ui.book.read.page.provider.AndroidTextMeasurer
 import io.legado.app.ui.book.read.page.provider.TextMeasurerProviders
+import io.legado.app.ui.book.read.page.readerLayoutTypeface
 import io.legado.app.ui.book.read.refreshReaderImage
 import io.legado.app.ui.book.source.SourceUiEventBridgeHost
 import io.legado.app.ui.book.video.AndroidVideoPlayPlatformProvider
@@ -97,7 +102,9 @@ import io.legado.app.ui.book.video.VideoPlayPlatformProviders
 import io.legado.app.ui.browser.AndroidWebView
 import io.legado.app.ui.browser.LocalWebViewSlot
 import io.legado.app.ui.compose.dialogs.alert
+import io.legado.app.ui.compose.dialogs.ComposeAlertDialogHost
 import io.legado.app.ui.file.HandleFileContract
+import io.legado.app.ui.file.HandleFileHost
 import io.legado.app.ui.file.registerHandleFile
 import io.legado.app.ui.reader.ReaderDictWord
 import io.legado.app.ui.reader.ReaderImageActionMenu
@@ -114,9 +121,12 @@ import io.legado.app.ui.root.LegadoApp
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.PlatformServiceProviders
 import io.legado.app.ui.root.ScreenModelStore
+import io.legado.app.ui.root.ShareTextTarget
+import io.legado.app.ui.root.shareTextTarget
 import io.legado.app.ui.widget.dialog.encodePhotoOverlayPayload
 import io.legado.app.utils.ACache
 import io.legado.app.utils.FileUtils
+import io.legado.app.utils.enableCustomExport
 import io.legado.app.utils.isContentScheme
 import io.legado.app.utils.keepScreenOn
 import io.legado.app.utils.observeEvent
@@ -143,7 +153,6 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
 
     private var exitTime: Long = 0
     private val EXIT_INTERVAL = 2000L
-    private val exportBookPathKey = "exportBookPath"
 
     /** 视频画中画 provider: PiP 模式切换回调由此转发到共享层渲染状态。 */
     private var videoPlayProvider: AndroidVideoPlayPlatformProvider? = null
@@ -174,6 +183,8 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
             return@registerHandleFile
         }
         ACache.get().put(AppConst.imagePathKey, uri.toString())
+        // 图片保存目录也可被本地书引用, 登记用途供书籍文件访问校验
+        AndroidDirAuthorizations.remember(uri.toString(), DirUsage.ImageSave)
         // 有待保存图片 (menu_save 先选目录后保存) 则继续保存
         pendingSaveImageSrc?.let { src ->
             pendingSaveImageSrc = null
@@ -207,24 +218,23 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
     private lateinit var readerPlatform: AndroidReaderPlatformProvider
     private lateinit var services: AndroidPlatformServices
 
-    /** 导入书籍: SAF 选根目录 (对照 ImportBookActivity.selectFolder: 写 pref 后 initRootDoc(true))。 */
+    /** 导入书籍: SAF 选根目录 (对照 ImportBookActivity.selectFolder: 写 pref 后重建 rootDoc 并读目录)。 */
     private val importSelectFolder = registerHandleFile { result ->
         if (result.uri != null) {
             AppConfig.importBookPath = result.uri.toString()
-            // 取消选择时不动当前 rootDoc (对照原版 selectFolder 回调 uri==null 直接 return)
-            pendingImportFolderCallback?.invoke()
-            pendingImportFolderCallback = null
+            // 导入根目录下的文件按本地书读入, 登记为书籍用途
+            AndroidDirAuthorizations.remember(result.uri.toString(), DirUsage.BookTree)
         }
+        // 取消选择时不动当前 rootDoc (对照原版 selectFolder 回调 uri==null 直接 return)
+        capabilities.onImportFolderSelected(result.uri != null)
     }
-
-    /** 由 [AndroidPlatformCapabilities.pickImportFolder] 设置: 选完目录后重建 rootDoc 并加载。 */
-    var pendingImportFolderCallback: (() -> Unit)? = null
 
     /** 暴露给 [AndroidPlatformCapabilities] 启动 SAF 选目录。 */
     fun launchImportFolderPicker() = importSelectFolder.launch()
 
     /** 其它设置: SAF 选书籍目录 (对照 OtherConfigHost.localBookTreeSelect, DIR_SYS)。 */
     private val bookTreeUriSelect = registerHandleFile { result ->
+        result.uri?.let { AndroidDirAuthorizations.remember(it.toString(), DirUsage.BookTree) }
         pendingBookTreeUriCallback?.invoke(result.uri?.toString())
         pendingBookTreeUriCallback = null
     }
@@ -245,14 +255,19 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
             val uri = result.uri ?: return@registerHandleFile
             if (result.value == "cache") {
                 // 文件夹选择: 保存路径 + 启动 ExportBookService
+                // 记忆落设备本地配置空间 (rememberBookExportDir), 不落随备份走的默认偏好:
+                // 选定的是本机 SAF 授权引用, 跟着备份到别的设备必然失效。
+                // 读取方见 effectiveBookExportDir (三分支与备份路径同一形制)
                 val dirPath = if (uri.isContentScheme()) uri.toString() else uri.path
                     ?: return@registerHandleFile
-                ACache.get().put(exportBookPathKey, dirPath)
+                rememberBookExportDir(dirPath)
+                // 导出目录只存放导出成品, 登记用途后其下文件不作为本地书来源
+                AndroidDirAuthorizations.remember(uri.toString(), DirUsage.Export)
                 val books = pendingExportBooks
                 pendingExportBooks = null
                 if (books != null && books.isNotEmpty()) {
                     // 对照 BookshelfManageActivity.exportDir 回调: 开启自定义导出时先弹章节配置对话框
-                    if (AppConfig.enableCustomExport) {
+                    if (enableCustomExport()) {
                         PlatformCapabilityProviders.get()
                             .showExportSectionConfig(dirPath, books)
                     } else {
@@ -419,23 +434,29 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
     /**
      * 保存图片到用户目录 (对照原版 BaseReadViewModel.saveImage):
      * 缓存文件存在 → 直接复制; 本地书 → 取原图流写入; 网络书缓存缺失 → 不处理 (原版行为)。
+     * 写入契约以 false 表示目标没有被写入, 只有 true 才提示保存成功。
      */
     private fun saveImage(src: String, uri: Uri) {
         Coroutine.async(context = Dispatchers.IO) {
-            val book = ActiveReadBookRegistry.current?.bookValue ?: return@async
+            val book = ActiveReadBookRegistry.current?.bookValue ?: return@async false
             val image = BookHelp.getImage(book, src)
-            if (image.exists()) {
-                FileUtils.saveImage(image, uri)
-            } else if (book.isLocal) {
-                FileBook.getImage(book, src)?.use { input ->
+            when {
+                image.exists() -> FileUtils.saveImage(image, uri)
+                book.isLocal -> FileBook.getImage(book, src)?.use { input ->
                     FileUtils.saveImage(input, uri, ".${BookHelp.getImageSuffix(src)}")
-                }
+                } ?: false
+                else -> false
             }
         }.onError {
             AppLog.put("保存图片出错\n${it.localizedMessage}", it)
             toastOnUi("保存图片出错\n${it.localizedMessage}")
-        }.onSuccess {
-            toastOnUi("保存图片成功")
+        }.onSuccess { saved ->
+            if (saved) {
+                toastOnUi("保存图片成功")
+            } else {
+                AppLog.put("保存图片失败: $src")
+                toastOnUi("保存图片出错")
+            }
         }
     }
 
@@ -583,39 +604,49 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
                     capabilities = capabilities,
                 )
             }
-            // 书源 JS 弹窗事件桥宿主 (对照 desktop Main.kt / iOS MainViewController):
-            // 订阅 FlowBus(SOURCE_UI_REQUEST) 弹共享登录/源变量/验证码对话框
-            SourceUiEventBridgeHost()
-            // legado:// deep link 导入对话框宿主 (对照 iOS/鸿蒙 MainViewController 末尾挂载)。
-            // 仅前台 (RESUMED) 挂载: 透明壳 AssociationActivity 在前台时挂它自己的一份,
-            // MainActivity 若同时消费共享 pending 会双弹窗 (后台 Activity 的 Compose Dialog
-            // 窗口仍会显示); 壳 finish 后 MainActivity 回到前台, 宿主自然恢复。
-            val lifecycleOwner = LocalLifecycleOwner.current
-            var hostVisible by remember {
-                mutableStateOf(
-                    lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-                )
-            }
-            DisposableEffect(lifecycleOwner) {
-                val observer = LifecycleEventObserver { _, event ->
-                    hostVisible = when (event) {
-                        Lifecycle.Event.ON_RESUME -> true
-                        Lifecycle.Event.ON_PAUSE -> false
-                        else -> hostVisible
-                    }
+            // 书源 JS 弹窗/深链导入/查词/文件选择/alert DSL 等全局对话框宿主区:
+            // 统一包 AppTheme —— 这些宿主挂在 LegadoApp 主题作用域外, 而宿主正文
+            // (AppAlertDialogContent/HandleFileDialogContent 等) 直接读 AppTheme.colors,
+            // 不包则弹窗即抛 AppColors not provided 崩溃 (对照原版 ComposeDialog 基类自带主题)
+            AppTheme {
+                // 书源 JS 弹窗事件桥宿主 (对照 desktop Main.kt / iOS MainViewController):
+                // 订阅 FlowBus(SOURCE_UI_REQUEST) 弹共享登录/源变量/验证码对话框
+                SourceUiEventBridgeHost()
+                // legado:// deep link 导入对话框宿主 (对照 iOS/鸿蒙 MainViewController 末尾挂载)。
+                // 仅前台 (RESUMED) 挂载: 透明壳 AssociationActivity 在前台时挂它自己的一份,
+                // MainActivity 若同时消费共享 pending 会双弹窗 (后台 Activity 的 Compose Dialog
+                // 窗口仍会显示); 壳 finish 后 MainActivity 回到前台, 宿主自然恢复。
+                val lifecycleOwner = LocalLifecycleOwner.current
+                var hostVisible by remember {
+                    mutableStateOf(
+                        lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                    )
                 }
-                lifecycleOwner.lifecycle.addObserver(observer)
-                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        hostVisible = when (event) {
+                            Lifecycle.Event.ON_RESUME -> true
+                            Lifecycle.Event.ON_PAUSE -> false
+                            else -> hostVisible
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+                if (hostVisible) {
+                    DeepLinkImportHost()
+                }
+                // 阅读页长按文本的自绘浮动操作菜单 (对照桌面 DesktopReaderPlatformProvider.TextSelectionHost)
+                readerPlatform.TextSelectionHost()
+                // 阅读页长按图片的自绘浮动操作菜单 (与文本菜单同款样式, 见 ReaderImageActionMenu)
+                ReaderImageActionMenu.Host()
+                // 查词对话框 (选中词 → 词典查询, 本地/在线词典规则; 四端同一份, 见 shared ReaderDictWord)
+                ReaderDictWord.Host()
+                // 文件选择/导出对话框宿主 (原 HandleFileDialog/FilePickerDialog Fragment 的声明式形态)
+                HandleFileHost()
+                // alert/selector DSL 请求宿主 (原 ComposeDialog 窗口的声明式形态)
+                ComposeAlertDialogHost()
             }
-            if (hostVisible) {
-                DeepLinkImportHost()
-            }
-            // 阅读页长按文本的自绘浮动操作菜单 (对照桌面 DesktopReaderPlatformProvider.TextSelectionHost)
-            readerPlatform.TextSelectionHost()
-            // 阅读页长按图片的自绘浮动操作菜单 (与文本菜单同款样式, 见 ReaderImageActionMenu)
-            ReaderImageActionMenu.Host()
-            // 查词对话框 (选中词 → 词典查询, 本地/在线词典规则; 四端同一份, 见 shared ReaderDictWord)
-            ReaderDictWord.Host()
         }
     }
 
@@ -711,7 +742,8 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
      * 解析外部 Intent (DeepLink / 文件关联 / PROCESS_TEXT / 直达入口) 并投递到 shared:
      * - legado:// / yuedu:// → [LegadoDeepLinkHandler] → DeepLinkImportHost 弹导入对话框
      * - file:// / content:// / app:// → [LaunchRequest.ImportFile] → 导入书籍
-     * - PROCESS_TEXT / SEND → [LaunchRequest.ProcessText] → 搜索
+     * - PROCESS_TEXT / SEND → [LaunchRequest.ProcessText] (空白什么都不做, 整段是链接则当书籍地址
+     *   添加, 其余搜索)
      * - search/explore-show alias → [LaunchRequest.OpenRoute] 直达 (书架不进导航栈)
      *
      * 一律投 [LaunchRequestBus] (无限队列, UI 未就绪自然排队), 不再有第二条通路。
@@ -734,11 +766,14 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
             }
             return
         }
-        // 创建路径 (组合恒晚于本函数) 且能直接定出路由: 投 asRoot, 由 Content 的取件点
-        // 当初始路由消费 —— 对照 master 各独立 Activity 冷启动直开本页, back 即退
-        val direct = if (isNewIntent) null else directRouteFromIntent(intent)
+        // 能直接定出路由的 intent: 冷启动投 asRoot, 热投递按普通导航 push
+        val direct = directRouteFromIntent(intent)
         LaunchRequestBus.dispatch(
-            if (direct != null) LaunchRequest.OpenRoute(direct, asRoot = true) else request
+            when {
+                direct == null -> request
+                isNewIntent -> LaunchRequest.OpenRoute(direct, asRoot = false)
+                else -> LaunchRequest.OpenRoute(direct, asRoot = true)
+            }
         )
     }
 
@@ -747,7 +782,8 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
      * - SearchActivity alias (key/searchScope/submit extra)
      * - ExploreShowActivity alias (exploreName/exploreUrl/sourceUrl extra, 查源下沉路由内)
      * - 视频直投 (content/file/http(s) 可播地址 → 播放页, 排在书籍导入之前)
-     * - 文件关联 / PROCESS_TEXT / SEND
+     * - 文件关联 / PROCESS_TEXT / SEND (分享/处理文本里只要不落搜索就不在此定路由: 空白什么都不做、
+     *   整段是链接则当书籍地址添加, 两者都交 [LaunchRequest.ProcessText] 由 shared 统一处置)
      *
      * 书籍类直达 (透明壳深链 / 文件关联打开书籍) 不在此: 它们的载荷是内存对象,
      * 由投递方直接构造 [LaunchRequest.OpenRoute] 带引用进队列, 不经 Intent 与全局槽。
@@ -784,18 +820,21 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
                 }
             }
 
+            // 分享/处理文本只有落搜索页的才在此定路由 (判据见 shared [shareTextTarget], 不在此另立):
+            // 整段是链接的当书籍地址添加、空白文本什么都不做, 两者都让请求落回下面的
+            // [LaunchRequest.ProcessText] 由 shared 统一处置, 不是多压一层搜索页。
             Intent.ACTION_PROCESS_TEXT ->
-                intent.getStringExtra(Intent.EXTRA_PROCESS_TEXT)?.let {
-                    AppRoute.Search(key = it, submit = true)
-                }
+                intent.getStringExtra(Intent.EXTRA_PROCESS_TEXT)
+                    ?.takeIf { shareTextTarget(it) == ShareTextTarget.SEARCH }
+                    ?.let { AppRoute.Search(key = it, submit = true) }
 
             Intent.ACTION_SEND -> {
                 @Suppress("DEPRECATION")
                 intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let {
                     AppRoute.ImportBook(it.toString())
-                } ?: intent.getStringExtra(Intent.EXTRA_TEXT)?.let {
-                    AppRoute.Search(key = it, submit = true)
-                }
+                } ?: intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ?.takeIf { shareTextTarget(it) == ShareTextTarget.SEARCH }
+                    ?.let { AppRoute.Search(key = it, submit = true) }
             }
 
             else -> null
@@ -861,7 +900,9 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
             )
             //设置本地密码
             setLocalPassword()
-            notifyAppCrash()
+            // 崩溃后重启提示: 与其余三端同一份 shared 实现 (原版 MainActivity.notifyAppCrash 的
+            // 读标记/清标记/弹框语义与位置一致; appCrash 标记由 CrashHandler 落盘时置位)
+            notifyAppCrash(BuildConfig.DEBUG)
             //备份同步
             backupSync()
             // 启动静默检查更新 (对照原版 AppUpdate.check(silent=true)): 无等待框无 toast,
@@ -885,14 +926,11 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
     private suspend fun privacyPolicy(): Boolean {
         if (LocalConfig.privacyPolicyOk) return true
         // privacyPolicy.md 统一存于 shared composeResources files/md (四端共享一份),
-        // 经 WebAssetSources 读 (四端同一 composeResources 取数路径, 与关于页 MdDocDialog 同源)
+        // 经 WebAssetSources 读 (四端同一 composeResources 取数路径, 与关于页文档弹窗同源)。
+        // 不吞读取异常: 该文件随包分发, 读不到只可能是打包/改名错 (构建期事实), 降级成空正文
+        // 会把构建错误伪装成"协议是空的"
         val privacyPolicy = withContext(IO) {
-            runCatching {
-                WebAssetSources.get().read("md/privacyPolicy.md").decodeToString()
-            }.getOrElse {
-                AppLog.put("读取隐私政策失败", it)
-                null
-            }
+            WebAssetSources.get().read("md/privacyPolicy.md").decodeToString()
         }
         return suspendCancellableCoroutine sc@{ block ->
             alert(androidAppString("privacy_policy"), privacyPolicy) {
@@ -939,36 +977,22 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
         }
     }
 
-    private fun notifyAppCrash() {
-        if (!LocalConfig.appCrash || BuildConfig.DEBUG) {
-            return
-        }
-        LocalConfig.appCrash = false
-        alert(androidAppString("draw"), "检测到阅读发生了崩溃，是否打开崩溃日志以便报告问题？") {
-            yesButton {
-                AppNavigatorProviders.get().showOverlay(AppOverlay.Dialog("crash_logs"))
-            }
-            noButton()
-        }
-    }
-
     /**
      * 备份同步
      */
     private fun backupSync() {
-        if (!AppConfig.autoCheckNewBackup) {
-            return
-        }
         lifecycleScope.launch {
-            val lastBackupFile =
-                withContext(IO) { AppWebDav.lastBackUp().getOrNull() } ?: return@launch
-            if (lastBackupFile.lastModify - LocalConfig.lastBackup > DateUtils.MINUTE_IN_MILLIS) {
-                LocalConfig.lastBackup = lastBackupFile.lastModify
-                alert(androidAppString("restore"), androidAppString("webdav_after_local_restore_confirm")) {
-                    cancelButton()
-                    okButton {
-                        viewModel.restoreWebDav(lastBackupFile.displayName)
-                    }
+            // 判定与"已提示过的最新云端备份时间"回写已下沉 :data commonMain (StartupMaintenanceShared),
+            // 四端共用一份; 开关 autoCheckNewBackup 也在下沉件内判。lastBackUp 走网络,
+            // 下沉件自身不切线程, 故仍必须留在 IO
+            val result = withContext(IO) { StartupMaintenanceShared.checkNewWebDavBackup() }
+            if (result !is StartupMaintenanceShared.NewBackupCheckResult.NewBackup) {
+                return@launch
+            }
+            alert(androidAppString("restore"), androidAppString("webdav_after_local_restore_confirm")) {
+                cancelButton()
+                okButton {
+                    viewModel.restoreWebDav(result.name)
                 }
             }
         }
@@ -993,16 +1017,17 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
 
 /**
  * 度量字体：[fontPath] = `ReadBookConfig.textFont`，与绘制侧 `loadReaderFontFamily`
- * （同为 `Typeface.createFromFile`）读同一文件；空路径 / 加载失败一并回落 SANS_SERIF。
+ * 同一份字体来源，取同一个字形对象：content 地址取同一份副本，读过文件的一侧登记的标识
+ * 未变时两侧都复用已建字形，度量侧不探测文件、不重读字体文件；
+ * 空路径 / 加载失败一并回落系统默认字体。
  *
  * [weight]（100..900，由 [ReaderFontWeights] 产出，标题与正文不同档）只作用于默认字体：
  * 自定义字体在绘制侧只注册了一个 `Font`，`FontWeight` 对它不起作用，
- * 故此处对文件路径分支不合成粗体，否则「粗体绘制 / 常规度量」会让每行墨迹宽于列盒。
+ * 故自定义字体成功加载时此处不合成粗体；回落默认字体的分支与绘制侧同字重，
+ * 否则「粗体绘制 / 常规度量」会让每行墨迹宽于列盒。
  */
 private fun readerMeasureTypeface(fontPath: String, weight: Int): Typeface {
-    if (fontPath.isNotEmpty()) {
-        return runCatching { Typeface.createFromFile(fontPath) }.getOrDefault(Typeface.SANS_SERIF)
-    }
+    readerLayoutTypeface(fontPath)?.let { return it }
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         Typeface.create(Typeface.SANS_SERIF, weight, false)
     } else {

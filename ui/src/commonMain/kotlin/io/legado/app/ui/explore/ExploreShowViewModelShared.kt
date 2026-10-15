@@ -2,7 +2,6 @@ package io.legado.app.ui.explore
 
 import io.legado.app.constant.AppConst.timeLimit
 import io.legado.app.constant.AppLog
-import io.legado.app.constant.BookSourceType
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.BaseBook
 import io.legado.app.data.entities.BookSource
@@ -18,12 +17,14 @@ import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.coroutine.printStackTraceOnDebug
 import io.legado.app.help.source.SearchBookFilter
 import io.legado.app.help.toast.Toasters
+import io.legado.app.ui.compose.platform.syncGetString
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
+import io.legado.app.model.webBook.BookListPager
 import io.legado.app.model.webBook.ExploreOption
 import io.legado.app.model.webBook.PluginFilterSession
 import io.legado.app.model.webBook.WebBook.getBookListAwait
+import io.legado.app.model.webBook.pluginFilterSessionOf
 import io.legado.app.model.webBook.parseExploreOptionsFromUrl
-import io.legado.app.ui.book.manga.extension.MangaExtensionServiceProviders
 import io.legado.app.utils.concurrent.newConcurrentSet
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.throttleLatest
@@ -139,9 +140,10 @@ class ExploreShowViewModelShared(
             bookSource?.isTachiyomiPluginSource() == true
 
     /**
-     * 筛选分类页的会话筛选实例 (漫画 [MangaFilterSession] / 视频 [AnimeFilterSession]; 仅本页会话内
-     * 有效, VM 随页面销毁即丢, 不持久化)。由 [createPluginExploreFilters] 在 initData 创建,
-     * 经 [explore] 透传取数委派; 入口行"重置"或退出重进页面时新建会话。
+     * 本页取数用的会话筛选实例 (漫画 [MangaFilterSession] / 视频 [AnimeFilterSession]; 仅本页会话内
+     * 有效, VM 随页面销毁即丢, 不持久化)。由 [createPluginExploreFilters] 经唯一入口
+     * [pluginFilterSessionOf] 建 (平台侧等注册表就绪后才作答), 经 [explore] 透传取数委派;
+     * 入口行"重置"或退出重进页面时新建会话。
      */
     var pluginExploreFilters: PluginFilterSession? = null
         private set
@@ -170,13 +172,14 @@ class ExploreShowViewModelShared(
     /** URL 解析出的参数 chip 列表 (可被 onUrlResolved 回调追加)。 */
     val exploreOptions = mutableListOf<ExploreOption>()
 
+    /** 翻页游标: 页码 + 上一页解析出的下一页地址 (与主页无限流共用同一份裁决)。 */
+    private val pager = BookListPager()
+
     /** 当前分页页码 (1-based, 成功加载一页后 +1)。 */
-    var page = 1
-        private set
+    val page: Int get() = pager.page
 
     /** 最近一次拉取后, 是否还有下一页。书源配了 hasMoreRule 走 JS, 否则按"本页非空就当还有"。 */
-    var hasNextPage: Boolean = true
-        private set
+    val hasNextPage: Boolean get() = pager.hasNextPage
 
     /** 已加载的发现结果 (按 bookUrl 去重, values 暴露给 [booksFlow])。
      * 用 Map 而非 LinkedHashSet: SearchBook 已改结构相等, 而 time 是构造参数 (当前毫秒),
@@ -238,12 +241,13 @@ class ExploreShowViewModelShared(
                     ?: return@launch
             }
             parseExploreOptions()
-            createPluginExploreFilters()
             _sourceReadyFlow.tryEmit(Unit)
             if (exploreOptions.isNotEmpty()) {
                 _optionsReadyFlow.tryEmit(Unit)
             }
             _upStarFlow.value = isFavorite()
+            // 取数前建会话 (入口保证需要会话的地方都拿到会话; 等注册表就绪不挡首屏信号)
+            createPluginExploreFilters()
             explore()
         }
     }
@@ -264,12 +268,13 @@ class ExploreShowViewModelShared(
             this@ExploreShowViewModelShared.exploreName = exploreName
             bookSource = source
             parseExploreOptions()
-            createPluginExploreFilters()
             _sourceReadyFlow.tryEmit(Unit)
             if (exploreOptions.isNotEmpty()) {
                 _optionsReadyFlow.tryEmit(Unit)
             }
             _upStarFlow.value = isFavorite()
+            // 取数前建会话 (入口保证需要会话的地方都拿到会话; 等注册表就绪不挡首屏信号)
+            createPluginExploreFilters()
             explore()
         }
     }
@@ -294,6 +299,8 @@ class ExploreShowViewModelShared(
                 _optionsReadyFlow.tryEmit(Unit)
             }
             _upStarFlow.value = isFavorite()
+            // 单源搜索页同样要带筛选会话取数 (没有筛选 UI 也走同一入口拿源默认实例)
+            createPluginExploreFilters()
             explore()
         }
     }
@@ -345,20 +352,20 @@ class ExploreShowViewModelShared(
     }
 
     /**
-     * 创建筛选分类页的会话筛选实例 (仅 Tachiyomi/Aniyomi 插件源且当前为"筛选"分类时)。
+     * 建本页取数用的会话筛选实例: 插件源"筛选"分类页与单源搜索模式各建一次。
      *
      * 筛选不持久化: 实例为源默认筛选的新建件 (源 getFilterList 每次全新实例),
-     * 挂本 VM (页面会话) 随页面销毁即丢; 每次进入筛选分类页均为全新默认。
+     * 挂本 VM (页面会话) 随页面销毁即丢; 每次进入均为全新默认。
      */
     private suspend fun createPluginExploreFilters() {
-        if (!isPluginFilterKind) return
         val source = bookSource ?: return
-        pluginExploreFilters = createPluginFilterSession(source)
+        if (!isPluginFilterKind && !isSearchMode) return
+        pluginFilterSessionOf(source)?.let { pluginExploreFilters = it }
         _pluginFiltersVersion.value++
     }
 
     /**
-     * 重置到源默认筛选: 换新会话实例并返回 (源不可用/服务未注册返回 null, 保留原实例)。
+     * 重置到源默认筛选: 换新会话实例并返回 (拿不到新实例返回 null, 保留原实例)。
      * 入口行"重置"调用, 调用方换实例后重载第 1 页。
      *
      * 部分扩展的档位靠首次请求的拦截器异步抓站点表单写入插件偏好, 抓取完成前 getFilterList 只
@@ -367,19 +374,10 @@ class ExploreShowViewModelShared(
      */
     suspend fun resetPluginExploreFilters(): PluginFilterSession? {
         val source = bookSource ?: return null
-        val session = createPluginFilterSession(source) ?: return null
+        val session = pluginFilterSessionOf(source) ?: return null
         pluginExploreFilters = session
         _pluginFiltersVersion.value++
         return session
-    }
-
-    private suspend fun createPluginFilterSession(source: BookSource): PluginFilterSession? {
-        val service = MangaExtensionServiceProviders.getOrNull() ?: return null
-        return when (source.bookSourceType) {
-            BookSourceType.image -> service.createMangaFilterSession(source.bookSourceUrl)
-            BookSourceType.video -> service.createAnimeFilterSession(source.bookSourceUrl)
-            else -> null
-        }
     }
 
     /**
@@ -423,7 +421,7 @@ class ExploreShowViewModelShared(
     fun explore(resetPage: Boolean = false) {
         val source = bookSource ?: return
         if (resetPage) {
-            page = 1
+            pager.reset()
             books.clear()
         }
         val selectedOptions = exploreOptions.associate { it.name to it.resolvedValue }
@@ -435,8 +433,9 @@ class ExploreShowViewModelShared(
         }
         Coroutine.async(scope) {
             getBookListAwait(
-                source, key, page, isSearch = isSearchMode,
-                pluginFilters = if (isSearchMode) null else pluginExploreFilters,
+                source, key, pager.page, isSearch = isSearchMode,
+                pluginFilters = pluginExploreFilters,
+                nextPageUrl = pager.nextPageUrl,
                 onUrlResolved = { analyzeUrl: AnalyzeUrlCore ->
                     val oldSize = exploreOptions.size
                     mergeOptions(parseExploreOptionsFromUrl(analyzeUrl.ruleUrl))
@@ -450,15 +449,16 @@ class ExploreShowViewModelShared(
             val prevSize = books.size
             val (items, filteredCount) = SearchBookFilter.apply(pageResult.books)
             if (filteredCount > 0) {
-                // 原 context.toastOnUi(context.getString(R.string.source_filter_rule_filtered_count, n))
-                // commonMain 无 R.string, 用硬编码中文 (与 SearchViewModel "已过滤 $n 本" 一致)
-                runCatching { Toasters.get().toast("已过滤 $filteredCount 本") }
+                runCatching {
+                    Toasters.get().toast(
+                        syncGetString("source_filter_rule_filtered_count", filteredCount)
+                    )
+                }
             }
             items.forEach { b -> books.getOrPut(b.bookUrl) { b } }
             // 兜底: 翻到第二页起, 去重后整体未增长则视为到底; 防止 hasMoreRule 缺失或配错时无限触底
-            hasNextPage = pageResult.hasNextPage && (page == 1 || books.size > prevSize)
+            pager.advance(pageResult, prevSize, books.size)
             _booksFlow.tryEmit(books.values.toList())
-            page++
         }.onError {
             it.printStackTraceOnDebug()
             _errorFlow.tryEmit(it.stackTraceStr)

@@ -22,7 +22,7 @@ import io.legado.app.ui.book.manga.MangaReaderUiEvent
 import io.legado.app.ui.book.manga.config.MangaColorFilterDialog
 import io.legado.app.ui.book.manga.config.MangaFooterSettingDialog
 import io.legado.app.ui.book.read.ReadBookEvents
-import io.legado.app.ui.book.read.config.ClickActionDialog
+import io.legado.app.ui.book.read.config.ClickRegionalConfigDialogHost
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.dialog.NumberPickerDialog
@@ -81,7 +81,7 @@ fun MangaReaderRoute(
     // 初始化书籍数据, 透传书签跳转参数 (对照 app 端 applyBookmarkPosition: chapterIndex/chapterPos)
     LaunchedEffect(book) {
         screenModel.dispatch(
-            MangaReaderUiEvent.Init(book, route.chapterIndex, route.chapterPos)
+            MangaReaderUiEvent.Init(route.book, route.chapterIndex, route.chapterPos)
         )
     }
 
@@ -345,12 +345,17 @@ fun MangaReaderRoute(
         )
     }
 
-    // 点击区域配置 (对照 app 端 ClickActionConfigDialog, 即时写入)
+    // 点击区域配置 (对照 app 端 ReadMangaActivity 菜单 → showDialogFragment<ClickActionConfigDialog>,
+    // 即时写入; 对话框销毁时的九宫格校验在宿主内做, 同原版 AppConfig.detectClickArea)
     if (showClickRegionDialog) {
-        ClickActionDialog(
-            clickActionConfig = state.clickActionConfig,
-            onConfirm = { screenModel.updateClickActionConfig(it) },
-            onDismiss = { showClickRegionDialog = false },
+        ClickRegionalConfigDialogHost(
+            config = state.clickActionConfig,
+            onConfigChange = { screenModel.updateClickActionConfig(it) },
+            onDismiss = {
+                showClickRegionDialog = false
+                // 校验可能改写 MC, 漫画点击动作读 state 快照, 需跟上
+                screenModel.refreshClickActionConfig()
+            },
         )
     }
 

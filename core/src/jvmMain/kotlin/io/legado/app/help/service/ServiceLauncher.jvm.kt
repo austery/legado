@@ -2,7 +2,7 @@ package io.legado.app.help.service
 
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
-import io.legado.app.data.AppDbProviders
+import io.legado.app.constant.NotificationId
 import io.legado.app.help.file.FileDownloaders
 import io.legado.app.help.file.desktopAppRootDir
 import io.legado.app.help.notification.NotificationProgresses
@@ -24,14 +24,14 @@ import java.nio.file.Paths
  * # 设计要点
  * - 持有 [CoroutineScope] (SupervisorJob + Default dispatcher), 子任务异常不互相影响
  * - **startCacheBookService**: 接入已下沉的 [CacheBookShared], 创建 CacheBookModelShared +
- *   addDownload + 在 scope 内 launch startProcessJob (对照 app 端 CacheBookService.addDownloadData +
- *   download)
+ *   addDownload + 把 startProcessJob 跑到结束 (对照 app 端 CacheBookService.addDownloadData +
+ *   download: 一次启动 = 一次会话, 入队失败也照样把调度跑到结束)
  * - **removeCacheBookService**: 调 `CacheBookShared.cacheBookMap[bookUrl]?.stop()` +
  *   postEvent (对照 app 端 CacheBookService.removeDownload, 桌面端无 stopSelf)
  * - **stopCacheBookService**: 调 [CacheBookShared.close] (对照 app 端 CacheBookService.onDestroy)
- * - **startUpdateBookService / stopUpdateBookService**: 接入已下沉的 [UpdateBookShared],
- *   start 从 DB 查全部书调 [UpdateBookShared.scheduleAutoUpdate], stop 调
- *   [UpdateBookShared.cancelRefreshJobs] (对照 app 端 MainViewModel 同名方法)
+ * - **startUpdateBookService / stopUpdateBookService 已删 (2026-09)**: 零调用点死代码; 书架自动更新走共享触发链
+ *   (进书架页 → 分组流发射 → UpdateBookShared.scheduleAutoUpdate), 取消刷新任务走
+ *   BookshelfViewModel → UpdateBookShared, 均不停靠本启动器。
  * - **startDownloadService**: 真实下载, 用 [FileDownloaders] 写文件到
  *   `{desktopAppRootDir}/downloads/fileName`, 完成后交系统默认程序打开
  *   (对照 app 端 DownloadService 下载完 openFileUri; 打不开时 openFileWithSystem 内部记 AppLog,
@@ -40,11 +40,8 @@ import java.nio.file.Paths
  * 模式参考 `registerAndroidMediaNotificationProvider`。
  *
  * # 注意
- * - startCacheBookService 的 chapterList 加载 + 目录为空时拉取详情/目录逻辑
- *   (app 端 CacheBookService.addDownloadData 内 mutex.withLock 段) 由桌面端
- *   阅读 VM 的 cacheBook()/addDownload() 在调用 startCacheBookService 前
- *   自行处理, 本方法仅做 addDownload + startProcessJob (与桌面端原 DesktopCacheBook 配合
- *   桌面端阅读 VM 的现有分工一致)。
+ * - startCacheBookService 的目录保障与内存目录快照兜底都在共享入队编排
+ *   ([CacheBookShared.enqueueDownload]) 内, 四端缓存入口同一实现。
  * - downloadJob 重启逻辑 (app 端 CacheBookService.removeDownload 内
  *   `if (downloadJob == null && CacheBook.isRun) download()`) 桌面端由
  *   阅读 VM 监听 isRun 自行管理, 本方法不直接重启。
@@ -53,28 +50,14 @@ class DesktopServiceLauncher(
     private val scope: CoroutineScope,
 ) : ServiceLauncher {
 
-    /**
-     * UpdateBook 编排核心 (commonMain 下沉件), 跨 start/stopUpdateBookService 复用同一实例
-     * (与 app 端 MainViewModel 持有 UpdateBookShared 一致)。
-     */
-    private val updateBookShared: UpdateBookShared by lazy {
-        UpdateBookShared(scope, UpdateBookCallbacks.getDefault() ?: DesktopUpdateBookCallback)
-    }
-
     override fun startCacheBookService(bookUrl: String, start: Int, end: Int) {
-        // 接入已下沉的 CacheBookShared: 创建模型 + 入队 + 启动处理 job
+        // 接入已下沉的 CacheBookShared: 创建模型 + 入队 + 把处理 job 跑到结束
         // (对照 app 端 CacheBookService.addDownloadData + download)
         scope.launch {
-            val cacheBook = CacheBookShared.getOrCreate(bookUrl) ?: return@launch
-            // end<0 表示下载到最后一章 (app 端 CacheBookService.addDownloadData 内
-            // `if (end < 0) book.lastChapterIndex else min(end, book.lastChapterIndex)`)
-            val actualEnd = if (end < 0) {
-                cacheBook.book.lastChapterIndex
-            } else {
-                minOf(end, cacheBook.book.lastChapterIndex)
-            }
-            cacheBook.addDownload(start, actualEnd)
-            // 启动 startProcessJob (对照 app 端 CacheBookService.download)
+            CacheBookShared.enqueueDownload(bookUrl, start, end)
+            // 取不到书 (不在书架/已删/无书源) 或目录保障失败时池为空, 本行让 job 立即结束: 与原版
+            // addDownloadData 的 onFinally 无条件 download() (内部 startProcessJob 返回后 stopSelf)
+            // 一致 —— "服务起来了但没有可入队的书" 同样以调度 job 结束收尾, 不留悬空会话
             CacheBookShared.startProcessJob()
         }
     }
@@ -90,20 +73,6 @@ class DesktopServiceLauncher(
         CacheBookShared.cacheBookMap[bookUrl]?.stop()
         postEvent(EventBus.UP_DOWNLOAD, "")
         // 桌面端无 stopSelf; downloadJob 重启由桌面端阅读 VM 监听 isRun 自行管理
-    }
-
-    override fun startUpdateBookService() {
-        // 接入已下沉的 UpdateBookShared (commonMain 编排核心): 从 DB 查所有书后调
-        // scheduleAutoUpdate 触发自动更新 (内部按 canUpdate + lastCheckTime 时间窗过滤)。
-        scope.launch {
-            val books = AppDbProviders.get().bookDao.all()
-            updateBookShared.scheduleAutoUpdate(books)
-        }
-    }
-
-    override fun stopUpdateBookService() {
-        // 对照 app 端 MainViewModel.cancelRefreshJobs (桌面端无 stopService)
-        updateBookShared.cancelRefreshJobs()
     }
 
     override fun startDownloadService(url: String, fileName: String) {
@@ -129,19 +98,25 @@ class DesktopServiceLauncher(
 /**
  * [UpdateBookCallback] 的桌面实现: 把进度/提示桥接到已注册的 [NotificationProgresses]
  * (SystemTray 通知) 与 [Toasters]。文案与 nativeMain `NativeUpdateBookCallback` 一致。
+ *
+ * 进度通知固定用 [NotificationId.UpdateBookService] (与 app 端该通知同一 id)。
  */
 object DesktopUpdateBookCallback : UpdateBookCallback {
 
     override fun onProgressUpdate(active: Boolean, title: String, content: String, count: Int, total: Int) {
         if (!active) {
-            runCatching { NotificationProgresses.get().cancel() }
+            runCatching { NotificationProgresses.get().cancel(NotificationId.UpdateBookService) }
             return
         }
-        runCatching { NotificationProgresses.get().showProgress(title, content, count, total) }
+        runCatching {
+            NotificationProgresses.get().showProgress(
+                NotificationId.UpdateBookService, title, content, count, total,
+            )
+        }
     }
 
     override fun onProgressCancel() {
-        runCatching { NotificationProgresses.get().cancel() }
+        runCatching { NotificationProgresses.get().cancel(NotificationId.UpdateBookService) }
     }
 
     override fun toastForceRefreshBusy() {

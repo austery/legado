@@ -9,27 +9,34 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.content.res.Resources
+import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.util.Rational
+import android.view.LayoutInflater
+import android.view.TextureView
 import androidx.annotation.DrawableRes
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -44,6 +51,7 @@ import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.source.UnrecognizedInputFormatException
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -51,6 +59,8 @@ import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
+import io.legado.app.ui.compose.component.zoomMaxPanX
+import io.legado.app.ui.compose.component.zoomMaxPanY
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.main.MainActivity
 import io.legado.app.utils.hasPlayableScheme
@@ -93,6 +103,7 @@ class AndroidVideoPlayPlatformProvider(
         /** 小窗内遥控 RemoteAction (上一章/播放暂停/下一章) → 广播 → [MainActivity.pipControlReceiver] 的协议常量 */
         const val ACTION_MEDIA_CONTROL = "io.legado.app.pip.MEDIA_CONTROL"
         const val EXTRA_CONTROL_TYPE = "pip_control_type"
+
         const val CONTROL_PLAY = 1
         const val CONTROL_PAUSE = 2
         const val CONTROL_PREV = 3
@@ -112,20 +123,43 @@ class AndroidVideoPlayPlatformProvider(
      *  页面退出后残留的是已 release 的实例 (仅剩快照字段, 不再持媒体), 无需主动清理。 */
     private var activeController: AndroidVideoPlayerController? = null
 
-    /** [MainActivity.onPictureInPictureModeChanged] 转发入口。 */
+    /** 视频渲染面引用 (画中画源矩形按它算); 渲染面离开组合时置空 */
+    private var playerView: PlayerView? = null
+
+    /** 本次小窗请求的结算回调 (进入结果送达时调用并作废); null = 没有请求在飞。 */
+    private var pipRequestSettled: (() -> Unit)? = null
+
+    /** [MainActivity.onPictureInPictureModeChanged] 转发入口, 同时是进入请求的结果送达点。 */
     internal fun onPipModeChanged(isInPip: Boolean) {
         this.isInPip = isInPip
+        val settled = pipRequestSettled ?: return
+        pipRequestSettled = null
+        settled()
     }
 
     @Composable
     override fun rememberIsInPictureInPicture(): Boolean? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) isInPip else null
 
-    override fun enterPictureInPicture(controller: VideoPlayerController?) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    override fun enterPictureInPicture(
+        controller: VideoPlayerController?,
+        onSettled: () -> Unit,
+    ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        // 活动处于停止态 (onStop 之后、onStart 之前) 时进小窗必抛 IllegalStateException:
+        // AOSP Activity.enterPictureInPictureMode 在 mCanEnterPictureInPicture 为 false 时抛
+        // "Activity must be resumed to enter picture-in-picture", 该标志在 performStop 置 false
+        // (AMS 侧另有同口径的状态校验)。画中画钮到真正请求之间隔两帧, 这两帧里应用被停止
+        // (切后台/锁屏/他应用抢占) 时不得再发起, 按"平台当场判定没进去"回报 false
+        if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return false
         val c = controller as? AndroidVideoPlayerController
         activeController = c
-        activity.enterPictureInPictureMode(buildPipParams(c))
+        pipRequestSettled = onSettled
+        // 系统拒绝 (策略禁用/窗口不可用) 回 false: 共享层据此结束请求期, 页面回到常规渲染
+        val accepted = activity.enterPictureInPictureMode(buildPipParams(c))
+        // 拒绝时结果已经在手, 结算由共享层按返回值完成 (迟到的模式回调不得再结算一次)
+        if (!accepted) pipRequestSettled = null
+        return accepted
     }
 
     /** 播放态/视频比例变化时刷新小窗参数 (RemoteAction 图标随播放态切换); 非小窗态是 no-op。 */
@@ -173,12 +207,38 @@ class AndroidVideoPlayPlatformProvider(
             .setAspectRatio(pipAspectRatio(controller))
             .setActions(buildRemoteActions(playing))
             .apply {
+                // 源矩形 = 视频区在窗口中的实际位置与尺寸: 官方指南明确设置它才能让进入画中画
+                // 的转场按这块区域无缝缩放, Android 12+ 对退出画中画同样生效 —— 不设就只能按
+                // 整窗插值, 小窗展开回页时画面跳变
+                pipSourceRect(playerView)?.let { setSourceRectHint(it) }
+                // 无缝缩放保持系统默认 (开): 它是为视频内容准备的; 关掉会让系统在小窗里按新尺寸
+                // 重新呈现内容 —— 小窗里会看到完整界面而不是只有画面
                 // 小窗头部标题与视频页标题栏同源 (API 33+ 才有该展示位, 低版本不设置)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     controller?.pipTitle?.takeIf { it.isNotEmpty() }?.let { setTitle(it) }
                 }
             }
             .build()
+    }
+
+    /**
+     * 视图重排后把最新参数 (含可见区域) 同步给系统; 非小窗态是 no-op。
+     */
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun refreshPipSourceRect() {
+        val controller = activeController ?: return
+        if (pipSourceRect(playerView) == null) return
+        activity.setPictureInPictureParams(buildPipParams(controller))
+    }
+
+    /** 视频区的窗口坐标矩形; 视图未布局或未在组合时为 null (不设源矩形)。 */
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun pipSourceRect(view: PlayerView?): Rect? {
+        val v = view ?: return null
+        if (v.width <= 0 || v.height <= 0) return null
+        val location = IntArray(2)
+        v.getLocationInWindow(location)
+        return Rect(location[0], location[1], location[0] + v.width, location[1] + v.height)
     }
 
     /** 小窗遥控三键 (官方 RemoteActions + 广播模式): 上一章/下一章恒显, 中键图标按播放态二选一 */
@@ -266,18 +326,53 @@ class AndroidVideoPlayPlatformProvider(
             screenModel.setFullScreen(isLandscape && isPhone)
         }
 
+        // 画面缩放 (共享手势层只写状态): 缩放施加在 Compose 图层上, 与桌面同一机制。
+        // 图层高于媒体库自己的内容帧布局, 不受它的测量与裁剪影响; 图层变换只对参与 View 合成的
+        // 渲染面可见 —— 渲染面必须是纹理视图 (布局资源已声明), 不是时下方显式报错。
+        val zoomState = screenModel.zoom.collectAsState()
+        val videoAspectRatioState = screenModel.videoAspectRatio.collectAsState()
         AndroidView(
             factory = { context ->
-                PlayerView(context).apply {
+                val view = LayoutInflater.from(context)
+                    .inflate(R.layout.view_video_player, null, false) as PlayerView
+                view.apply {
                     useController = false
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     setBackgroundColor(android.graphics.Color.BLACK)
                     player = androidController.player
+                    this@AndroidVideoPlayPlatformProvider.playerView = this
+                    // 独立合成的渲染面 (SurfaceView) 不参与 View 合成, 图层变换对它无效 ——
+                    // 这种失效必须在日志里可见
+                    if (videoSurfaceView !is TextureView) {
+                        AppLog.put("视频渲染面不是纹理视图, 画面缩放不会生效")
+                    }
+                    // 退出小窗时系统会先把视图层级重排成全屏布局: 官方要求在动画开始前把最新
+                    // 可见区域交给系统, 否则展开动画按过时矩形插值, 画面跳变
+                    addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) refreshPipSourceRect()
+                    }
                 }
             },
-            update = { it.player = androidController.player },
-            modifier = modifier.fillMaxSize(),
+            update = { view -> view.player = androidController.player },
+            modifier = modifier
+                .fillMaxSize()
+                // 放大后的画面不能盖到选集网格/控制栏上 (裁剪必须在变换外层)
+                .clipToBounds()
+                // 状态在图层参数更新阶段读取 (非组合期): 缩放/几何变化只重算图层参数, 不触发重组
+                .graphicsLayer {
+                    val zoom = zoomState.value
+                    val aspectRatio = videoAspectRatioState.value
+                    val scale = zoom.scale.takeIf { it.isFinite() } ?: 1f
+                    // 平移范围与共享手势层同一公式 (内容 FIT 后超出容器的部分)。媒体库对宽高比
+                    // 有 1% 容差 (差异小于它时内容帧就是容器), 这里按严格 FIT 算, 最多偏 0.5%
+                    val maxPanX = zoomMaxPanX(size.width, size.height, aspectRatio, scale)
+                    val maxPanY = zoomMaxPanY(size.width, size.height, aspectRatio, scale)
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = zoom.panX * maxPanX
+                    translationY = zoom.panY * maxPanY
+                },
         )
 
         // videoUrl: 非 null = 装载新源, null = 章节重新加载中 (loadChapter 先清空旧源)
@@ -286,13 +381,25 @@ class AndroidVideoPlayPlatformProvider(
                 // 清空 url 只是「没有新源」的数据状态, 不是停止命令: 不显式 stop 的话上一章
                 // 画面与声音会一直播到新章解析完 (对照原版 menu_refresh 先 player.pause()
                 // 再 refreshChapter, 切章路径上原版换新 player 天然停了旧的)
-                if (source != null) androidController.updateSource(source)
-                else androidController.stop()
+                if (source == null) {
+                    androidController.stop()
+                    return@collect
+                }
+                androidController.updateSource(source)
             }
         }
         DisposableEffect(androidController, screenModel) {
             androidController.bind(screenModel)
-            onDispose { androidController.unbind() }
+            onDispose {
+                androidController.unbind()
+                // 离开视频页释放外部视频读句柄, 并解除方向锁
+                ExternalVideoHandle.release()
+                releaseFullscreenOrientation()
+            }
+        }
+        // 渲染面引用 (画中画源矩形按它算): 离开组合后置空
+        DisposableEffect(androidController) {
+            onDispose { playerView = null }
         }
     }
 
@@ -320,10 +427,8 @@ class AndroidVideoPlayPlatformProvider(
                         androidController.player.playbackParameters.pitch,
                     )
                 },
-                onPlayPause = {
-                    val p = androidController.player
-                    if (p.isPlaying) p.pause() else p.play()
-                },
+                // 双击/拖动结束续播与控制栏播放钮同源: 播完 (STATE_ENDED) 一律从头重播
+                onPlayPause = { androidController.playPause() },
                 seekTo = { androidController.player.seekTo(it) },
                 readBrightness = {
                     val a = activity.window.attributes
@@ -342,6 +447,12 @@ class AndroidVideoPlayPlatformProvider(
                 onGestureText = screenModel::onGestureText,
                 volumeMax = maxVolume.toFloat(),
                 volumeStep = 1f,
+                // 画面缩放: 手势只改共享状态, 由渲染层施加到视频面 (见 RenderSurface)
+                zoom = VideoZoomHandle(
+                    current = { screenModel.zoom.value },
+                    set = screenModel::onZoomChange,
+                    aspectRatio = { screenModel.videoAspectRatio.value },
+                ),
             )
         }
     }
@@ -350,20 +461,24 @@ class AndroidVideoPlayPlatformProvider(
         activity.toggleSystemBar(!enabled)
     }
 
-    // 横屏全屏 (对照原版全屏钮 requestedOrientation 切换): 退出写 UNSPECIFIED 而非 PORTRAIT,
-    // 单 Activity 下方向锁挂在 MainActivity 上, 留锁会随视频页出栈带到全 app
+    // 系统级全屏的方向锁: 进全屏锁横屏, 退全屏锁竖屏
     override fun applySystemFullScreen(enabled: Boolean) {
         activity.requestedOrientation = if (enabled) {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
+    }
+
+    /** 离开视频页时解除方向锁。 */
+    internal fun releaseFullscreenOrientation() {
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 }
 
 @SuppressLint("UnsafeOptInUsageError")
 internal class AndroidVideoPlayerController(
-    activity: MainActivity,
+    private val activity: MainActivity,
     private var screenModel: VideoPlayScreenModel,
     private val onPlaybackEnded: () -> Unit,
 ) : VideoPlayerController {
@@ -454,6 +569,12 @@ internal class AndroidVideoPlayerController(
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
             this@AndroidVideoPlayerController.videoSize = videoSize
+            // 画面显示比例 (含变形像素比): 手势层的可平移范围与质心锚点按它算, 变化时共享层重钳位置
+            screenModel.onVideoAspectRatioChanged(
+                if (videoSize.height > 0) {
+                    videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
+                } else null
+            )
             // 画中画中自动连播跨比例章节时同步刷新系统小窗 (内部自判是否在 PiP, 否则 no-op)
             (screenModel.platform as? AndroidVideoPlayPlatformProvider)
                 ?.refreshPipParams(this@AndroidVideoPlayerController)
@@ -477,11 +598,10 @@ internal class AndroidVideoPlayerController(
                 // 复用本次装载的暂停意图位: 用户暂停中遇错重装同一条媒体, 不得被强制起播
                 // (对照 [updateSource] 的 keepPaused 口径; 出错进 IDLE 也不清意图位)
                 val keepPaused = !player.playWhenReady
-                player.setMediaItem(
-                    ExoPlayerHelper.createMediaItem(retryUrl, lastHeaders, retryFormat),
-                    player.currentPosition.coerceAtLeast(0L),
-                )
+                val retryPositionMs = player.currentPosition.coerceAtLeast(0L)
+                setPlayableMedia(retryUrl, lastHeaders, retryFormat)
                 player.prepare()
+                if (retryPositionMs > 0L) player.seekTo(retryPositionMs)
                 if (!keepPaused) player.play()
                 publishPlayback()
                 return
@@ -554,13 +674,11 @@ internal class AndroidVideoPlayerController(
         // 拿一条文件 URI 去建 HlsMediaSource, 观感就是进页黑屏报错。
         if (analyzeUrl.url.hasPlayableScheme()) {
             playableUrl = analyzeUrl.url
-            player.setMediaItem(
-                ExoPlayerHelper.createMediaItem(
-                    analyzeUrl.url,
-                    analyzeUrl.headerMap,
-                    currentResolutionMime(),
-                )
-            )
+            // 外部 content:// 视频: 确保持有读句柄, 播它的 dup 副本
+            if (analyzeUrl.url.startsWith("content://", ignoreCase = true)) {
+                ExternalVideoHandle.hold(activity, analyzeUrl.url)
+            }
+            setPlayableMedia(analyzeUrl.url, analyzeUrl.headerMap, currentResolutionMime())
         } else {
             // 内存 m3u8 清单文本不是可播 URI: 标记为 null, 格式重试不得拿清单文本重建媒体
             playableUrl = null
@@ -604,6 +722,22 @@ internal class AndroidVideoPlayerController(
         if (startPositionMs > 0L) player.seekTo(startPositionMs)
         if (!keepPaused) player.play()
         publishPlayback()
+    }
+
+    /**
+     * 装载可播地址: 外部 content:// 视频走持有句柄的数据源, 其余走默认路径。
+     */
+    private fun setPlayableMedia(url: String, headers: Map<String, String>, mime: String?) {
+        val item = ExoPlayerHelper.createMediaItem(url, headers, mime)
+        if (ExternalVideoHandle.holds(url)) {
+            player.setMediaSource(
+                ProgressiveMediaSource.Factory(
+                    DataSource.Factory { ExternalVideoDataSource(url) }
+                ).createMediaSource(item)
+            )
+        } else {
+            player.setMediaItem(item)
+        }
     }
 
     /**

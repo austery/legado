@@ -5,6 +5,7 @@ import com.github.catvod.crawler.Spider
 import io.legado.app.constant.AppLog
 import io.legado.app.data.AppDbProviders
 import io.legado.app.help.coroutine.IoDispatcher
+import io.legado.app.help.deleteOrphanAtomicWriteTempFiles
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.tvbox.TvBoxConfig
 import io.legado.app.help.tvbox.TvBoxCmsSpider
@@ -14,7 +15,10 @@ import io.legado.app.help.tvbox.TvBoxLocalProxy
 import io.legado.app.help.tvbox.TvBoxSite
 import io.legado.app.help.tvbox.TvBoxPlatforms
 import io.legado.app.model.webBook.PluginSourceDelegates
+import io.legado.app.utils.FileUtilsBase
 import io.legado.app.utils.GSON
+import io.legado.app.utils.atomicWriteTempPath
+import io.legado.app.utils.isAtomicWriteTempName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -25,9 +29,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import java.io.File
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -80,6 +82,9 @@ object TvBoxManager {
         Init.set(platform.appContext)
         inited = true
         registerDelegate()
+        // TVBox 数据目录 (config.json / config_url.txt / sites.json) 没有别的清点方:
+        // 整份写入被强杀留下的孤儿临时件在此既有初始化点上顺带回收
+        deleteOrphanAtomicWriteTempFiles(tvBoxDir().path)
         if (loadStarted.compareAndSet(false, true)) {
             loadJob = scope.launch { configLock.withLock { loadPersistedConfig() } }
         }
@@ -232,25 +237,52 @@ object TvBoxManager {
             disabledSitesCache = emptySet()
             File(tvBoxDir(), "sites.json").delete()
             // 磁盘配置一并清除: 仅清内存会下次启动 init 重放 (removeSource 等调用方不再需要先 setConfig 兜底)
-            File(tvBoxDir(), "config.json").delete()
+            deleteWithLeftovers(File(tvBoxDir(), "config.json"))
         }
     }
 
-    /** 配置落盘走临时文件 + 重命名: 半写文件会让下次冷启动解析失败而整体失效。 */
+    /**
+     * 本次落盘的中间件: 目标名 + 随机唯一串 + 共享后缀, 落在目标同目录。
+     *
+     * 名字由共享契约 [io.legado.app.utils.atomicWriteTempPath] 生成 —— 桌面连击双击会起两个实例,
+     * 两个实例各自的配置内容不同, 共用同一路径的中间件会互相截断, 其中一份半截内容会被整份换上目标
+     * 并成为下次冷启动读到的配置; 时间戳类唯一串在同毫秒的两次落盘上会重名, 这里要的是两次落盘
+     * 绝不共用同一份中间件。与目标名的对应关系靠"目标名 + '.'"前缀保留 (见 [deleteWithLeftovers])。
+     */
+    private fun tempFileFor(file: File): File =
+        File(atomicWriteTempPath(file.path))
+
+    /**
+     * 配置落盘走临时文件 + 共享的原子替换 ([FileUtilsBase.replaceFileAtomically]): 半写文件会让
+     * 下次冷启动解析失败而整体失效, 覆盖时旧配置在新配置整份就位后才消失, 任一步失败都保持已有配置
+     * 可用。
+     */
     private fun writeTextAtomically(file: File, text: String) {
-        val tmp = File(file.parentFile, file.name + ".tmp")
+        val tmp = tempFileFor(file)
         try {
             tmp.writeText(text)
-            Files.move(
-                tmp.toPath(),
-                file.toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE,
-            )
-        } catch (e: AtomicMoveNotSupportedException) {
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            FileUtilsBase.replaceFileAtomically(tmp, file)
+        } catch (e: IOException) {
+            // 导入配置失败时用户看到的就是本模块这句文案; 共享实现报的是通用替换口径, 具体失败环节
+            // (原文件被占用/原文件去向) 并入消息里。不挂 cause: 失败提示取异常链最深层消息。
+            throw IOException("TVBox 配置落盘失败: ${file.path} (${e.message})")
         } finally {
-            if (tmp.exists()) tmp.delete()
+            // 中间件名随机唯一: 中途失败残留的那份不会再有第二次落盘来覆盖, 只能由本次清掉
+            tmp.delete()
+        }
+    }
+
+    /**
+     * 删除 [file] 连同它的落盘中间件, 避免清除后磁盘上仍留着一份可读的旧配置。
+     *
+     * 清理只做在删除出口: 落盘入口按目标名清理会把另一实例正在写的那份中间件删掉, 让对方的落盘
+     * 白白失败。原子替换的备份件与另一目标的中间件都不在此列。
+     */
+    private fun deleteWithLeftovers(file: File) {
+        FileUtilsBase.deleteWithReplaceBackup(file)
+        val tempPrefix = "${file.name}."
+        file.parentFile?.listFiles()?.forEach {
+            if (it.name.startsWith(tempPrefix) && isAtomicWriteTempName(it.name)) it.delete()
         }
     }
 
@@ -271,7 +303,8 @@ object TvBoxManager {
         runCatching {
             val file = File(tvBoxDir(), "sites.json")
             file.parentFile?.mkdirs()
-            file.writeText(GSON.encodeToString(disabledSitesSerializer, keys.toList()))
+            // 半写 JSON 被读方当作脏数据退化为空集 (用户已关的站点静默恢复), 故整份落盘
+            writeTextAtomically(file, GSON.encodeToString(disabledSitesSerializer, keys.toList()))
         }.onFailure { AppLog.put("TVBox 站点关闭集合写入失败", it) }
     }
 

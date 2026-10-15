@@ -2,6 +2,7 @@ package io.legado.app.help.book
 
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.help.FileUtilsCommon
 import kotlin.concurrent.Volatile
 
 /**
@@ -10,7 +11,9 @@ import kotlin.concurrent.Volatile
  * 安卓端 [io.legado.app.help.book.BookHelp] 的 saveImage / getImage /
  * isImageExist / hasImageContent 等方法重 Android 依赖 (BitmapFactory 校验 /
  * ImageUtils.decode / AnalyzeUrl.getByteArrayAwait), 留 app 端。本接口仅暴露
- * 图片缓存读写相关方法, 供桌面 JVM / iOS / 鸿蒙 commonMain 业务调用。
+ * 图片缓存的落盘、寻址与存在性原语 (不含下载编排: 下载统一走 ui 模块的
+ * [io.legado.app.help.book.BookImageDownloadShared], 由其调本接口写字节),
+ * 供四端 commonMain 业务调用。
  *
  * 实现注册:
  * - Android: app 端启动早期调用 [BookImageStorageProviders.register] 注入
@@ -42,7 +45,9 @@ interface BookImageStorage {
     /**
      * 判断图片是否已缓存到本地。
      *
-     * 对应 Android 端 [io.legado.app.help.book.BookHelp.isImageExist]。
+     * 对应 Android 端 [io.legado.app.help.book.BookHelp.isImageExist]。四端同一判据
+     * [isCachedImageUsable] (存在且非空), 与缓存读取侧 ("读出非空才算命中") 一致:
+     * 判据不一致时, 零字节缓存会变成"读侧判不可用、存在性判可用"的死局 (既读不出也不重下)。
      */
     fun isImageExist(book: Book, chapter: BookChapter, url: String): Boolean
 
@@ -60,14 +65,31 @@ interface BookImageStorage {
     fun clearCache(book: Book)
 
     /**
-     * 批量下载并保存图片 (供 saveImages 编排层调用)。
+     * 校验字节流是否为有效图片 (栅格图或 SVG)。
      *
-     * @param urls 待下载图片 URL 列表
-     * @return 全部成功 true; 任一失败 (网络 / IO / 校验) false
-     *         (部分已保存的文件保留, 由调用方决定是否清理)
+     * 对照 app 端 `BookHelp.checkImage`: 先按栅格图校验, 失败再试 SVG; 都不是则 false。
+     * 仅供图片下载编排 ([io.legado.app.help.book.BookImageDownloadShared]) 判定
+     * “数据异常”日志用, 校验失败的字节仍会经 [writeImageBytes] 落盘。
      */
-    suspend fun saveImages(book: Book, chapter: BookChapter, urls: List<String>): Boolean
+    fun checkImageBytes(bytes: ByteArray): Boolean
+
+    /**
+     * 将 (已解密) 原始字节写入图片缓存, 不做校验。
+     *
+     * 对照 app 端 `BookHelp.writeImage`: 命名/目录派生与 [saveImage] 同源, 但
+     * 字节无效也照写 (安卓行为: 校验失败只记日志, 仍落盘避免反复重新下载)。
+     */
+    fun writeImageBytes(book: Book, chapter: BookChapter, url: String, bytes: ByteArray)
 }
+
+/**
+ * 图片缓存文件的可用判据 (四端同一份): 存在且非空。
+ *
+ * 落盘走整份写入 (同目录临时件 + 改名就位) 后目标名上只会有完整内容, 剩下的退化情况是零字节文件
+ * (空响应体也会被照写); 读侧缓存读取同样以非空为可用 —— 两侧判据不一致时会出现
+ * "读侧判不可用、存在性判可用"的死局: 图片既显示不出来, 也不会重新下载。
+ */
+fun isCachedImageUsable(path: String): Boolean = FileUtilsCommon.length(path) > 0
 
 /**
  * [BookImageStorage] provider 容器。宿主启动早期注册一次。

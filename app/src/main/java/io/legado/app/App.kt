@@ -11,18 +11,23 @@ import android.content.res.Configuration
 import android.os.Build
 import kotlinx.coroutines.runBlocking
 import io.legado.app.base.AppContextWrapper
+import io.legado.app.constant.AppConst
+import io.legado.app.constant.appInfo
 import io.legado.app.constant.AppConst.channelIdDownload
 import io.legado.app.constant.AppConst.channelIdReadAloud
 import io.legado.app.constant.AppConst.channelIdWeb
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.registerAndroidAppLogHost
-import io.legado.app.data.appDb
 import io.legado.app.model.ImageErrorBytesProviders
+import io.legado.app.help.AppVersionProvider
+import io.legado.app.help.AppVersionProviders
 import legado.ui.generated.resources.Res
 import io.legado.app.help.AppFreezeMonitor
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.CrashHandler
+import io.legado.app.help.crash.AndroidNativeCrashHandler
 import io.legado.app.help.DefaultData
+import io.legado.app.help.StartupMaintenanceShared
 import io.legado.app.help.DispatchersMonitor
 import io.legado.app.help.LifecycleHelp
 import io.legado.app.help.archive.AndroidArchiveProvider
@@ -30,20 +35,20 @@ import io.legado.app.help.archive.ArchiveProviders
 import io.legado.app.help.book.AndroidBookImageStorage
 import io.legado.app.help.book.AndroidBookStorage
 import io.legado.app.help.book.AndroidLocalBookLocator
-import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.BookImageStorageProviders
 import io.legado.app.help.book.BookStorageProviders
 import io.legado.app.help.book.LocalBookLocators
+import io.legado.app.model.fileBook.AndroidPdfRenderPort
+import io.legado.app.model.fileBook.PdfRenderProviders
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.config.LocalConfig
-import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ReadBookConfigShared
-import io.legado.app.help.config.ThemeConfig
 import io.legado.app.help.config.ThemeConfig.applyDayNight
 import io.legado.app.help.config.ThemeConfig.applyDayNightInit
 import io.legado.app.help.config.migrateLegacyHomeSp
+import io.legado.app.help.config.registerAndroidCrashMarkerProvider
 import io.legado.app.help.config.registerAndroidLocalConfigStore
+import io.legado.app.help.config.registerAndroidManualThemeColorChangeProvider
 import io.legado.app.help.config.registerAndroidPreferenceProvider
 import io.legado.app.lib.theme.MonetColorExtract
 import io.legado.app.help.coroutine.Coroutine
@@ -64,10 +69,10 @@ import io.legado.app.help.registerAndroidFileCacheProvider
 import io.legado.app.help.service.UpdateBookCallbacks
 import io.legado.app.help.service.registerAndroidServiceLauncher
 import io.legado.app.help.source.SourceHelp
-import io.legado.app.help.storage.Backup
 import io.legado.app.help.storage.registerAndroidBackupRestoreHook
 import io.legado.app.help.storage.registerAndroidPasswordProvider
 import io.legado.app.help.toast.registerAndroidToaster
+import io.legado.app.help.tts.registerAndroidHttpTtsPlayer
 import io.legado.app.help.tts.registerAndroidSystemTtsEngine
 import io.legado.app.help.ui.registerAndroidOpenUrlProvider
 import io.legado.app.help.config.PreferenceProviders
@@ -76,6 +81,7 @@ import io.legado.app.help.update.registerAndroidAppUpdate
 import io.legado.app.help.image.MangaPluginImageFetcherProviders
 import io.legado.app.model.BookCoverShared
 import io.legado.app.model.CacheBook
+import io.legado.app.model.fileBook.registerAndroidAuthorizedFileBookAccessor
 import io.legado.app.model.fileBook.registerAndroidFileBookProviders
 import io.legado.app.model.fileBook.registerEpubApplicationContext
 import io.legado.app.model.manga.JvmMangaPluginImageFetcher
@@ -87,12 +93,13 @@ import io.legado.app.model.script.registerAndroidJsEngines
 import io.legado.app.model.webBook.registerAndroidBookInfoRefresher
 import io.legado.app.help.tvbox.AndroidTvBoxHostPlatform
 import io.legado.app.help.tvbox.AndroidTvBoxSniffer
+import io.legado.app.help.registerComposeResourceBytesProvider
 import io.legado.app.help.tvbox.TvBoxPlatforms
 import io.legado.app.help.tvbox.TvBoxSniffPlatforms
-import io.legado.app.help.tvbox.registerComposeTvBoxAssetProvider
 import io.legado.app.model.tvbox.TvBoxManager
 import io.legado.app.model.webBook.registerAndroidWebBookProviders
 import io.legado.app.service.WebService
+import io.legado.app.ui.association.registerUiRuleSubAutoUpdateHook
 import io.legado.app.ui.book.changesource.registerAndroidChangeBookSourcePlatform
 import io.legado.app.ui.book.manage.registerAndroidBookshelfManagePlatform
 import io.legado.app.ui.browser.configureWebViewStartUpMode
@@ -101,6 +108,8 @@ import io.legado.app.ui.main.AndroidUpdateBookCallback
 import io.legado.app.ui.platform.registerSharedAppContext
 import io.legado.app.utils.LogUtils
 import io.legado.app.utils.defaultSharedPreferences
+import io.legado.app.utils.externalCache
+import io.legado.app.utils.getFile
 import io.legado.app.utils.registerAndroidACacheDirProvider
 import io.legado.app.utils.registerAndroidRegexErrorHandler
 import io.legado.app.utils.registerAndroidScreenInfoProvider
@@ -110,7 +119,6 @@ import io.legado.app.web.utils.registerAndroidWebStrings
 import io.legado.app.web.utils.registerComposeWebAssetSource
 import kotlinx.coroutines.launch
 import java.net.URL
-import java.util.concurrent.TimeUnit
 
 class App : Application() {
 
@@ -161,9 +169,11 @@ class App : Application() {
         // AppContextWrapper.wrap 已设置
         warmAppStringCache()
         registerComposeStringProviders()
+        // 规则订阅每日自动更新的导入实现 (复用 :ui 的导入链, 见 RuleSubAutoUpdateHook)
+        registerUiRuleSubAutoUpdateHook()
         registerAndroidAppLogHost()
         // 注册 ScreenInfoProvider (供 SystemUtils.screenWidthPx/screenHeightPx 委托读取),
-        // 须在任何 SystemUtils 屏幕尺寸访问之前 (PdfFile 渲染等)
+        // 须在任何 SystemUtils 屏幕尺寸访问之前 (PDF 书渲染等)
         registerAndroidScreenInfoProvider()
         // 注册 UI Provider (Toast/OpenUrl/UserAgent, 供 JsExtensionsCommon.toast/longToast/
         // getWebViewUA/openUrl 回调, 须在任何 JS 业务调用之前)
@@ -179,12 +189,14 @@ class App : Application() {
         registerAndroidFileCacheProvider()
         registerAndroidBackstageWebView()
         registerAndroidBookInfoRefresher()
-        // 注册 BookHelp 章节缓存 / 图片缓存 / 本地书定位三个平台 provider
+        // 注册 BookHelp 章节缓存 / 图片缓存 / 本地书路径定位三个平台 provider
         // (commonMain 下沉的业务编排层经 BookStorageProviders/BookImageStorageProviders/
-        // LocalBookLocators 间接调用 app 端 BookHelp, 须在任何 commonMain 业务调用前完成注册)
+        // LocalBookLocators 取章节缓存与本地书路径, 须在任何 commonMain 业务调用前完成注册)
         BookStorageProviders.register(AndroidBookStorage)
         BookImageStorageProviders.register(AndroidBookImageStorage)
         LocalBookLocators.register(AndroidLocalBookLocator())
+        // 注册 PDF 渲染后端 (PdfFileShared 编排骨架经 PdfRenderProviders 调本实现, PdfRenderer)
+        PdfRenderProviders.register(AndroidPdfRenderPort)
         // 注册插件源图片获取 (commonMain MangaImageBytesLoader 的插件源分支经
         // MangaPluginImageFetcherProviders 委托扩展自身 client 下载图片, 扩展拦截器
         // — 禁漫图片分割重排等 — 才能生效); 须在 MangaExtensionManager 源注册表
@@ -213,8 +225,9 @@ class App : Application() {
         // 先注册, 再幂等 init (重载已持久化配置 + 注册 TVBox 取数委派; 与漫画/视频插件
         // 委派并列, 各实现身份互斥, 与注册顺序无关)
         TvBoxPlatforms.register(AndroidTvBoxHostPlatform(this))
-        // TVBox JS 引导脚本走 composeResources 单一数据源 (与 DefaultData 同款 provider 注入)
-        registerComposeTvBoxAssetProvider()
+        // TVBox JS 引导脚本走 composeResources 单一数据源 (与 DefaultData 同款 provider 注入:
+        // 读取实现由界面侧注册, 数据层只依赖 PackagedResourceBytesProviders 契约)
+        registerComposeResourceBytesProvider()
         TvBoxSniffPlatforms.register(AndroidTvBoxSniffer)
         TvBoxManager.init()
         // 注册 Coil3 BookImageLoader (Compose 图片加载, 替代 Glide 迁移批 1 共享面接线)
@@ -233,8 +246,11 @@ class App : Application() {
         }
         // 注册 FileBook 平台 provider (commonMain FileBook object 经
         // FileBookProviders 调到 app 端 FileBookAccessorImpl, 含 importFromArchive /
-        // importLocalFile / saveBookFile / downloadRemoteBook / mergeBook 等重 Android 逻辑)
+        // importLocalFile / saveBookFile 等重 Android 文件原语)
         registerAndroidFileBookProviders()
+        // 注册本地书访问器与 zip 容器工厂 (用途校验装饰器): 须在平台实现注册之后,
+        // 任何 FileBook 调用之前; IO 仍由平台实现唯一提供
+        registerAndroidAuthorizedFileBookAccessor()
         registerAndroidPasswordProvider()
         // 注册 ServiceLaunchers (commonMain Download/CacheBook/UpdateBook 启动入口)
         registerAndroidServiceLauncher(instance)
@@ -267,6 +283,8 @@ class App : Application() {
         registerAndroidReadBookPlatform()
         // 注册系统 TTS 引擎 (共享 OneShotTts 的一次性朗读: 选中文字朗读 / RSS 朗读)
         registerAndroidSystemTtsEngine()
+        // 注册朗读试听用一次性 HttpTTS 播放器 (正式朗读不经此工厂)
+        registerAndroidHttpTtsPlayer()
         // 注册 CacheBookCallback 桥接活动阅读页 (CacheBookShared 调度核心下沉到 commonMain 后,
         // app 端通过 callback 把下载完成事件回放到活动阅读实例)
         CacheBook.registerCallback()
@@ -274,10 +292,17 @@ class App : Application() {
         // 莫奈取色自动跟随:开关仍开着则冷启动补挂壁纸颜色监听 (只挂监听不派生, 8 键已持久化);
         // 必须在 registerAndroidPreferenceProvider 之后 (恢复判定读跟随开关 pref)
         MonetColorExtract.restoreListenerIfNeeded(this)
+        // 手动改色出口: 主题定制对话框提交色值前通知安卓拆掉跟随机关 (桌面/iOS/鸿蒙无该机制, 不注册)
+        registerAndroidManualThemeColorChangeProvider(this)
         // 旧版 SP 主页设置/收藏迁移 (e8b2c5837d 改存 filesDir JSON 后旧数据弃读, 见 LegacyHomeSpMigration);
         // 须在 registerAndroidAppFilesDir (onCreate 早段) 之后、Home 首次 load 之前
         migrateLegacyHomeSp(defaultSharedPreferences)
         registerAndroidDirectLinkUploadProviders()
+        // 注册当前版本号 provider (供下沉的启动期默认数据补齐按版本推进; 取 PackageManager 的
+        // longVersionCode, 与 DefaultData.upVersion 的原判断基准同源)
+        AppVersionProviders.register(object : AppVersionProvider {
+            override val versionCode: Long get() = AppConst.appInfo.versionCode
+        })
         // 注册 help 引导版本标记存储 (委托 "local" prefs, 与原版 LocalConfig 同存储)
         registerAndroidLocalConfigStore()
         // 注册备份/恢复的 Android 钩子 (SAF 复制解压 / config.xml 旧格式 / 主题与图标刷新)
@@ -289,6 +314,9 @@ class App : Application() {
             ReadBookConfigShared(PreferenceProviders.get())
         )
         CrashHandler(this)
+        // 异常退出标记 (对照原版 LocalConfig.appCrash): 须在启动期崩溃提示读取之前注册。
+        // 同时看偏好与信号路径写的标记文件 —— 原生崩溃只能落文件 (信号上下文不能写偏好)
+        registerAndroidCrashMarkerProvider(this)
         oldConfig = Configuration(resources.configuration)
         applyDayNightInit(this)
         registerActivityLifecycleCallbacks(LifecycleHelp)
@@ -302,6 +330,12 @@ class App : Application() {
             createNotificationChannels()
             // 原在 ReaderProvider.onCreate, 但那早于 Application.onCreate, 取多语言文案会崩
             io.legado.app.api.ShortCuts.buildShortCuts(this@App)
+            // 默认数据补齐 (app 端薄壳 DefaultData.upVersion → 下沉件 StartupMaintenanceShared):
+            // 三道 (预置分组/键盘助手/三批默认资源) 整包在 `appVersionCode < 当前版本号` 这道版本门内,
+            // 资源侧另按各自版本 key 门控 (原版 `LocalConfig.needUpXxx` → isLastVersion: 先写回版本 key
+            // 再返回"需要导入", 每资源每版本只尝试一次, 那次失败也不重试 —— 与原版一致)。
+            // 版本号本处只读: 写回 appVersionCode 的是 MainActivity.upVersion() 的弹窗。
+            // 排队必须在弹窗之前 (原版 App.onCreate 同样早于 MainActivity)。
             DefaultData.upVersion()
             // Arco: 清理旧版本遗留的 barElevation 偏好值（elevation 已移除）
             instance.removePref(PreferKey.barElevation)
@@ -332,21 +366,22 @@ class App : Application() {
             )
         }
         Coroutine.async {
-            if (LocalConfig.lastBackup + TimeUnit.DAYS.toMillis(1) < System.currentTimeMillis()) {
-                appDb.cacheDao.clearDeadline(System.currentTimeMillis())
-                BookHelp.clearInvalidCache()
-                Backup.clearCache()
-                ReadBookConfig.clearBgAndCache()
-                ThemeConfig.clearBg()
-            }
+            // 启动期缓存清理: 距上次不足 1 天直接返回; 节流 key 是专用的 lastCacheCleanup,
+            // 不再复用 lastBackup —— 后者只在真备份/恢复时才写, 从不备份的用户恒为 0,
+            // 拿它当门控会让清理族每次启动都全跑。
+            // cacheExtraMayHaveWork=true: app 端的 clearCacheExtra 会真删压缩临时目录与草稿 json,
+            // 那些文件与书架/缓存目录无关, 不能拿"书架空 + 目录空"把它们一起跳过。
+            StartupMaintenanceShared.clearInvalidCacheIfDue(cacheExtraMayHaveWork = true)
         }
         Coroutine.async {
             //调整排序序号
             SourceHelp.adjustSortNumber()
-            //同步阅读记录
-            if (AppConfig.syncBookProgress) {
-                AppWebDav.downloadAllBookProgress()
-            }
+            //同步阅读记录 (下沉件: 先显式确保 WebDav 认证再拉, 认证不成则干净地不拉)
+            // 认证入口传 app 端的 AppWebDav.upConfig: 它在共享认证之外还会初始化 Android 专属的
+            // defaultBookWebDav (远端书封面/正文读取依赖它, 为空时会报 "Unexpected defaultBookWebDav")
+            StartupMaintenanceShared.syncBookProgressOnStartup(
+                ensureAuthorization = { AppWebDav.upConfig() },
+            )
         }
     }
 
@@ -417,7 +452,7 @@ class App : Application() {
 
         val readAloudChannel = NotificationChannel(
             channelIdReadAloud,
-            androidAppString("read_aloud"),
+            androidAppString("channel_media_play"),
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
             enableLights(false)
@@ -454,5 +489,8 @@ class App : Application() {
         }.onFailure {
             LogUtils.d("App", "initQuickJs prewarm failed: ${it.message}")
         }
+        // 原生崩溃捕获 (NDK/JNI 信号的 POSIX 信号): native 库已在上方加载完毕, 此刻装才安全。
+        // 与 Java 异常捕获 (CrashHandler) 落同一目录, 两类崩溃在崩溃日志里一并可见
+        AndroidNativeCrashHandler.install(instance.externalCache.getFile("crash").absolutePath)
     }
 }

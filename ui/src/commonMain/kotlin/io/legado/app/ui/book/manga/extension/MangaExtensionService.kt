@@ -1,7 +1,5 @@
 package io.legado.app.ui.book.manga.extension
 
-import io.legado.app.model.webBook.AnimeFilterSession
-import io.legado.app.model.webBook.MangaFilterSession
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.concurrent.Volatile
 
@@ -13,7 +11,8 @@ import kotlin.concurrent.Volatile
  * [MangaExtensionServiceProviders.register] 注册; 未注册端 getOrNull()==null, 「我的」页入口隐藏。
  *
  * 插件源以虚拟 BookSource 行进入书源体系后, 取数走 WebBook 的 PluginSourceDelegates 委派;
- * 本接口另暴露插件源筛选会话的新建入口 (实例由页面持有并经取数链透传, 不经缓存)。
+ * 插件源筛选会话由数据层唯一入口
+ * ([io.legado.app.model.webBook.pluginFilterSessionOf]) 新建, 实例由页面持有并经取数链透传。
  */
 interface MangaExtensionService {
 
@@ -23,7 +22,12 @@ interface MangaExtensionService {
      */
     fun init()
 
-    /** 插件管理页状态 (已装/未装载/可用/仓库/安装进度)。 */
+    /**
+     * 插件管理页状态 (已装/未装载/可用/仓库/安装进度)。
+     *
+     * 平台实现在服务注册 (宿主启动序列) 时即开始组装并发射: 书源管理页要在冷启动按已装插件
+     * 集合变化重取插件源图标, 不能等插件管理页 [init]。
+     */
     val state: StateFlow<MangaExtensionUiState>
 
     /**
@@ -67,17 +71,6 @@ interface MangaExtensionService {
     suspend fun removeRepo(indexUrl: String)
 
     /**
-     * 新建一份漫画插件源的默认筛选会话 (非漫画插件源返回 null)。
-     *
-     * 筛选状态不持久化: 实例由页面 (VM) 创建持有、经取数链透传, 随页面销毁即丢,
-     * 不经任何全局缓存; 重置 = 再调一次本方法换新默认实例 (对齐 Mihon resetFilters)。
-     */
-    suspend fun createMangaFilterSession(bookSourceUrl: String): MangaFilterSession? = null
-
-    /** 新建一份视频插件源的默认筛选会话 (同 [createMangaFilterSession])。 */
-    suspend fun createAnimeFilterSession(bookSourceUrl: String): AnimeFilterSession? = null
-
-    /**
      * 该插件是否提供自带配置界面 (源实例实现 `eu.kanade.tachiyomi.source.ConfigurableSource`
      * 或 `eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource`)。
      * 未装载出源 (NotLoaded) 与未安装 (Available) 恒为 false —— 配置契约只能从活实例上取。
@@ -117,6 +110,14 @@ interface MangaExtensionService {
      * 打开输入对话框时回调一次), 让扩展侧的输入框配置照常执行。
      */
     suspend fun bindEditTextPreference(pkgName: String, index: Int) {}
+
+    /**
+     * 插件源虚拟行的行首图标: 归属插件包启动图标在应用私有缓存区的文件路径。
+     *
+     * 非插件源 (TVBox 站点源没有包内图标来源)、插件包已卸载、包内取不到图标时返回 null ——
+     * 调用方回落书源名首字占位。首次调用会读插件包并落盘缓存, 请在后台线程调用。
+     */
+    fun sourceIconPath(bookSourceUrl: String): String? = null
 }
 
 /** 插件内容分级 (与插件宿主 ContentWarning 对齐)。 */
@@ -257,6 +258,6 @@ object MangaExtensionServiceProviders {
         this.impl = impl
     }
 
-    /** 未注册端 (desktop 等) 返回 null, UI 据此隐藏入口。 */
+    /** 未注册该服务的端 (iOS/鸿蒙) 返回 null, UI 据此隐藏入口。 */
     fun getOrNull(): MangaExtensionService? = impl
 }

@@ -2,12 +2,21 @@
 
 package io.legado.app.napi
 
+import io.legado.app.constant.AppLog
+import io.legado.app.constant.NotificationId
 import io.legado.app.help.config.NativeSystemTheme
 import io.legado.app.help.glide.progress.OnProgressListener
+import io.legado.app.help.media.AudioFocusChange
+import io.legado.app.help.media.PhoneCallState
+import io.legado.app.help.media.SystemMediaControl
+import io.legado.app.help.service.OhosWebServiceNotifications
 import io.legado.app.help.storage.BackupShared
+import io.legado.app.help.tts.OhosReadAloudHost
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
+import io.legado.app.ui.OhosPlatformCapabilities
 import io.legado.app.ui.root.AppForegroundState
 import io.legado.app.utils.KS_JSON
+import io.legado.app.web.refreshOhosWebServerAddresses
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.serialization.Serializable
@@ -27,6 +36,23 @@ import kotlinx.serialization.Serializable
  *   → [OhosAppLifecycle]
  * - 系统深浅色: `{ "type":"colorMode", "isDark":true|false }`
  *   → [NativeSystemTheme] (「主题模式=跟随系统」档的唯一来源)
+ * - 音频设备变化: `{ "type":"audioDeviceChange", "disconnected":true }`
+ *   → [SystemMediaControl.onAudioBecomingNoisy] (拔耳机/蓝牙断开自动暂停)
+ * - 音频焦点: `{ "type":"audioFocusChange", "change":"gain"|"loss"|"lossTransient"|"lossTransientCanDuck" }`
+ *   → [SystemMediaControl.onAudioFocusChange] (AVPlayer 的 audioInterrupt 事件)
+ * - 电话状态: `{ "type":"callStateChange", "state":"idle"|"ringing"|"offHook" }`
+ *   → `OhosReadAloudHost.onPhoneCallState` (来电暂停朗读)
+ * - 网络可用: `{ "type":"networkAvailable" }`
+ *   → `io.legado.app.web.refreshOhosWebServerAddresses` (刷新 Web 服务地址)
+ * - 系统对话框结果: `{ "type":"dialogResult", "requestId":3, "dialogResult":"{...}" }`
+ *   → [OhosNativeBridge.onDialogResult] (系统对话框桥的响应侧, 见 [OhosNativeBridge.invokeDialogSync])
+ * - 通知按钮点击: `{ "type":"notificationAction", "notificationId":104, "action":"stop" }`
+ *   → [io.legado.app.ui.OhosPlatformCapabilities.onNotificationAction] (通知 actionButtons 的点击侧)
+ * - 长时任务取消: `{ "type":"continuousTaskCancel", "reason":3, "notificationId":105 }`
+ *   → 被取消方是 Web 服务时停掉它 (长时任务已取消 = 服务不再被保活)
+ *
+ * 后四类是同一次扩展加上的 (媒体/电话/网络), 仍走同一个 napi 入口与同一个解析器;
+ * dialogResult 是系统对话框桥的响应侧 (请求侧复用 window tsfn), 同样走本入口。
  *
  * # 线程
  * 事件由 ArkTS 主线程经 napi → @CName 直推 (同 mediaEvent/ttsEvent 模式), 无跨线程
@@ -194,6 +220,58 @@ internal object OhosPlatformEventChannel {
             }
 
             "colorMode" -> NativeSystemTheme.update(payload.isDark)
+
+            // 音频输出设备变化 (拔耳机/蓝牙断开) → 暂停当前出声的一方
+            "audioDeviceChange" -> if (payload.disconnected) {
+                SystemMediaControl.onAudioBecomingNoisy()
+            }
+
+            // 音频焦点/打断四档 (与 Android AUDIOFOCUS_* 一一对应)
+            "audioFocusChange" -> when (payload.change) {
+                "gain" -> SystemMediaControl.onAudioFocusChange(AudioFocusChange.Gain)
+                "loss" -> SystemMediaControl.onAudioFocusChange(AudioFocusChange.Loss)
+                "lossTransient" -> SystemMediaControl.onAudioFocusChange(AudioFocusChange.LossTransient)
+                "lossTransientCanDuck" ->
+                    SystemMediaControl.onAudioFocusChange(AudioFocusChange.LossTransientCanDuck)
+            }
+
+            // 网络可用 (ArkTS @ohos.net.connection netAvailable) → 重算 Web 服务地址。
+            // 服务没开时共享侧是 no-op, 故与 Android "只在 Service 存活期监听" 观感一致。
+            "networkAvailable" -> refreshOhosWebServerAddresses()
+
+            // 电话状态三态 → 朗读宿主 (门槛与恢复语义都在共享件里)
+            "callStateChange" -> when (payload.state) {
+                "idle" -> OhosReadAloudHost.onPhoneCallState(PhoneCallState.Idle)
+                "ringing" -> OhosReadAloudHost.onPhoneCallState(PhoneCallState.Ringing)
+                "offHook" -> OhosReadAloudHost.onPhoneCallState(PhoneCallState.OffHook)
+            }
+
+            // 系统对话框用户选择 (SysDialogBridgeHandler → EntryAbility window callback →
+            // emitDialogResult) → 唤醒 OhosNativeBridge.invokeDialogSync 阻塞中的请求方
+            "dialogResult" -> OhosNativeBridge.onDialogResult(
+                requestId = payload.requestId,
+                resultJson = payload.dialogResult.orEmpty(),
+            )
+
+            // 通知按钮点击 (EntryAbility 从按钮 want 的 parameters 解出 → emitPlatformEvent)
+            "notificationAction" -> OhosPlatformCapabilities.onNotificationAction(
+                notificationId = payload.notificationId,
+                action = payload.action.orEmpty(),
+            )
+
+            // 长时任务被挂起/取消。系统只回传"移除通知"与"冻结"两类原因, 其余原因 (低速、一致性
+            // 管控等) 不回传 —— 所以业务一律只认自己的状态, 不停在"收到回调才停业务"上。被取消方的
+            // 业务通知 id 在 notificationId 里: 这里只按业务当前状态重述通知与保活
+            // (ArkTS 仲裁器对刚被取消的 owner 按接入规范抑制立即重申请)
+            "continuousTaskCancel" -> {
+                AppLog.put(
+                    "长时任务已取消, 业务通知 id=${payload.notificationId} reason=${payload.reason}"
+                )
+                // Web 服务: 监听还在跑就不停服务与通知 (保活随状态重述), 停了才撤通知并释放保活
+                if (payload.notificationId == NotificationId.WebService) {
+                    OhosWebServiceNotifications.refresh()
+                }
+            }
         }
     }
 }
@@ -201,13 +279,24 @@ internal object OhosPlatformEventChannel {
 /**
  * 统一平台事件载荷 (Kotlin 侧唯一一份定义, 与 ArkTS PlatformEventBridge.ets 对齐)。
  *
- * @param type 事件类型: "httpProgress" | "lifecycle" | "colorMode"
+ * @param type 事件类型: "httpProgress" | "lifecycle" | "colorMode" |
+ *   "audioDeviceChange" | "audioFocusChange" | "callStateChange" | "networkAvailable" | "dialogResult" |
+ *   "notificationAction" | "continuousTaskCancel"
  * @param url httpProgress: 请求 url (与 addListener 的 url 对应)
  * @param bytesReceived httpProgress: 已接收字节数
  * @param totalBytes httpProgress: 总字节数 (<=0 表示未知, 如分块传输无 Content-Length)
  * @param isComplete httpProgress: 终态 (请求成功/失败/取消, 之后无该 url 的后续事件)
  * @param event lifecycle: "onForeground" | "onBackground"
  * @param isDark colorMode: 系统是否深色
+ * @param disconnected audioDeviceChange: true = 当前输出设备已断开
+ * @param change audioFocusChange: "gain" | "loss" | "lossTransient" | "lossTransientCanDuck"
+ * @param state callStateChange: "idle" | "ringing" | "offHook"
+ * @param requestId dialogResult: 对应 [OhosNativeBridge.invokeDialogSync] 生成的请求 ID
+ * @param dialogResult dialogResult: 系统对话框结果 JSON (`{ok,index}` / `{ok,confirmed}` / `{ok,cancelled}`)
+ * @param notificationId notificationAction: 通知 id (与 ArkTS NOTIFICATION_ROUTES、[io.legado.app.constant.NotificationId] 同一张 id 表);
+ *   continuousTaskCancel: 被取消方的业务通知 id
+ * @param action notificationAction: 按钮动作标识 (原版 `addAction` 的 pendingIntent action, 如 "stop")
+ * @param reason continuousTaskCancel: 长时任务取消原因 (ArkTS backgroundTaskManager.ContinuousTaskCancelReason 原值)
  */
 @Serializable
 internal data class OhosPlatformEventPayload(
@@ -218,4 +307,12 @@ internal data class OhosPlatformEventPayload(
     val isComplete: Boolean = false,
     val event: String? = null,
     val isDark: Boolean = false,
+    val disconnected: Boolean = false,
+    val change: String? = null,
+    val state: String? = null,
+    val requestId: Long = 0L,
+    val dialogResult: String? = null,
+    val notificationId: Int = 0,
+    val action: String? = null,
+    val reason: Int = 0,
 )

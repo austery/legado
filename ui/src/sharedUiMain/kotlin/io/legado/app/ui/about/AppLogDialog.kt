@@ -6,13 +6,13 @@ package io.legado.app.ui.about
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -21,12 +21,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import io.legado.app.constant.AppLog
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
 import io.legado.app.ui.compose.component.AppTextButton
-import io.legado.app.ui.compose.component.DialogTitleBar
-import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.linkifyText
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
@@ -40,7 +39,7 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * 应用日志对话框内容 (KMP 共享, app + desktop 复用)。
  *
- * 对应 app 端 `io.legado.app.ui.about.AppLogDialog` 的 Content，去掉对 BaseComposeDialogFragment /
+ * 对应 app 端 `io.legado.app.ui.about.AppLogDialog` 的 Content，去掉对 原命令式对话框基类(已删除) /
  * showDialogFragment / LogUtils / autoLinkText 的依赖，改为纯 @Composable:
  * - 标题栏: 返回 + "日志" + 清空按钮
  * - 列表: LazyColumn，行=时间+消息，带异常的行可点击查看堆栈
@@ -58,14 +57,15 @@ fun AppLogDialogContent(
     // 选中的堆栈日志 (非 null 时弹出堆栈对话框)
     var stackTraceItem by remember { mutableStateOf<Triple<Long, String, Throwable?>?>(null) }
 
-    Column(Modifier.fillMaxWidth()) {
-        DialogTitleBar(
-            title = stringResource(Res.string.log),
-            onBack = onDismiss,
-            actions = {
-                AppTextButton(text = stringResource(Res.string.clear), onClick = AppLog::clear)
-            },
-        )
+    AppDialogScaffold(
+        onDismissRequest = onDismiss,
+        title = stringResource(Res.string.log),
+        titleActions = {
+            AppTextButton(text = stringResource(Res.string.clear), onClick = AppLog::clear)
+        },
+        contentPadding = PaddingValues(0.dp),
+        properties = AppDialogSizes.properties(),
+    ) {
         SelectionContainer(
             Modifier
                 .weight(1f)
@@ -129,20 +129,7 @@ private fun LogItem(
 fun AppLogDialog(
     onDismiss: () -> Unit,
 ) {
-    val colors = AppTheme.colors
-    AppDialog(
-        onDismissRequest = onDismiss,
-        properties = AppDialogSizes.properties(),
-    ) {
-        // 圆角/底色对齐 BaseComposeDialogFragment.filletBackground + alert DSL AppAlertDialogContent
-        Surface(
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
-            modifier = Modifier.appDialogSize(fullHeight = true),
-        ) {
-            AppLogDialogContent(onDismiss)
-        }
-    }
+    AppLogDialogContent(onDismiss = onDismiss)
 }
 
 /**

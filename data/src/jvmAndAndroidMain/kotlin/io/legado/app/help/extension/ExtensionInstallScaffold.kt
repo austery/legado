@@ -1,10 +1,12 @@
 package io.legado.app.help.extension
 
+import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.extension.model.InstallStep
 import io.legado.app.help.extension.model.MangaExtension
 import io.legado.app.help.http.okHttpClient
+import io.legado.app.utils.randomUUIDString
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -103,14 +105,17 @@ suspend fun downloadExtensionApk(url: String, target: File, onProgress: suspend 
 /**
  * 扩展安装脚手架 (JVM+Android 共用): 下载 apk 到临时文件 → 覆盖校验 → 平台落盘 → 触发重扫。
  * 下载/进度/取消/失败收敛与覆盖校验只有这一份实现 (两端各自实现曾导致签名严格度漂移);
- * 平台差异收敛在 [tempFile]/[readApkInfo]/[readInstalledInfo]/[placeApk]/[onInstalled]。
+ * 平台差异收敛在 [extensionDir]/[readApkInfo]/[readInstalledInfo]/[placeApk]/[onInstalled]。
  */
 abstract class ExtensionInstallScaffold {
 
     private val installJobs = ConcurrentHashMap<String, Job>()
 
-    /** 下载落地点 (流程结束必删)。 */
-    protected abstract fun tempFile(pkgName: String): File
+    /**
+     * 扩展文件所在目录。落盘目标与下载临时件都在这棵目录下: 原子替换靠同卷改名, 临时件与目标
+     * 必须同卷, 跨卷只剩整份复制一条路。
+     */
+    protected abstract fun extensionDir(): File
 
     /** 读取安装包元信息; 无法解析返回 null。 */
     protected abstract fun readApkInfo(file: File): ExtensionApkInfo?
@@ -118,7 +123,13 @@ abstract class ExtensionInstallScaffold {
     /** 读取已安装的同包扩展元信息; 未安装返回 null。 */
     protected abstract fun readInstalledInfo(pkgName: String): ExtensionApkInfo?
 
-    /** 校验通过后落盘; [replaced] 为 true 表示覆盖已有同包扩展。 */
+    /**
+     * 校验通过后落盘; [replaced] 为 true 表示覆盖已有同包扩展。
+     *
+     * 覆盖必须原子替换 ([io.legado.app.utils.FileUtilsBase.replaceFileAtomically] 是这条机制的
+     * 共享实现): 旧文件在新文件整份就位后才消失, 任一步失败旧扩展原样可用, 异常由 [install]
+     * 收敛成 [InstallStep.Error]。
+     */
     protected abstract fun placeApk(file: File, info: ExtensionApkInfo, replaced: Boolean)
 
     /** 落盘后触发重扫; 走安装广播的端无需覆写。 */
@@ -134,7 +145,9 @@ abstract class ExtensionInstallScaffold {
             try {
                 requireValidExtensionPackageName(extension.pkgName)
                 emit(InstallStep.Downloading)
-                val target = tempFile(extension.pkgName)
+                // 临时件名每次安装唯一, 本次安装覆盖不掉上次被强杀留下的那份, 只能在这里清
+                discardInstallTemps(extensionDir(), extension.pkgName)
+                val target = newInstallTempFile(extension.pkgName)
                 apkFile = target
                 downloadExtensionApk(extension.apkUrl, target) { emit(InstallStep.Progress(it)) }
                 currentCoroutineContext().ensureActive()
@@ -150,15 +163,60 @@ abstract class ExtensionInstallScaffold {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // 界面只把安装状态拨回可重试, 失败原因只能从这里查
+                AppLog.put("扩展安装失败: ${extension.pkgName}", e)
                 emit(InstallStep.Error(e.message))
             } finally {
                 installJobs.remove(extension.pkgName, job)
                 apkFile?.delete()
+                // 同包并发安装的另一份还在写时目录非空, 这次删除不生效, 也不影响那一份
+                apkFile?.parentFile?.delete()
             }
         }.flowOn(IoDispatcher)
     }
 
     fun cancelInstall(pkgName: String) {
         installJobs[pkgName]?.cancel()
+    }
+
+    /**
+     * 本次安装的下载临时件 (流程结束必删)。
+     *
+     * 唯一串取随机 UUID ([randomUUIDString]): 时间戳在同毫秒的两次安装上会重名, 纳秒跨进程不保证
+     * 互异, 而这里要的是两次安装绝不共用同一条路径 —— 取消是协作式的, 上一次安装可能还停在这份
+     * 文件上写着, 共用路径会互相截断, 把半截包交给落盘环节。
+     */
+    private fun newInstallTempFile(pkgName: String): File {
+        val dir = installTempDirOf(extensionDir(), pkgName)
+        dir.mkdirs()
+        return File(dir, randomUUIDString() + INSTALL_TEMP_SUFFIX)
+    }
+
+    companion object {
+
+        /** 安装临时件目录名 (在扩展文件目录内): 一个包一个目录, 一次安装一个临时件。 */
+        private const val INSTALL_TEMP_DIR_NAME = "install-tmp"
+
+        /**
+         * 安装临时件后缀。临时件是整份 apk 内容, 落在扩展文件目录的子目录里: 扩展扫描只取扩展
+         * 文件目录的直接文件, 临时件不会被当成已装扩展。
+         */
+        private const val INSTALL_TEMP_SUFFIX = ".apk"
+
+        /**
+         * 清掉 [extensionDir] 下 [pkgName] 的安装临时件: 卸载时清本包全部, 安装开始前清上次被强杀
+         * 留下的。只按包名目录定位, 不碰其他包。
+         */
+        fun discardInstallTemps(extensionDir: File, pkgName: String) {
+            installTempDirOf(extensionDir, pkgName).deleteRecursively()
+            // 根目录空了就一并收掉 (还有别的包在装时删除不生效)
+            installTempRootOf(extensionDir).delete()
+        }
+
+        private fun installTempRootOf(extensionDir: File): File =
+            File(extensionDir, INSTALL_TEMP_DIR_NAME)
+
+        private fun installTempDirOf(extensionDir: File, pkgName: String): File =
+            File(installTempRootOf(extensionDir), pkgName)
     }
 }

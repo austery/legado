@@ -91,6 +91,7 @@
     <string name="previous_chapter">上一章</string>
     <string name="pt_hide_status_bar">隱藏狀態欄</string>
     <string name="read_aloud">朗讀</string>
+    <string name="channel_media_play">媒體播放</string>
     <string name="read_aloud_t">正在朗讀</string>
     <string name="read_aloud_s">點擊打開閱讀介面</string>
     <string name="audio_play">播放</string>
@@ -443,6 +444,7 @@
     <string name="auto_change_source">自動換源</string>
     <string name="text_full_justify">文字兩端對齊</string>
     <string name="text_bottom_justify">文字底部對齊</string>
+    <string name="hang_first_punctuation">段首標點懸掛</string>
     <string name="auto_page_speed">自動翻頁速度</string>
     <string name="sort_by_url">地址排序</string>
     <string name="backup_summary">本機和 WebDav 一起備份</string>
@@ -503,6 +505,7 @@
     <string name="show_hide">顯示/隱藏</string>
     <string name="header_footer">頁首<![CDATA[&]]>頁尾</string>
     <string name="rule_subscription">規則訂閱</string>
+    <string name="rule_sub_auto_update">每天自動更新</string>
     <string name="rule_sub_empty_msg">新增大佬們提供的規則匯入地址\n新增後點擊可匯入規則</string>
     <string name="sync_book_progress_t">同步閱讀進度</string>
     <string name="sync_book_progress_s">進入退出閱讀介面時同步閱讀進度</string>
@@ -604,6 +607,7 @@
     <string name="search_content_empty">搜尋內容為空，請檢查淨化/簡繁設定</string>
     <string name="book_tree_uri_t">書籍儲存位置</string>
     <string name="book_tree_uri_s">從其它應用程式打開的書籍儲存位置</string>
+    <string name="book_storage_help">由於安卓的儲存存取限制，不能選擇內部儲存根目錄、SD 卡根目錄和 Download 目錄本身（要放在 Download 下請選 Download 內的子目錄，例如 Download/Books）。\n其它目錄都可以選，包括儲存根目錄下的子目錄（例如 /sdcard/books）。\n不設定書籍儲存位置，本地書籍與 webDav 書籍的複製、下載將無法使用。</string>
     <string name="select_book_folder">選擇儲存書籍的資料夾</string>
     <string name="user_agent">使用者代理</string>
     <string name="bg_alpha">背景透明度</string>
@@ -613,7 +617,6 @@
     <string name="timeout">超時</string>
     <string name="seconds">秒</string>
     <string name="less_than">小於</string>
-    <string name="check_source_config_summary">校驗超時：%1$s秒\n校驗項目：%2$s</string>
     <string name="record_debug_log">記錄除錯日誌</string>
     <string name="sub_dir">子資料夾</string>
     <string name="general">全域</string>
@@ -672,6 +675,7 @@
     <string name="show_add_to_shelf_alert_title">返回時提示放入書架</string>
     <string name="show_add_to_shelf_alert_summary">閱讀未放入書架的書籍在返回時提示放入書架</string>
     <string name="review">評論</string>
+    <string name="review_title_with_count">評論(%1$s條)</string>
     <string name="rule_review_url">段評URL（reviewUrl）</string>
     <string name="rule_avatar">段評發布者大頭貼（avatarRule）</string>
     <string name="rule_review_content">段評內容（contentRule）</string>
@@ -708,7 +712,6 @@
     <string name="audio_play_wake_lock">音訊服務喚醒鎖</string>
     <string name="copy_rule">複製規則</string>
     <string name="paste_rule">貼上規則</string>
-    <string name="groups_or_source">多分組/書源</string>
     <string name="replace_state_change">取代(啟用/禁用)</string>
     <string name="show_last_update_time">顯示上次更新時間</string>
     <string name="refresh_list">重新整理列表</string>
@@ -858,8 +861,6 @@
     <string name="manga_color_filter">濾鏡</string>
     <string name="hide_manga_title">隱藏漫畫列表標題</string>
     <string name="refresh_explore">重新整理發現</string>
-    <string name="system_media_control_compatibility_change">系統媒體控制項相容性更改</string>
-    <string name="system_media_control_compatibility_change_summary">當鎖屏不顯示系統媒體控制項時可以嘗試開啟，比如 OneUI7.0 或 vivo 等</string>
     <string name="read_aloud_pause_resume">朗讀暫停/繼續</string>
     <string name="contrast">對比度</string>
     <string name="enable_manga_gray">開啟圖片灰階</string>
@@ -877,9 +878,9 @@
     <string name="book_type_comic">漫畫</string>
     <string name="enable_dangerous_api_confirm">注意，允許未知來源的源使用高危API會造成無法預測的結果，最嚴重的情況下會導致軟體資料被清除、洩露，本機可存取檔案洩露等，請確保你審計程式碼並信任該源，否則請不要啟用。</string>
     <string name="resolution">解析度</string>
-    <string name="source_filter_rule">屏蔽規則</string>
-    <string name="source_filter_rule_empty">還沒有屏蔽規則，點右上角 + 新增</string>
-    <string name="source_filter_rule_no_match">當前範圍沒有命中的屏蔽規則</string>
+    <string name="source_filter_rule">篩選規則</string>
+    <string name="source_filter_rule_empty">還沒有篩選規則，點右上角 + 新增</string>
+    <string name="source_filter_rule_no_match">當前範圍沒有命中的篩選規則</string>
     <string name="source_filter_rule_manage">管理全部</string>
     <string name="source_filter_rule_name">名稱</string>
     <string name="source_filter_rule_pattern">正則表達式</string>
@@ -888,9 +889,9 @@
     <string name="source_filter_rule_scope_summary_all">全部書源</string>
     <string name="source_filter_rule_invalid_pattern">正則表達式無效</string>
     <string name="source_filter_rule_no_field">請至少選一個作用字段</string>
-    <string name="source_filter_rule_filtered_count">屏蔽了 %1$d 本</string>
-    <string name="source_filter_rule_delete_all_confirm">刪除全部屏蔽規則？</string>
-    <string name="import_source_filter_rule">匯入屏蔽規則</string>
+    <string name="source_filter_rule_filtered_count">篩除 %1$d 本</string>
+    <string name="source_filter_rule_delete_all_confirm">刪除全部篩選規則？</string>
+    <string name="import_source_filter_rule">匯入篩選規則</string>
     <string name="source_filter_field_name">書名</string>
     <string name="source_filter_field_author">作者</string>
     <string name="source_filter_field_intro">簡介</string>
@@ -1108,4 +1109,16 @@
     <string name="keyword_highlight_exclude_scope">排除範圍，選填書名或者書源 URL</string>
     <string name="video_lock">鎖定</string>
     <string name="video_unlock">解鎖</string>
+    <string name="close_to_tray_title">關閉視窗時縮小到托盤</string>
+    <string name="close_to_tray_summary">視窗隱藏後背景工作繼續執行，可從托盤圖示重新開啟</string>
+    <string name="close_window">關閉視窗</string>
+    <string name="close_to_tray_prompt">是否縮小到托盤？縮小後程式與背景工作繼續執行，可從托盤圖示重新開啟。</string>
+    <string name="close_to_tray">縮小到托盤</string>
+    <string name="show_main_window">顯示主畫面</string>
+    <string name="dialog_preview">彈窗預覽</string>
+    <string name="dialog_preview_summary">逐個查看全部對話框與彈窗形制（除錯用，資料為副本）</string>
+    <string name="dialog_preview_group_alert">確認/提示框</string>
+    <string name="dialog_preview_group_dialog">對話框</string>
+    <string name="dialog_preview_group_sheet">底部彈層</string>
+    <string name="dialog_preview_group_base">基礎形制</string>
 </resources>

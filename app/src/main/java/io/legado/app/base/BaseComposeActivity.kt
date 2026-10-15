@@ -1,10 +1,8 @@
 package io.legado.app.base
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.view.MotionEvent
 import androidx.activity.addCallback
@@ -32,6 +30,7 @@ import io.legado.app.ui.compose.platform.AppKeyRouter
 import io.legado.app.ui.compose.platform.LocalAppConfigProvider
 import io.legado.app.ui.compose.platform.LocalEventBusProvider
 import io.legado.app.ui.compose.platform.LocalThemeStoreProvider
+import androidx.compose.ui.platform.LocalWindowInfo
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.disableAutoFill
@@ -58,16 +57,6 @@ abstract class BaseComposeActivity(
 
     private var needRecreate = false
 
-    val isInMultiWindow: Boolean
-        @SuppressLint("ObsoleteSdkInt")
-        get() {
-            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                isInMultiWindowMode
-            } else {
-                false
-            }
-        }
-
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppContextWrapper.wrap(newBase))
     }
@@ -92,7 +81,7 @@ abstract class BaseComposeActivity(
                 LocalAppConfigProvider provides appConfigProvider,
                 LocalEventBusProvider provides eventBusProvider,
             ) {
-                AppTheme { Content() }
+                AppTheme(anchor = LocalWindowInfo.current.containerSize) { Content() }
             }
         }
         onBackPressedDispatcher.addCallback(this) {
@@ -120,15 +109,18 @@ abstract class BaseComposeActivity(
     override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
         super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
         setupSystemBar()
-        // 阅读页避让与系统栏策略都跟多窗口状态 (原版 PageView.upStatusBar 的
-        // isInMultiWindow 判据 + upSystemUiVisibilityO 不加 LAYOUT_FULLSCREEN),
-        // 复用 SYSTEM_UI 事件让阅读页重读配置并重下发策略 (LegadoApp / readerBarConfig 均订阅)
+        // 多窗口切换会改窗口尺寸与 insets: 重采系统栏外观, 并让阅读页重算避让
+        // (复用 SYSTEM_UI 事件, LegadoApp / readerBarConfig 均订阅)
         ReadBookEvents.postConfig(ReadConfigChange.SYSTEM_UI)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         setupSystemBar()
+        // 屏幕配置变化会把窗口系统栏重置为页面默认值 (阅读页可见期内的图标明暗/导航栏底色也
+        // 被覆盖), 复用 SYSTEM_UI 事件让阅读页重读配置并重下发外观
+        // (对照原版 ReadBookActivity.onConfigurationChanged → upSystemUiVisibility)
+        ReadBookEvents.postConfig(ReadConfigChange.SYSTEM_UI)
     }
 
     open fun initTheme() {
@@ -176,7 +168,10 @@ abstract class BaseComposeActivity(
 
     @Suppress("DEPRECATION") // window.statusBarColor 在 API 35 弃用, 与 ActivityExtensions 同一兼容路径
     open fun setupSystemBar() {
-        if (fullScreen && !isInMultiWindow) {
+        // 多窗口下同样铺满: Android 15 起非浮动窗口强制边到边 (setDecorFitsSystemWindows 已失效),
+        // 铺满与否不再由应用决定; 避让量由 insets 自适应 (窗口不在状态栏下方时为 0),
+        // 故不再按多窗口状态分叉
+        if (fullScreen) {
             edgeToEdge()
         }
         val bg = ThemeConfig.curBgImagePath

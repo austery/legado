@@ -4,13 +4,16 @@ package io.legado.engine
 
 import io.legado.app.constant.AppConst
 import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.utils.IosRuleRegex
+import io.legado.app.utils.RuleRegexes
+import io.legado.app.utils.registerRuleRegexForJsonPath
 import io.legado.app.constant.registerNativeAndroidId
 import io.legado.app.data.registerIosAppDbAccessor
 import io.legado.app.data.registerIosDatabaseDriver
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.help.registerNativeFileCacheProvider
 import io.legado.app.help.registerNativeSourceCacheProvider
-import io.legado.app.help.book.registerNativeBookHelpAccessor
+import io.legado.app.help.book.BookHelpProviders
 import io.legado.app.help.book.registerNativeBookStorage
 import io.legado.app.help.book.registerNativeContentProcessorAccessor
 import io.legado.app.help.config.registerIosPreferenceProvider
@@ -103,7 +106,7 @@ internal object EngineHost {
         registerNativeDataStorage()
         registerNativeBookStorage()
         registerIosAppDbAccessor()
-        registerNativeBookHelpAccessor()
+        BookHelpProviders.register(EngineBookHelpAccessor)
         registerNativeContentProcessorAccessor()
         registerNativeSourceHelpAccessor()
         registerNativeSourceCacheProvider()
@@ -111,6 +114,8 @@ internal object EngineHost {
         registerNativeSourceProviders()
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()
+        RuleRegexes.register(IosRuleRegex)
+        registerRuleRegexForJsonPath()
         registerInteractionProviders()
         ready = true
         failed = false

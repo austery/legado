@@ -1,9 +1,6 @@
 package io.legado.app.ui.route
 
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.Surface
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,12 +14,10 @@ import io.legado.app.help.config.ReadBookConfigProviders
 import io.legado.app.help.config.ReadBookConfigShared
 import io.legado.app.ui.book.read.ReadBookEvents
 import io.legado.app.ui.book.read.ReadConfigChange
-import io.legado.app.ui.book.read.config.ClickActionConfig
-import io.legado.app.ui.book.read.config.ClickActionDialog
+import io.legado.app.ui.book.read.config.ClickRegionalConfigDialogHost
 import io.legado.app.ui.book.read.config.MoreConfigScreen
-import io.legado.app.ui.book.read.page.detectClickArea
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
-import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppSheetSurface
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.dialog.NumberPickerDialog
 import io.legado.app.ui.root.PlatformCapabilityProviders
@@ -34,7 +29,8 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * 阅读界面更多设置底部弹窗形态 (对照原版 MoreConfigDialog:
  * BasePrefDialogFragment + setupAsBottomDialog(480dp): 全宽贴底、固定高 480dp、
- * 无圆角 (applyFilletBackground=false) + 背景 R.color.background, 无标题栏)。
+ * 无标题栏; 圆角/底色按弹层面板统一规格 = 顶角 16dp (随上拉展开收平) + bottomBackground,
+ * 原版无圆角。
  * 由阅读菜单"设置"按钮弹起, 行为与正文 [MoreConfigBody] 一致。
  */
 @Composable
@@ -44,16 +40,12 @@ fun MoreConfigDialogHost(
     val readBookConfig = ReadBookConfigProviders.get()
     AppBottomSheetDialog(
         onDismissRequest = onDismiss,
-        properties = AppDialogSizes.properties(),
-        maxHeight = 480.dp,
     ) {
         AppTheme {
-            // 原版 setupAsBottomDialog: MATCH_PARENT 全宽 + 高 480dp + 无圆角 (BasePrefDialogFragment
-            // applyFilletBackground=false); 内容背景 bottomBackground (createPrefContainer)
-            Surface(
-                shape = RoundedCornerShape(0.dp),
-                color = AppTheme.colors.bottomBackground,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp),
+            // 面板占满所属弹层 (贴底、收起态宽度取对话框上限、顶角 16dp 随展开收平、
+            // 底栏色, 高度到 0.8 锚点)
+            AppSheetSurface(
+                modifier = Modifier.fillMaxSize(),
             ) {
                 MoreConfigBody(
                     readBookConfig = readBookConfig,
@@ -93,7 +85,8 @@ private fun MoreConfigBody(
                 // 屏幕方向: 重应用窗口策略 (LegadoApp 收集后按新 pref 重建阅读页策略)
                 PreferKey.screenOrientation -> ReadBookEvents.postOrientationChange()
                 PreferKey.textFullJustify,
-                PreferKey.textBottomJustify -> {
+                PreferKey.textBottomJustify,
+                PreferKey.hangFirstPunctuation -> {
                     ReadBookEvents.postConfig(ReadConfigChange.LOAD_CONTENT)
                 }
 
@@ -126,34 +119,6 @@ private fun MoreConfigBody(
 
     // 点击区域配置对话框 (对齐 app 端 showClickRegionalConfig)
     if (showClickRegional) {
-        val config = ClickActionConfig(
-            tl = pref.getInt(PreferKey.clickActionTL, 2),
-            tc = pref.getInt(PreferKey.clickActionTC, 2),
-            tr = pref.getInt(PreferKey.clickActionTR, 1),
-            ml = pref.getInt(PreferKey.clickActionML, 2),
-            mc = pref.getInt(PreferKey.clickActionMC, 0),
-            mr = pref.getInt(PreferKey.clickActionMR, 1),
-            bl = pref.getInt(PreferKey.clickActionBL, 2),
-            bc = pref.getInt(PreferKey.clickActionBC, 1),
-            br = pref.getInt(PreferKey.clickActionBR, 1),
-        )
-        ClickActionDialog(
-            clickActionConfig = config,
-            onConfirm = { updated ->
-                pref.putInt(PreferKey.clickActionTL, updated.tl)
-                pref.putInt(PreferKey.clickActionTC, updated.tc)
-                pref.putInt(PreferKey.clickActionTR, updated.tr)
-                pref.putInt(PreferKey.clickActionML, updated.ml)
-                pref.putInt(PreferKey.clickActionMC, updated.mc)
-                pref.putInt(PreferKey.clickActionMR, updated.mr)
-                pref.putInt(PreferKey.clickActionBL, updated.bl)
-                pref.putInt(PreferKey.clickActionBC, updated.bc)
-                pref.putInt(PreferKey.clickActionBR, updated.br)
-                // 对照原版配置页 onDestroy → AppConfig.detectClickArea: 变更后立即校验,
-                // 九宫格全部非 0 时强制恢复中间格为菜单 + toast
-                detectClickArea()
-            },
-            onDismiss = { showClickRegional = false },
-        )
+        ClickRegionalConfigDialogHost(onDismiss = { showClickRegional = false })
     }
 }

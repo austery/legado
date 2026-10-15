@@ -292,7 +292,7 @@ final class ReadingJourneyTests: XCTestCase {
         for item in entries { model.removeShelfBook(item); try await settle(model) }
     }
 
-    func testNonProgressingRegexFailsAndNextSearchRecovers() async throws {
+    func testPreviouslyNonProgressingRegexCompletesAndNextSearchWorks() async throws {
         let model = ReaderModel()
         model.start()
         try await settle(model)
@@ -310,8 +310,8 @@ final class ReadingJourneyTests: XCTestCase {
         model.query = "Path"
         model.search()
         try await settle(model)
-        XCTAssertTrue(model.message?.contains("UNSUPPORTED") == true)
-        XCTAssertTrue(model.message?.contains("did not advance safely") == true)
+        XCTAssertNil(model.message)
+        XCTAssertTrue(model.results.isEmpty, "ICU removes every matched title fragment without stalling")
         model.cancel()
         model.searchScope = .selected; model.selectedSourceIDs = [base]
         model.search()

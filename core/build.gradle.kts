@@ -6,6 +6,7 @@
 // 与 ui 包留 :shared, 由 :ui 批次吸收。
 import org.jetbrains.kotlin.gradle.plugin.KotlinDependencyHandler
 import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
 plugins {
     id("legado.kmp.library")
@@ -39,8 +40,20 @@ kotlin {
     }
 
     if (enableIosTarget) {
-        iosArm64()
+        // 信号处理器通道需要零分配的 POSIX 写入面 (见 src/cinterop/signalposix.def)。
+        // 只在 macOS 主机配置: 与 :data 同款 (cinterop 需要本机 Apple SDK)。
+        val configureSignalPosix: KotlinNativeTarget.() -> Unit = {
+            if (isMacHost) {
+                compilations.getByName("main").cinterops {
+                    create("signalposix") {
+                        defFile(file("src/cinterop/signalposix.def"))
+                    }
+                }
+            }
+        }
+        iosArm64(configureSignalPosix)
         iosSimulatorArm64 {
+            configureSignalPosix()
             binaries.withType<TestExecutable>().configureEach {
                 val nativeLibDir = rootProject.file("data/build/iosNativeLibs/ios_simulator_arm64")
                 linkerOpts("-L${nativeLibDir.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3")
@@ -82,15 +95,10 @@ kotlin {
                 implementation("org.jetbrains.skiko:skiko-awt:0.144.6")
             }
         }
-        // iOS+鸿蒙 非 UI 公共层 (help/web 的 native 实现)
+        // iOS+鸿蒙 非 UI 公共层 (help 的 native 实现)
         val nativeMain = if (enableIosTarget || enableOhosTarget) {
             maybeCreate("nativeMain").apply {
                 dependsOn(commonMain.get())
-                dependencies {
-                    implementation(libs.ktor.server.core)
-                    implementation(libs.ktor.server.cio)
-                    implementation(libs.ktor.server.websockets)
-                }
             }
         } else null
 
@@ -117,6 +125,10 @@ kotlin {
                 dependencies {
                     implementation(libs.ktor.client.core)
                     implementation(libs.ktor.client.cio)
+                    // Web 服务 (Ktor server CIO 壳) 只在鸿蒙编译: iOS 不提供 Web 服务
+                    implementation(libs.ktor.server.core)
+                    implementation(libs.ktor.server.cio)
+                    implementation(libs.ktor.server.websockets)
                 }
             }
             // KGP 不会自动把 ohosArm64Main 连到自定义的 ohosMain, 必须显式 dependsOn

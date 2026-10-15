@@ -4,6 +4,7 @@ import com.fleeksoft.ksoup.Ksoup
 import com.fleeksoft.ksoup.parser.Parser
 import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
+import io.legado.app.help.copyToFileAtomically
 import io.legado.app.help.coroutine.printStackTraceOnDebug
 import io.legado.app.help.coroutine.runBlockingInScope
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
@@ -31,7 +32,6 @@ import io.ktor.http.isSuccess
 import io.ktor.http.withCharset
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.charsets.Charsets
-import io.ktor.utils.io.readAvailable
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -39,8 +39,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.EmptyCoroutineContext
 import io.legado.app.utils.File
-import okio.FileSystem
-import okio.Path.Companion.toPath
 
 /**
  * WebDav 客户端 nativeMain actual 实现。
@@ -61,8 +59,8 @@ import okio.Path.Companion.toPath
  * **与 jvmAndAndroidMain 的行为差异**:
  * - `httpUrl` 不做 OkHttp `toHttpUrl()` 级别的 URL 规范化 (默认端口/路径合并等),
  *   仅简单 replace 协议 (davs->https, dav->http); 功能等价, 但 URL 字符串可能不同
- * - `downloadInputStream()` 返回 ByteArrayInputStream 风格 (全量 bytes 装入内存),
- *   jvmAndAndroidMain 为流式 byteStream(); 大文件场景内存占用更高
+ * - `downloadInputStream()` 取回整份内容再包成 [InputStream] (iOS/鸿蒙无调用方, 下载落盘一律走
+ *   [downloadTo] 边下边写); jvmAndAndroidMain 是 OkHttp `body.byteStream()` 直透
  * - `downloadTo(savedPath, ...)` / `upload(localPath, ...)` 用 [kotlin.io.File]
  *   (Kotlin/Native 标准库支持, iOS/鸿蒙均可用)
  * - `lastModify` 解析用纯 Kotlin 实现 (Howard Hinnant days_from_civil 反算),
@@ -109,9 +107,6 @@ actual open class WebDav actual constructor(
                   <resourcetype />
                </prop>
             </propfind>"""
-
-        /** 流式下载 (downloadTo) 的读写缓冲块大小 (64KB)。 */
-        private const val DEFAULT_BUFFER_SIZE = 64 * 1024
     }
 
     // 简单 replace 协议, 不做 OkHttp toHttpUrl() 级别的 URL 规范化
@@ -324,12 +319,13 @@ actual open class WebDav actual constructor(
     /**
      * 下载到本地
      *
-     * **nativeMain 端实现**: 流式写文件, 避免大文件全量入内存
-     * (与 jvmAndAndroidMain 的 `downloadInputStream().use { copyTo }` 对齐):
+     * **nativeMain 端实现**: 分块流式落盘, 避免大文件全量入内存
+     * (与 jvmAndAndroidMain `downloadInputStream().use { copyTo }` 经同一共享整份写入契约对齐):
      * - 文件已存在且 [replaceExisting]=false 直接返回 (与 jvmAndAndroidMain 一致)
-     * - 用 Ktor `bodyAsChannel()` + 复用缓冲区逐块读 (DEFAULT_BUFFER_SIZE) → okio BufferedSink 写
-     *   (项目 native File actual 无 outputStream, okio 流式写与 java.io.FileOutputStream 语义等价)
-     * - 父目录不存在时递归创建 (与 nativeMain BackupFileOps.writeText 行为对齐)
+     * - 用 Ktor `bodyAsChannel()` 边读边写目标同目录的唯一临时件 ([copyToFileAtomically]),
+     *   整份写完才改名就位 —— 写入期间目标名上要么不存在、要么是完整内容, 并发读方不会
+     *   拿到半截下载; 传输失败/取消时目标保持原有完整内容 (或不存在), 临时件由契约清掉
+     * - 父目录不存在时由契约递归创建
      *
      * 传输错误 (网络断开等) 抛 [WebDavException]; HTTP 错误码不额外拦截
      * (与 jvmAndAndroidMain downloadInputStream 语义一致: 错误页字节照常写出, 由调用方判断)。
@@ -346,26 +342,13 @@ actual open class WebDav actual constructor(
         if (file.exists() && !replaceExisting) {
             return
         }
-        // 确保父目录存在 (与 nativeMain BackupFileOps.writeText 行为对齐)
-        file.parentFile?.mkdirs()
         val url = httpUrl ?: throw WebDavException("WebDav下载出错\nurl为空")
         kotlin.runCatching {
             withContext(Dispatchers.Default) {
                 val channel: ByteReadChannel = webDavClient.get(url) {
                     header(authorization.name, authorization.data)
                 }.bodyAsChannel()
-                // 流式: 复用缓冲区逐块读 → 写, 峰值内存与块大小无关 (大文件不整读入内存)
-                // (项目 native File actual 无 outputStream, 用 okio BufferedSink 流式写)
-                // okio FileSystem.write 的 writerAction 是 BufferedSink 接收者 lambda (无参数),
-                // 块内直接调 BufferedSink.write(ByteArray, offset, count) 流式写
-                FileSystem.SYSTEM.write(file.path.toPath()) {
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val n = channel.readAvailable(buffer, 0, buffer.size)
-                        if (n == -1) break
-                        if (n > 0) write(buffer, 0, n)
-                    }
-                }
+                copyToFileAtomically(savedPath, channel)
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -442,27 +425,13 @@ actual open class WebDav actual constructor(
     /**
      * 下载文件输入流
      *
-     * **nativeMain 端降级**: 返回 ByteArrayInputStream 风格 (全量 bytes 装入内存),
-     * jvmAndAndroidMain 为 OkHttp 流式 byteStream(); 大文件场景内存占用更高。
+     * **nativeMain 端实现**: 取回整份内容后包成 [InputStream] —— iOS/鸿蒙两端都没有调用方
+     * (下载落盘一律走 [downloadTo] 边下边写), 本方法只为满足 commonMain expect 声明保留。
      *
-     * 保持全量入内存: commonMain [InputStream] expect 只有 read/read/skip/available/close 抽象,
-     * 无底层通道可挂; 大文件下载请走 [downloadTo] (流式写文件)。
+     * 拿不到内容/读取出错 (网络断开等) 时抛 [WebDavException] ([download] 同一口径)。
      */
     @Throws(WebDavException::class, CancellationException::class)
-    actual suspend fun downloadInputStream(): InputStream {
-        val url = httpUrl ?: throw WebDavException("WebDav下载出错\nurl为空")
-        val bytes = kotlin.runCatching {
-            withContext(Dispatchers.Default) {
-                webDavClient.get(url) {
-                    header(authorization.name, authorization.data)
-                }.bodyAsBytes()
-            }
-        }.onFailure {
-            currentCoroutineContext().ensureActive()
-            throw WebDavException("WebDav下载失败\n${it.message}")
-        }.getOrThrow()
-        return bytes.toInputStream()
-    }
+    actual suspend fun downloadInputStream(): InputStream = download().toInputStream()
 
     /**
      * 移除文件/文件夹

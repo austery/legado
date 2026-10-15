@@ -1,33 +1,21 @@
-﻿// I18N KEYS (新增, 待 ResourceProvider.jvm.kt 补全桌面端字面量):
-// - custom_page_key: "自定义翻页按键" (已存在 jvmMain)
-// - prev_page_key: "上一页按键"
-// - next_page_key: "下一页按键"
-// - reset: "重置"
-// - ok: "确认" (已存在 jvmMain)
-//
-// PAINTER KEYS: 本 Dialog 不使用 painter key (无图标)
+﻿// 本 Dialog 引用的字符串均取自 Compose Resources 按 key 索引的映射表
+// (ui/src/commonMain/composeResources 为四端单一数据源, 无需各端补字面量):
+// custom_page_key / prev_page_key / next_page_key / reset / ok; 本 Dialog 无图标资源
 
 package io.legado.app.ui.book.read.config
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.Surface
-import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -35,15 +23,13 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.constant.PreferKey
+import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppTextButton
 import io.legado.app.ui.compose.component.AppUnderlineTextField
-import io.legado.app.ui.compose.component.listItemFocus
-import io.legado.app.ui.compose.component.DialogTitleBar
-import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.platform.keyToPageKeyCode
-import io.legado.app.ui.compose.platform.rememberColor
-import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.custom_page_key
@@ -93,8 +79,6 @@ fun PageKeyDialog(
     onConfirm: (Map<Int, String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val colors = AppTheme.colors
-
     // 从入参解析 prev/next 两个输入框初值
     // 与原版 `prev = AppConfig.prevKeys.orEmpty()` 对齐, 这里从 Map 反向序列化
     val initialPrev = remember(keyMappings) {
@@ -111,84 +95,57 @@ fun PageKeyDialog(
     var prev by remember(keyMappings) { mutableStateOf(initialPrev) }
     var next by remember(keyMappings) { mutableStateOf(initialNext) }
 
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = stringResource(Res.string.custom_page_key),
+        // 底部按钮行: 对话框标准文字按钮 (不自行切分宽度); 重置走中性靠左, 确认靠右
+        bottomBar = {
+            AppTextButton(text = stringResource(Res.string.reset)) {
+                prev = ""
+                next = ""
+            }
+            Spacer(Modifier.weight(1f))
+            AppTextButton(text = stringResource(Res.string.ok)) {
+                onConfirm(buildKeyMappings(prev, next))
+            }
+        },
+        contentPadding = PaddingValues(0.dp),
         properties = AppDialogSizes.properties(),
     ) {
-        Surface(
-            shape = DesignTokens.shapeDefault,
-            color = colors.fillet,
-            modifier = Modifier.appDialogSize().padding(
-                start = DesignTokens.spacingDefault,
-                top = DesignTokens.spacingLg,
-                end = DesignTokens.spacingDefault,
-                bottom = DesignTokens.spacingDefault,
-            ),
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = DesignTokens.spacingDefault, vertical = DesignTokens.spacingDefault),
+            verticalArrangement = Arrangement.spacedBy(DesignTokens.spacingDefault),
         ) {
-            Column(Modifier.fillMaxWidth()) {
-                DialogTitleBar(
-                    title = stringResource(Res.string.custom_page_key),
-                    onBack = onDismiss,
-                )
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = DesignTokens.spacingDefault, vertical = DesignTokens.spacingDefault),
-                    verticalArrangement = Arrangement.spacedBy(DesignTokens.spacingDefault),
-                ) {
-                    AppUnderlineTextField(
-                        value = prev,
-                        onValueChange = { prev = it },
-                        label = stringResource(Res.string.prev_page_key),
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onPreviewKeyEvent { event ->
-                                val captured = appendCapturedKey(prev, event)
-                                    ?: return@onPreviewKeyEvent false
-                                prev = captured
-                                true
-                            },
-                    )
-                    AppUnderlineTextField(
-                        value = next,
-                        onValueChange = { next = it },
-                        label = stringResource(Res.string.next_page_key),
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onPreviewKeyEvent { event ->
-                                val captured = appendCapturedKey(next, event)
-                                    ?: return@onPreviewKeyEvent false
-                                next = captured
-                                true
-                            },
-                    )
-                }
-
-                // 底部按钮行 (原版 dialog_page_key.xml: 重置/确定两个 48dp 高 weight1 均分方块,
-                // selector_fillet_btn_bg = arco_radius_default 8dp 圆角 + btn_bg(#100e0e0e) 实底
-                // + primaryText 居中, 两钮无间隔)
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = DesignTokens.spacingDefault),
-                ) {
-                    FilletButton(
-                        text = stringResource(Res.string.reset),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        prev = ""
-                        next = ""
-                    }
-                    FilletButton(
-                        text = stringResource(Res.string.ok),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        onConfirm(buildKeyMappings(prev, next))
-                    }
-                }
-            }
+            AppUnderlineTextField(
+                value = prev,
+                onValueChange = { prev = it },
+                label = stringResource(Res.string.prev_page_key),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onPreviewKeyEvent { event ->
+                        val captured = appendCapturedKey(prev, event)
+                            ?: return@onPreviewKeyEvent false
+                        prev = captured
+                        true
+                    },
+            )
+            AppUnderlineTextField(
+                value = next,
+                onValueChange = { next = it },
+                label = stringResource(Res.string.next_page_key),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onPreviewKeyEvent { event ->
+                        val captured = appendCapturedKey(next, event)
+                            ?: return@onPreviewKeyEvent false
+                        next = captured
+                        true
+                    },
+            )
         }
     }
 }
@@ -209,30 +166,6 @@ private fun appendCapturedKey(current: String, event: KeyEvent): String? {
 }
 
 /**
- * 原版 selector_fillet_btn_bg 方块按钮: arco_radius_default 8dp 圆角 + btn_bg 实底
- * + primaryText 居中; 高度 48dp (arco_view_height_xl), 点击区随 modifier 均分。
- */
-@Composable
-private fun FilletButton(
-    text: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val colors = AppTheme.colors
-    Box(
-        modifier
-            .height(48.dp)
-            .clip(DesignTokens.shapeDefault)
-            .background(rememberColor("btn_bg"))
-            .listItemFocus()
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text, color = colors.primaryText)
-    }
-}
-
-/**
  * 把 prev/next 两个输入框内容组装为 `Map<Int, String>`。
  *
  * - prev 输入框中的 keyCode → "prev_page"
@@ -248,4 +181,49 @@ private fun buildKeyMappings(prev: String, next: String): Map<Int, String> {
         .mapNotNull { it.trim().toIntOrNull() }
         .forEach { result[it] = "next_page" }
     return result
+}
+
+/**
+ * 自定义翻页按键对话框宿主: 读当前 prevKeys/nextKeys 偏好 → [PageKeyDialog] → 确认后回写两个键。
+ *
+ * 由"其它设置"的自定义翻页按键入口与阅读页首启引导(电视形态)共用, 两处读写同一对偏好键。
+ * 确认即关闭 (对照原版 PageKeyDialog 的 tvOk 写入后 dismiss)。
+ */
+@Composable
+fun CustomPageKeyDialogHost(
+    onDismiss: () -> Unit,
+) {
+    val pref = remember { PreferenceProviders.get() }
+    val keyMappings = remember {
+        parsePageKeyMappings(
+            pref.getStringOrNull(PreferKey.prevKeys) ?: "",
+            pref.getStringOrNull(PreferKey.nextKeys) ?: "",
+        )
+    }
+    PageKeyDialog(
+        keyMappings = keyMappings,
+        onConfirm = { mappings ->
+            val (prev, next) = splitPageKeyMappings(mappings)
+            pref.putString(PreferKey.prevKeys, prev)
+            pref.putString(PreferKey.nextKeys, next)
+            onDismiss()
+        },
+        onDismiss = onDismiss,
+    )
+}
+
+// 解析 prevKeys/nextKeys 字符串为 PageKeyDialog 需要的 Map<Int, String>
+// 与 PageKeyDialog 内部 buildKeyMappings 反向逻辑对齐
+private fun parsePageKeyMappings(prevKeys: String, nextKeys: String): Map<Int, String> {
+    val map = mutableMapOf<Int, String>()
+    prevKeys.split(",").mapNotNull { it.trim().toIntOrNull() }.forEach { map[it] = "prev_page" }
+    nextKeys.split(",").mapNotNull { it.trim().toIntOrNull() }.forEach { map[it] = "next_page" }
+    return map
+}
+
+// 将 Map<Int, String> 反序列化为 prevKeys/nextKeys 字符串写回 prefs
+private fun splitPageKeyMappings(mappings: Map<Int, String>): Pair<String, String> {
+    val prev = mappings.filter { it.value == "prev_page" }.keys.joinToString(",") { it.toString() }
+    val next = mappings.filter { it.value == "next_page" }.keys.joinToString(",") { it.toString() }
+    return prev to next
 }

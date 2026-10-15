@@ -2,9 +2,9 @@ package io.legado.app.ui.book.changecover
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -13,7 +13,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
 import androidx.compose.material.LinearProgressIndicator
-import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -27,10 +26,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.legado.app.data.entities.SearchBook
-import io.legado.app.ui.compose.component.AppDialog
+import io.legado.app.ui.compose.component.AppDialogScaffold
 import io.legado.app.ui.compose.component.AppDialogSizes
-import io.legado.app.ui.compose.component.DialogTitleBar
-import io.legado.app.ui.compose.component.appDialogSize
 import io.legado.app.ui.compose.component.listItemFocus
 import io.legado.app.ui.compose.component.rememberResponsiveColumns
 import io.legado.app.ui.compose.theme.AppTheme
@@ -48,7 +45,7 @@ import org.jetbrains.compose.resources.stringResource
 /**
  * 换封面搜索对话框 (KMP 共享, app + desktop 复用)。
  *
- * 对应 app 端 `io.legado.app.ui.book.changecover.ChangeCoverDialog` (继承 BaseComposeDialogFragment),
+ * 对应 app 端 `io.legado.app.ui.book.changecover.ChangeCoverDialog` (继承 原命令式对话框基类(已删除)),
  * 但去掉对 Android Fragment / ViewModel / LifecycleObserver / AndroidView / CoverImageView 的依赖,
  * 改为纯 @Composable + 回调形式:
  *
@@ -65,7 +62,7 @@ import org.jetbrains.compose.resources.stringResource
  *
  * # 与 app 端原实现的差异 (KMP 限制)
  *
- * - **Fragment 移除**: 原版继承 `BaseComposeDialogFragment`, 用 `dismissAllowingStateLoss()` 关闭;
+ * - **Fragment 移除**: 原版继承 `原命令式对话框基类(已删除)`, 用 `dismissAllowingStateLoss()` 关闭;
  *   下沉版用 [Dialog] + [onDismiss] 回调, 由调用方控制显示/隐藏。
  * - **ViewModel 移除**: 原版用 `by viewModels()` 取 `ChangeCoverViewModel`;
  *   下沉版由调用方传入 [ChangeCoverViewModelShared] 实例 (KMP 共享核心)。
@@ -74,7 +71,7 @@ import org.jetbrains.compose.resources.stringResource
  * - **AndroidView → coverSlot**: 原版 `CoverItem` 内嵌 `AndroidView { CoverImageView }`;
  *   下沉版改为 [coverSlot] 注入, 解耦平台专属封面渲染。
  * - **资源访问**: 走 compose-resources (`Res.string` / `Res.drawable`)。
- * - **窗口尺寸**: 对齐原 `BaseComposeDialogFragment` 的全高模式：0.9 窗口宽、最大 800dp、
+ * - **窗口尺寸**: 对齐原 `原命令式对话框基类(已删除)` 的全高模式：0.9 窗口宽、最大 800dp、
  *   0.8 窗口高；不是铺满整个窗口。
  *
  * # 样式 (Arco Design 规范)
@@ -114,60 +111,51 @@ fun ChangeCoverDialog(
         viewModel.searchState.collect { searching = it }
     }
 
-    AppDialog(
+    AppDialogScaffold(
         onDismissRequest = onDismiss,
+        title = stringResource(Res.string.change_cover_source),
+        titleActions = {
+            // 启停搜索按钮 (对照原 menu_start_stop + startOrStopSearch)
+            IconButton(onClick = { viewModel.startOrStopSearch() }) {
+                Icon(
+                    painter = painterResource(
+                        if (searching) Res.drawable.ic_stop_black_24dp
+                        else Res.drawable.ic_refresh_black_24dp
+                    ),
+                    contentDescription = stringResource(
+                        if (searching) Res.string.stop else Res.string.refresh
+                    ),
+                    tint = colors.primaryText,
+                )
+            }
+        },
+        contentPadding = PaddingValues(0.dp),
+        fullHeight = true,
         properties = AppDialogSizes.properties(),
     ) {
-        // 全高型: 高度锁定 0.7 屏高
-        Surface(
-            shape = DesignTokens.dialogShape,
-            color = colors.fillet,
-            modifier = Modifier.appDialogSize(fullHeight = true),
+        // 搜索中显示进度条 (对照原 RefreshProgressBar, 高 2dp; 非搜索中占位保持高度不跳变)
+        if (searching) {
+            LinearProgressIndicator(
+                color = colors.accent,
+                backgroundColor = colors.bottomBackground,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp),
+            )
+        } else {
+            Spacer(Modifier.fillMaxWidth().height(2.dp))
+        }
+        // 搜索结果网格 (对照原 GridLayoutManager(3), 宽屏按参考宽度加列)
+        LazyVerticalGrid(
+            columns = rememberResponsiveColumns(3),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
         ) {
-            Column(Modifier.fillMaxSize()) {
-                DialogTitleBar(
-                    title = stringResource(Res.string.change_cover_source),
-                    onBack = onDismiss,
-                ) {
-                    // 启停搜索按钮 (对照原 menu_start_stop + startOrStopSearch)
-                    IconButton(onClick = { viewModel.startOrStopSearch() }) {
-                        Icon(
-                            painter = painterResource(
-                                if (searching) Res.drawable.ic_stop_black_24dp
-                                else Res.drawable.ic_refresh_black_24dp
-                            ),
-                            contentDescription = stringResource(
-                                if (searching) Res.string.stop else Res.string.refresh
-                            ),
-                            tint = colors.primaryText,
-                        )
-                    }
-                }
-                // 搜索中显示进度条 (对照原 RefreshProgressBar, 高 2dp; 非搜索中占位保持高度不跳变)
-                if (searching) {
-                    LinearProgressIndicator(
-                        color = colors.accent,
-                        backgroundColor = colors.bottomBackground,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.dp),
-                    )
-                } else {
-                    Spacer(Modifier.fillMaxWidth().height(2.dp))
-                }
-                // 搜索结果网格 (对照原 GridLayoutManager(3), 宽屏按参考宽度加列)
-                LazyVerticalGrid(
-                    columns = rememberResponsiveColumns(3),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                ) {
-                    items(items, key = { "${it.origin}|${it.bookUrl}|${it.coverUrl}" }) { item ->
-                        CoverItem(item, coverSlot = coverSlot) {
-                            // 由回调携带结果并关闭 Overlay，避免结果关闭后再次 dismiss 同一实例
-                            onCoverSelected(item.coverUrl ?: "")
-                        }
-                    }
+            items(items, key = { "${it.origin}|${it.bookUrl}|${it.coverUrl}" }) { item ->
+                CoverItem(item, coverSlot = coverSlot) {
+                    // 由回调携带结果并关闭 Overlay，避免结果关闭后再次 dismiss 同一实例
+                    onCoverSelected(item.coverUrl ?: "")
                 }
             }
         }

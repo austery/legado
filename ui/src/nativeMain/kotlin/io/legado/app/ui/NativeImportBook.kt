@@ -2,25 +2,24 @@ package io.legado.app.ui
 
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
-import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
-import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.exception.InvalidBooksDirException
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.toast.Toasters
 import io.legado.app.model.fileBook.FileBook
+import io.legado.app.ui.book.import.ImportBookDirHost
+import io.legado.app.ui.book.import.ImportDirRef
 import io.legado.app.ui.book.import.ImportFileItem
+import io.legado.app.ui.book.import.local.ImportBookShared
 import io.legado.app.ui.root.AppNavigatorProviders
 import io.legado.app.ui.root.toReadRoute
-import io.legado.app.utils.AlphanumComparator
 import io.legado.app.utils.File
+import io.legado.app.utils.copyFileAtomically
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -56,52 +55,86 @@ internal data class LocalFileMeta(
 )
 
 /**
- * iOS/鸿蒙本地书导入状态 (对照 app 端 `ImportBookActivity` + `ImportBookViewModel`,
- * 代码结构对齐 desktop 端 DesktopImportBook)。
+ * iOS/鸿蒙本地书导入薄注入 (状态与扫描在 data/commonMain [ImportBookShared], 与桌面共用)。
  *
- * # 与 desktop 的差异
- * - **无 SAF**: 目录遍历直接用 nativeMain okio [File] (listFiles/walkTopDown), 不做
- *   DocumentFile 抽象 —— iOS/鸿蒙选目录入口 (UIDocumentPicker / DocumentViewPicker)
- *   把选中目录归一成 POSIX 路径后调 [setRoot];
+ * # 与 desktop 的差异 (保留在本 object 与 [NativeImportDirRef])
+ * - **无 SAF**: 目录遍历直接用 nativeMain okio [File] (listFiles), 每次文件系统调用都包
+ *   [withLocalDirAccess] 授权租约 —— iOS 只能浏览用户经 UIDocumentPicker 显式授权的目录
+ *   (minimal bookmark 持久化, 冷启动由 IosPlatformCapabilities.initImportBookData 恢复),
+ *   鸿蒙目录经 picker URI 归一为 POSIX 路径, 桥接未就绪时降级返回 null;
  * - **沙盒语义**: desktop 上架只引用原文件路径, 移动端把普通书文件**复制**进
- *   `{filesDir}/books`, bookUrl 指向沙盒内副本, 保证重启后仍可读
- *   (iOS 阅读经 [IosSecurityScopedStorage] 租约后, 外部目录引用才成为可能, 但导入链保持复制语义不变);
+ *   `{filesDir}/books`, bookUrl 指向沙盒内副本, 保证重启后仍可读;
  * - **压缩包**: 无压缩包内选章阅读 UI, openReader 走 [FileAssociationDispatch]
  *   的直接导入链 (对照 Android startRead 的 onArchiveFileClick 分支, 平台能力上限)。
- *
- * # 平台限制 (不假装与 Android 等价)
- * - iOS 只能浏览用户经 UIDocumentPicker 显式授权的目录 (Open 模式, security-scoped);
- *   目录授权经 minimal bookmark 持久化, 冷启动由 IosPlatformCapabilities.initImportBookData 恢复;
- * - 鸿蒙目录经 picker URI 归一为 POSIX 路径, 能否直接读取决于桥接层对 `file://docs`
- *   前缀的折回 (与备份路径同一约定), 桥接未就绪时降级返回 null。
  */
 object NativeImportBook {
 
     private val scope = CoroutineScope(SupervisorJob() + IoDispatcher)
 
-    private val _items = MutableStateFlow<List<ImportFileItem>>(emptyList())
-    private val _path = MutableStateFlow<String?>(null)
-    private val _loading = MutableStateFlow(false)
-    private val _emptyMsgVisible = MutableStateFlow(false)
+    val items get() = ImportBookShared.items
+    val path get() = ImportBookShared.path
+    val loading get() = ImportBookShared.loading
+    val emptyMsgVisible get() = ImportBookShared.emptyMsgVisible
+    val hasParentDir get() = ImportBookShared.hasParentDir
 
-    val items: StateFlow<List<ImportFileItem>> = _items.asStateFlow()
-    val path: StateFlow<String?> = _path.asStateFlow()
-    val loading: StateFlow<Boolean> = _loading.asStateFlow()
-    val emptyMsgVisible: StateFlow<Boolean> = _emptyMsgVisible.asStateFlow()
+    /** 是否还没选定导入根目录 (页面进入后据此自动拉起选择器)。 */
+    val needsRootDir get() = ImportBookShared.needsRootDir
 
-    private var rootDir: File? = null
-    private val subDirs = mutableListOf<File>()
-    private var filterKey: String = ""
-    private var sort: Int = 0
-    private var loadJob: Job? = null
+    /** 已上架判定缓存 (一次查询供整页条目判定, key = 文件名; native 上架是复制进沙盒, 文件名即副本名) */
+    @Volatile
+    private var shelfNames: Set<String> = emptySet()
 
-    private val prefs get() = PreferenceProviders.get()
+    private suspend fun refreshShelfNames() {
+        shelfNames = runCatching {
+            AppDbProviders.get().bookDao.all().mapTo(HashSet()) { it.originName }
+        }.getOrDefault(emptySet())
+    }
 
-    /** 上次导入目录的 pref key (对照 app 端 AppConfig.importBookPath / desktop 同名 key)。 */
-    private const val KEY_IMPORT_BOOK_PATH = "importBookPath"
+    /**
+     * okio File 的目录引用包装 (状态机经它列举/条目化)。
+     *
+     * [isDirectory] 取列举时在同一份授权租约内观测到的目录属性: 容器外路径离开租约即不可读,
+     * 每次询问现取租约会让一份列表逐个起停 security scope。
+     */
+    private class NativeImportDirRef(
+        val dir: File,
+        override val isDirectory: Boolean,
+        private val shelfNamesProvider: () -> Set<String>,
+    ) : ImportDirRef {
+        override val displayName: String get() = dir.name
+        override val pathKey: String get() = dir.path
 
-    /** 当前所在目录 (未选根目录时为 null)。 */
-    private fun currentDir(): File? = subDirs.lastOrNull() ?: rootDir
+        override suspend fun listChildren(): List<ImportDirRef>? = withLocalDirAccess(dir.path) {
+            dir.listFiles()?.map { NativeImportDirRef(it, it.isDirectory, shelfNamesProvider) }
+        }
+
+        override suspend fun toItem(isUpDir: Boolean): ImportFileItem? = try {
+            NativeImportFile(
+                dir,
+                isUpDir = isUpDir,
+                isOnBookShelf = !isUpDir && shelfNamesProvider().contains(dir.name),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.put("读取导入文件属性失败: ${dir.path}\n${e.message}", e)
+            null
+        }
+    }
+
+    private val importDirHost = object : ImportBookDirHost {
+        override fun dirRefOf(item: ImportFileItem): ImportDirRef? =
+            // 用条目构造时在授权租约内取到的目录属性; 裸读文件系统在容器外路径上不受授权保护
+            (item as? NativeImportFile)?.takeIf { it.isDir }
+                ?.let { NativeImportDirRef(it.file, isDirectory = true) { shelfNames } }
+
+        override suspend fun resolveRoot(pathKey: String): ImportDirRef? {
+            if (pathKey.isBlank()) return null
+            val file = File(pathKey)
+            if (!canReadDirectory(file)) return null
+            return NativeImportDirRef(file, isDirectory = true) { shelfNames }
+        }
+    }
 
     /**
      * 初始化导入页状态。
@@ -110,41 +143,20 @@ object NativeImportBook {
      *   minimal bookmark 由 IosPlatformCapabilities.initImportBookData 另行恢复 (不走 prefs 路径);
      *   鸿蒙传 true (picker 归一化路径直接可读)。
      */
-    fun init(restoreLast: Boolean = true) {
-        // 排序预存值 (对照 shared 路由读 AppConfig.localBookImportSort 展示勾选项;
-        // 桌面参考实现初始为 0, 这里对齐预存值避免"UI 显示时间排序但列表按名称"的不一致)
-        sort = prefs.getInt(PreferKey.localBookImportSort, 0)
-        if (rootDir != null) {
-            // 本次会话已选过根目录 (重进导入页), 直接刷新当前目录
-            reload()
-            return
-        }
-        val last = if (restoreLast) prefs.getString(KEY_IMPORT_BOOK_PATH, "") else ""
-        if (last.isNotEmpty() && canReadDirectory(File(last))) {
-            setRoot(last)
-        } else {
-            _emptyMsgVisible.value = true
-        }
+    suspend fun init(restoreLast: Boolean = true) {
+        ImportBookShared.attach(importDirHost)
+        refreshShelfNames()
+        ImportBookShared.initPage(restoreLast)
     }
 
-    /** 切换导入根目录 (对照 Android initRootPath / desktop setRoot)。 */
+    /** 切换导入根目录 (对照 Android initRootPath / desktop setRoot); 入参来自各端目录选择器, 恒为目录。 */
     fun setRoot(dir: String) {
-        val file = File(dir)
-        rootDir = file
-        subDirs.clear()
-        prefs.putString(KEY_IMPORT_BOOK_PATH, file.path)
-        reload()
+        ImportBookShared.setRoot(NativeImportDirRef(File(dir), isDirectory = true) { shelfNames })
     }
 
     /** 进入子目录 (对照 Android nextDoc)。 */
     fun enterDir(item: ImportFileItem) {
-        val file = (item as? NativeImportFile)?.file ?: return
-        val parent = currentDir()
-        scope.launch {
-            if (!canReadDirectory(file) || currentDir() != parent) return@launch
-            subDirs.add(file)
-            reload()
-        }
+        ImportBookShared.navigateImportDir(item)
     }
 
     private fun canReadDirectory(file: File): Boolean = try {
@@ -158,160 +170,72 @@ object NativeImportBook {
     }
 
     /** 返回上级; 已在根目录返回 false (对照 Android goBackDir)。 */
-    fun goBack(): Boolean {
-        if (subDirs.isEmpty()) return false
-        subDirs.removeAt(subDirs.lastIndex)
-        reload()
-        return true
-    }
+    fun goBack(): Boolean = ImportBookShared.goBackImportDir()
 
     /** 更新搜索过滤关键字 (对照 Android updateCallBackFlow)。 */
     fun updateFilter(key: String) {
-        filterKey = key
-        reload()
+        ImportBookShared.updateImportBookFilter(key)
     }
 
     /** 更新排序方式并持久化 (对照 Android upSort)。 */
     fun updateSort(value: Int) {
-        sort = value
-        prefs.putInt(PreferKey.localBookImportSort, value)
-        reload()
+        ImportBookShared.updateImportBookSort(value)
     }
 
-    /** 平铺扫描当前目录及子目录下的书籍文件 (对照 ImportBookViewModel.scanDoc)。 */
+    /** 平铺扫描当前目录及子目录下的书籍文件 (对照 ImportBookViewModel.scanDoc); 限深 8 层。 */
     fun scan() {
-        val dir = currentDir() ?: return
-        loadJob?.cancel()
-        loadJob = scope.launch {
-            _loading.value = true
-            val found = mutableListOf<File>()
-            runCatching {
-                // 与 ImportBookViewModel.scanDoc 一致: 书籍文件 + 压缩包都算扫描结果
-                // (desktop scan 只认 bookFileRegex 会漏掉 zip/rar, native 补齐)。
-                // maxDepth 防误选系统根目录后无限遍历 (不用 Sequence.maxDepth:
-                // 该扩展在 K/N 标准库是否可用不明确, 手动层数限制更稳)。
-                collectBookFiles(dir, 8, found)
-            }.onFailure { AppLog.put("扫描本地书目录失败\n${it.message}", it) }
-            publish(found, withUpDir = false)
-            _loading.value = false
-        }
-    }
-
-    /** 深度受限收集书籍/压缩包文件 (目录不含书架文件, 直接递归)。 */
-    private fun collectBookFiles(dir: File, depth: Int, out: MutableList<File>) {
-        if (depth <= 0) return
-        // 每层目录单独取一次授权租约 (递归中不嵌套持有多层 scope)
-        val children = withLocalDirAccess(dir.path) {
-            dir.listFiles()?.toList().orEmpty()
-        }
-        for (child in children) {
-            if (withLocalDirAccess(child.path) { child.isDirectory }) {
-                collectBookFiles(child, depth - 1, out)
-            } else if (FileBook.isBookFile(child.name)
-                || AppPattern.archiveFileRegex.matches(child.name)
-            ) {
-                out += child
-            }
-        }
-    }
-
-    private fun reload() {
-        val dir = currentDir()
-        if (dir == null) {
-            _items.value = emptyList()
-            _path.value = null
-            _emptyMsgVisible.value = true
-            return
-        }
-        loadJob?.cancel()
-        loadJob = scope.launch {
-            _loading.value = true
-            // 面包屑路径 (对照 Android upDocs: 根目录名 + 各级子目录名 + 分隔符),
-            // 比 desktop 的绝对路径更贴近原版展示, 且不暴露 iOS 冗长的沙盒路径
-            _path.value = (listOf(rootDir!!.name) + subDirs.map { it.name })
-                .joinToString("/") + "/"
-            val children = runCatching {
-                withLocalDirAccess(dir.path) {
-                    dir.listFiles()?.filter {
-                        it.isDirectory || FileBook.isBookFile(it.name) ||
-                            AppPattern.archiveFileRegex.matches(it.name)
-                    } ?: emptyList()
-                }
-            }.getOrElse {
-                AppLog.put("读取本地书目录失败\n${it.message}", it)
-                emptyList()
-            }
-            publish(children, withUpDir = subDirs.isNotEmpty())
-            _loading.value = false
-        }
+        scope.launch { refreshShelfNames() }
+        ImportBookShared.scanImportFolder(maxDepth = 8)
     }
 
     /**
-     * 发布当前目录列表 (过滤 + 排序 + 已上架标记)。
+     * 上架选中条目 (对照 ImportBookViewModel.addToBookshelf)。
      *
-     * 已上架判定按**文件名** (对照 Android `ImportBook.isOnBookShelf` 的
-     * `bookDao.hasFile(file.name)`): native 上架是复制进沙盒, 文件名即副本名,
-     * 与 desktop 按 bookUrl 路径判定不同 —— 外部目录里的源文件路径不会等于副本路径。
+     * [onNeedBooksDir] 供"压缩包导入需要书籍保存位置而尚未设置"的场景接到"书籍保存位置"
+     * 出口 (与"其它设置 → 书籍保存位置"同一选择器/同一偏好键), 返回 true 再重试该条导入;
+     * 返回 false (用户取消) 或传 null 时按导入出错提示。普通书文件导入不经它。
      */
-    private suspend fun publish(files: List<File>, withUpDir: Boolean) {
-        val names = runCatching {
-            AppDbProviders.get().bookDao.all().mapTo(HashSet()) { it.originName }
-        }.getOrDefault(hashSetOf())
-        val skipFilter = filterKey.isBlank()
-        // 排序规则与 app 端 ImportBookViewModel 一致: 目录优先, 再按 sort, 最后按字母数字混合序
-        val comparator = when (sort) {
-            2 -> compareBy<ImportFileItem>({ !it.isDir }, { -it.lastModified })
-            1 -> compareBy({ !it.isDir }, { -it.size })
-            else -> compareBy { !it.isDir }
-        }.then(compareBy(AlphanumComparator) { it.name })
-        var unreadableCount = 0
-        val list = files.asSequence()
-            .filter { skipFilter || it.name.contains(filterKey) }
-            .mapNotNull { file ->
-                try {
-                    NativeImportFile(file, isOnBookShelf = names.contains(file.name))
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    unreadableCount++
-                    AppLog.put("读取导入文件属性失败: ${file.path}\n${e.message}", e)
-                    null
-                }
+    fun addToBookshelf(
+        selection: List<ImportFileItem>,
+        onComplete: () -> Unit,
+        onNeedBooksDir: (suspend () -> Boolean)? = null,
+    ) {
+        scope.launch {
+            selection.filterIsInstance<NativeImportFile>().forEach { item ->
+                runCatching { importOne(item, onNeedBooksDir) }
+                    .onSuccess { item.isOnBookShelf = true }
+                    .onFailure { e ->
+                        AppLog.put("导入 ${item.name} 出错\n${e.message}", e)
+                        Toasters.get().toast("导入 ${item.name} 出错\n${e.message}")
+                    }
             }
-            .sortedWith(comparator)
-            .toMutableList<ImportFileItem>()
-        if (withUpDir) {
-            currentDir()?.parentFile?.let { list.add(0, NativeImportFile(it, isUpDir = true)) }
-        }
-        _items.value = list
-        _emptyMsgVisible.value = list.isEmpty()
-        if (unreadableCount > 0) {
-            Toasters.get().toast("有 $unreadableCount 个文件已消失或无法访问")
+            refreshShelfNames()
+            ImportBookShared.refresh()
+            onComplete()
         }
     }
 
-    /** 上架选中条目 (对照 ImportBookViewModel.addToBookshelf)。 */
-    fun addToBookshelf(selection: List<ImportFileItem>, onComplete: () -> Unit) {
-        scope.launch {
-            selection.filterIsInstance<NativeImportFile>().forEach { item ->
-                runCatching {
-                    val file = item.file
-                    if (file.name.matches(AppPattern.archiveFileRegex)) {
-                        // 压缩包 (zip 内含书籍文件可解压导入; rar/7z native 端无解析器,
-                        // importLocalFile 抛明确异常, 不静默跳过) —— 解压产物已落 {filesDir}/books
-                        FileBook.importLocalFile(file.path)
-                    } else {
-                        // 普通书文件: 先复制进沙盒再导入 (见类注释"沙盒语义")
-                        FileBook.importLocalFile(sandboxCopy(file).path)
-                    }
-                    item.isOnBookShelf = true
-                }.onFailure { e ->
-                    AppLog.put("导入 ${item.name} 出错\n${e.message}", e)
-                    Toasters.get().toast("导入 ${item.name} 出错\n${e.message}")
-                }
+    /** 导入单个条目; 保存位置未设置时先选目录再重试一次 (其余导入异常照旧上抛)。 */
+    private suspend fun importOne(
+        item: NativeImportFile,
+        onNeedBooksDir: (suspend () -> Boolean)?,
+    ) {
+        val doImport: () -> Unit = {
+            val file = item.file
+            if (file.name.matches(AppPattern.archiveFileRegex)) {
+                // 压缩包 (zip 内含书籍文件可解压导入; rar/7z native 端无解析器,
+                // importLocalFile 抛明确异常, 不静默跳过) —— 解压产物落"书籍保存位置"
+                FileBook.importLocalFile(file.path)
+            } else {
+                // 普通书文件: 先复制进沙盒再导入 (见类注释"沙盒语义")
+                FileBook.importLocalFile(sandboxCopy(file).path)
             }
-            reload()
-            onComplete()
+        }
+        try {
+            doImport()
+        } catch (e: InvalidBooksDirException) {
+            if (onNeedBooksDir?.invoke() != true) throw e
+            doImport()
         }
     }
 
@@ -355,17 +279,19 @@ object NativeImportBook {
     }
 
     /**
-     * 复制书文件到沙盒 books 目录 (对齐 NativeFileBookAccessor.booksDir)。
-     * 同名直接覆盖 (与 FileBook 重复导入的覆写语义一致); 源已在目标目录则跳过。
+     * 复制书文件到沙盒 books 目录 (`{filesDir}/books`, 应用私有导入副本,
+     * 与"书籍保存位置"无关 —— 原版 importLocalFile 不复制, 三端外部文件为保住重启后可读
+     * 才落沙盒).
+     *
+     * 同名直接覆盖 (与 FileBook 重复导入的覆写语义一致): 复制进临时件再整份改名就位,
+     * 中途失败时已有副本内容照旧 (见 [copyFileAtomically]); 源已在目标目录则跳过。
      * 源文件读取 (外部目录) 包在授权租约内, 复制完即释放。
      */
     private fun sandboxCopy(src: File): File {
         val dir = File(AppFilesDirs.get().filesDir, "books")
         dir.mkdirs()
         val dest = File(dir, src.name)
-        if (dest.absolutePath != src.absolutePath) {
-            withLocalDirAccess(src.path) { src.copyTo(dest, overwrite = true) }
-        }
-        return dest
+        if (dest.absolutePath == src.absolutePath) return dest
+        return withLocalDirAccess(src.path) { copyFileAtomically(src, dest) }
     }
 }

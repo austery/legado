@@ -6,6 +6,8 @@ import com.github.catvod.net.OkHttp
 import com.github.catvod.utils.Crypto
 import com.github.catvod.utils.Path
 import io.legado.app.constant.AppLog
+import io.legado.app.utils.FileUtilsBase
+import io.legado.app.utils.atomicWriteTempPath
 import okhttp3.Request
 import java.io.File
 import java.lang.reflect.Method
@@ -166,22 +168,32 @@ internal object TvBoxJarLoader {
         return JarSpec(url = texts[0].trim(), md5 = md5)
     }
 
+    /**
+     * 下载 [spec] 整份落到 [target]。
+     *
+     * 中间件名每次下载随机唯一 (共享契约 [io.legado.app.utils.atomicWriteTempPath]): 桌面允许双击起
+     * 两个进程, 同一 jar 规格串的两次下载落在同一目标路径上, 共写一份固定名中间件会互相截断;
+     * 声明了 md5 时截断件会在校验处被拦下, 未声明 md5 时半截件会被换上目标并长期命中缓存, 该影视源
+     * 此后一直取数失败。时间戳类唯一串在跨进程上不保证互异, 这里要的是两次下载绝不共用同一条路径。
+     *
+     * 成败都清掉自己那份; 被强杀的进程留下的那份是随机名且只待在缓存目录, 不会被当 jar 装载。
+     */
     private fun download(spec: JarSpec, target: File) {
         val call = OkHttp.client().newCall(Request.Builder().url(spec.url).build())
         call.execute().use { resp ->
             check(resp.isSuccessful) { "spider jar 下载 HTTP ${resp.code}: ${spec.url}" }
             val body = resp.body
-            val tmp = File(target.absolutePath + ".tmp")
+            val tmp = File(atomicWriteTempPath(target.path))
             tmp.parentFile?.mkdirs()
-            body.byteStream().use { input ->
-                tmp.outputStream().use { output -> input.copyTo(output) }
-            }
-            if (spec.md5.isNotEmpty() && !Crypto.equals(tmp, spec.md5)) {
-                tmp.delete()
-                throw IllegalStateException("spider jar md5 校验失败: ${spec.url}")
-            }
-            if (!tmp.renameTo(target)) {
-                tmp.copyTo(target, overwrite = true)
+            try {
+                body.byteStream().use { input ->
+                    tmp.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (spec.md5.isNotEmpty() && !Crypto.equals(tmp, spec.md5)) {
+                    throw IllegalStateException("spider jar md5 校验失败: ${spec.url}")
+                }
+                FileUtilsBase.replaceFileAtomically(tmp, target)
+            } finally {
                 tmp.delete()
             }
         }

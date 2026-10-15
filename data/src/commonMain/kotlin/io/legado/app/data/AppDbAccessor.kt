@@ -1,5 +1,7 @@
 package io.legado.app.data
 
+import androidx.room3.immediateTransaction
+import androidx.room3.useWriterConnection
 import io.legado.app.data.dao.BookChapterDao
 import io.legado.app.data.dao.BookDao
 import io.legado.app.data.dao.BookGroupDao
@@ -37,7 +39,7 @@ import kotlin.concurrent.Volatile
  * 下沉 SearchModel/SearchScope/SearchBookFilter/SourceHelp 时新增
  * sourceFilterRuleDao/httpTTSDao/cacheDao 3 个 DAO 暴露点。
  *
- * 下沉 BookInfoViewModelShared.loadGroup 时新增 bookGroupDao 暴露点。
+ * 详情页读分组名时新增 bookGroupDao 暴露点。
  *
  * 全部 17 个 DAO 均已暴露: shared 业务代码统一走本接口 (AppDbProviders.get()),
  * AppDatabaseProviders 仅保留给 AppDbAccessor 实现与需要完整 Room API
@@ -47,7 +49,7 @@ interface AppDbAccessor {
     val bookDao: BookDao
     val bookSourceDao: BookSourceDao
     val bookChapterDao: BookChapterDao
-    /** 书架分组 DAO (BookInfoViewModelShared.loadGroup / BookshelfViewModel 用)。 */
+    /** 书架分组 DAO (详情页读分组名 / BookshelfViewModel 用)。 */
     val bookGroupDao: BookGroupDao
 
     /** 关键词高亮 DAO (备份/恢复 keywordHighlight.json 用)。 */
@@ -92,12 +94,31 @@ interface AppDbAccessor {
      * 供 suspend 调用方使用 (如 [io.legado.app.help.service.UpdateBookShared]),
      * block 内可直接调 suspend DAO 方法, 无需 runBlocking 桥接。
      *
-     * 平台实现:
-     * - Android: `appDb.withTransaction { block() }` (room-ktx suspend 事务)
-     * - Desktop/Native: 降级为直接执行 block (无真实事务, 与非 suspend 版本一致)
+     * 平台实现 (三端都是 Room KMP 真事务, 内容相同的两行):
+     * `appDb.useWriterConnection { it.immediateTransaction { block() } }`
+     * —— useWriterConnection 把写连接放进协程上下文 (ConnectionElement), block 内的 suspend DAO
+     * 复用同一连接加入事务; immediateTransaction 对应 BEGIN IMMEDIATE, 抛异常自动回滚。
+     * desktop / native 两端复用同一下沉实现 [runInImmediateTransaction],
+     * app 端实现见 `io.legado.app.model.webBook.WebBookProvidersImpl`。
      */
     suspend fun <R> runInTransactionSuspending(block: suspend () -> R): R
 }
+
+/**
+ * 用 Room KMP 真事务执行 [block] (desktop / native 共用的下沉实现)。
+ *
+ * 原 desktop `DesktopAppDbAccessor` 与 native `NativeAppDbAccessor` 内各写了一份相同的
+ * `useWriterConnection{ it.immediateTransaction{...} }`, 下沉至此一处复用:
+ * useWriterConnection 把写连接放进协程上下文 (ConnectionElement), [block] 内的 suspend DAO
+ * 复用同一连接加入事务; immediateTransaction 对应 BEGIN IMMEDIATE, 抛异常自动回滚。
+ *
+ * app (Android) 端的同款两行在 `io.legado.app.model.webBook.WebBookProvidersImpl.runInTransactionSuspending`
+ * (app 模块不在本文件域内, 未改为复用本函数)。
+ */
+suspend fun <R> AppDatabase.runInImmediateTransaction(block: suspend () -> R): R =
+    useWriterConnection { transactor ->
+        transactor.immediateTransaction { block() }
+    }
 
 /**
  * appDb provider 容器。宿主启动早期注册一次。
@@ -116,4 +137,9 @@ object AppDbProviders {
 
     /** 获取已注册实现, 未注册抛出 IllegalStateException。 */
     fun get(): AppDbAccessor = impl ?: error("AppDbProviders not registered")
+
+    /** 注销已注册实现 (宿主/测试收尾)。 */
+    fun unregister() {
+        impl = null
+    }
 }

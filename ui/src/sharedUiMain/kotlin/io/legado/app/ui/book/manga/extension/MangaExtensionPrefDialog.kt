@@ -93,24 +93,24 @@ internal fun ExtensionPrefDialog(
             dialog.loading -> Box(
                 Modifier
                     .fillMaxWidth()
-                    .padding(DesignTokens.spacingXl),
+                    .padding(vertical = DesignTokens.spacingXl),
                 contentAlignment = Alignment.Center,
             ) {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
             }
 
             dialog.failed -> Text(
                 text = errorText,
                 color = colors.secondaryText,
                 fontSize = 14.sp,
-                modifier = Modifier.padding(DesignTokens.spacingLg),
+                modifier = Modifier.padding(vertical = DesignTokens.spacingLg),
             )
 
             dialog.items.isEmpty() -> Text(
                 text = emptyText,
                 color = colors.secondaryText,
                 fontSize = 14.sp,
-                modifier = Modifier.padding(DesignTokens.spacingLg),
+                modifier = Modifier.padding(vertical = DesignTokens.spacingLg),
             )
 
             else -> Column(
@@ -181,7 +181,7 @@ internal fun ExtensionPrefDialog(
                             .clickable {
                                 picked = if (value in picked) picked - value else picked + value
                             }
-                            .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingDefault),
+                            .padding(vertical = DesignTokens.spacingDefault),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         AppCheckbox(
@@ -200,9 +200,11 @@ internal fun ExtensionPrefDialog(
 }
 
 /**
- * 配置项单行: 开关行标题/摘要居左、开关居右; 其余类型标题/摘要在上、当前值或控件在下
- * (长摘要与长值左右排会互相挤压)。整行可点, 点击上报 [onPreferenceClick] (平台侧
- * `performClick()`), 并按值类型打开对应的二级弹窗; 开关拨动上报 [onPreferenceChange]。
+ * 配置项单行: 开关行标题/摘要居左、开关居右; 其余类型标题/摘要在上。
+ *
+ * 行内不渲染当前值 (Mihon 的插件设置页即 androidx `Preference` 列表, 只渲染 title/summary;
+ * 当前值只能由扩展自设 summary 的表达承载)。整行可点, 点击上报 [onPreferenceClick] (平台侧
+ * `performClick()`), 并按值类型打开对应的二级弹窗 (弹窗内才显示已存值); 开关拨动上报 [onPreferenceChange]。
  */
 @Composable
 internal fun PrefItemRow(
@@ -239,7 +241,7 @@ internal fun PrefItemRow(
             Modifier
                 .fillMaxWidth()
                 .clickable(enabled = enabled) { onPreferenceClick() }
-                .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingDefault),
+                .padding(vertical = DesignTokens.spacingDefault),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f), content = header)
@@ -270,44 +272,18 @@ internal fun PrefItemRow(
                     else -> {}
                 }
             }
-            .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingDefault),
+            .padding(vertical = DesignTokens.spacingDefault),
     ) {
         header()
-        when (val value = item.value) {
-            is MangaPrefValue.Choice -> {
-                Text(
-                    text = item.selectedEntryText() ?: value.value,
-                    color = if (enabled) colors.accent else colors.textDisabled,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(top = DesignTokens.spacingXs),
-                )
-                if (choiceExpanded) {
-                    PrefChoiceDialog(
-                        item = item,
-                        onDismiss = { choiceExpanded = false },
-                        onPick = { picked ->
-                            onPickChoice(picked)
-                            choiceExpanded = false
-                        },
-                    )
-                }
-            }
-
-            is MangaPrefValue.MultiChoice -> Text(
-                text = (item.selectedEntryText() ?: "").ifBlank { "—" },
-                color = if (enabled) colors.accent else colors.textDisabled,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(top = DesignTokens.spacingXs),
+        if (choiceExpanded) {
+            PrefChoiceDialog(
+                item = item,
+                onDismiss = { choiceExpanded = false },
+                onPick = { picked ->
+                    onPickChoice(picked)
+                    choiceExpanded = false
+                },
             )
-
-            is MangaPrefValue.Text -> Text(
-                text = value.value.ifBlank { "—" },
-                color = if (enabled) colors.accent else colors.textDisabled,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(top = DesignTokens.spacingXs),
-            )
-
-            else -> {}
         }
     }
 }
@@ -333,7 +309,7 @@ internal fun PrefChoiceDialog(
                     Modifier
                         .fillMaxWidth()
                         .clickable { onPick(value) }
-                        .padding(horizontal = DesignTokens.spacingLg, vertical = DesignTokens.spacingDefault),
+                        .padding(vertical = DesignTokens.spacingDefault),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     AppRadioButton(selected = value == selected, onClick = null)

@@ -1,10 +1,7 @@
 package io.legado.app.ui.route
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -14,7 +11,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -27,7 +23,7 @@ import io.legado.app.ui.book.read.review.SharedReviewImage
 import io.legado.app.ui.compose.component.AlertButton
 import io.legado.app.ui.compose.component.AppAlertDialog
 import io.legado.app.ui.compose.component.AppBottomSheetDialog
-import io.legado.app.ui.compose.component.AppDialogSizes
+import io.legado.app.ui.compose.component.AppSheetSurface
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.AppNavigatorProviders
@@ -40,11 +36,10 @@ import legado.ui.generated.resources.confirm_delete_review
 import legado.ui.generated.resources.delete
 import legado.ui.generated.resources.no
 import legado.ui.generated.resources.reply_review
-import legado.ui.generated.resources.review
-import legado.ui.generated.resources.review_list_section_title
 import legado.ui.generated.resources.review_post_hint
 import legado.ui.generated.resources.review_replies_detail_title
 import legado.ui.generated.resources.review_replies_section_title
+import legado.ui.generated.resources.review_title_with_count
 import legado.ui.generated.resources.yes
 import org.jetbrains.compose.resources.stringResource
 
@@ -57,8 +52,7 @@ import org.jetbrains.compose.resources.stringResource
  * showReviewListDialog) 更是静默无反应。本宿主把 BottomSheet 形态补到四端:
  *
  * - 外壳: [AppBottomSheetDialog] 贴底滑入 (对照原版 BaseBottomDialogFragment gravity=Bottom),
- *   高度走 [AppDialogSizes.fullHeight] (全局统一 0.7 锚点高), 顶部圆角由
- *   [ReviewListDialog] 内容自带
+ *   高度由面板内容决定 (封顶 0.8 锚点高), 顶角圆角由面板容器统一给 (随上拉展开收平)
  * - 业务: [ReviewViewModelShared] (与 app 端同款, 分页/点赞/点踩/回复/删除/规则执行全下沉)
  * - 交互: 点击单条 → [ReviewPostDialogHost] 回复输入面板 (F39 已修: 底部弹窗 + 键盘跟随);
  *   删除二次确认 / 头像/配图大图 (photo Overlay) 与 ReviewListRoute 同款
@@ -106,19 +100,21 @@ fun ReviewListContent(
     val totalCount by viewModel.totalCount.collectAsState()
 
     // 一次性 UI 文本 (对照 app 端 onViewCreated 的 when 分支)
-    val titleText = when {
-        parentReview != null -> stringResource(Res.string.review_replies_detail_title)
-        paragraphIndex <= 0 -> stringResource(Res.string.review)
-        else -> stringResource(Res.string.review) + "  #" + paragraphIndex
-    }
+    val repliesDetailTitle = stringResource(Res.string.review_replies_detail_title)
     val inputHint = stringResource(
         if (parentReview != null) Res.string.reply_review else Res.string.review_post_hint
     )
-    // 列表头 "全部评论 · N": 规则未配置 (totalCount 空) 时不显示
+    // 评论数缝合进标题: "评论(N条)" / "评论(N条)  #段号"; N 优先书源总数规则文本,
+    // 未配置时用当前列表条数; 回复模式标题不缝合
     // (先拷本地再判空: 委托属性不可 smart-cast, 同 ReviewListRoute 做法)
     val count = totalCount
-    val listTitleText = if (count.isNullOrBlank()) ""
-    else stringResource(Res.string.review_list_section_title, count)
+    val countText = count.takeUnless { it.isNullOrBlank() } ?: reviews.size.toString()
+    val title = when {
+        parentReview != null -> repliesDetailTitle
+        paragraphIndex > 0 ->
+            stringResource(Res.string.review_title_with_count, countText) + "  #" + paragraphIndex
+        else -> stringResource(Res.string.review_title_with_count, countText)
+    }
     // 回复模式 "全部回复 · N" (对照 app 端 repliesTitleText)
     val repliesTitleText = if (parentReview != null) {
         stringResource(Res.string.review_replies_section_title, parentReview.replyCount)
@@ -149,11 +145,10 @@ fun ReviewListContent(
         })
     }
 
-    Box(Modifier.fillMaxSize().background(AppTheme.colors.background)) {
+    Box(Modifier.fillMaxSize()) {
                     ReviewListDialog(
-                        title = titleText,
+                        title = title,
                         parentReview = parentReview,
-                        listTitleText = listTitleText,
                         repliesTitleText = repliesTitleText,
                         inputHint = inputHint,
                         reviews = reviews,
@@ -272,23 +267,15 @@ fun ReviewListDialogHost(
     parentReview: Review? = null,
     onDismiss: () -> Unit,
 ) {
-    // 全局统一 0.7 锚点高 (走 AppDialogSizes.fullHeight, 别再自行乘系数); 桌面端锚点 = 主窗口
-    val sheetHeight = AppDialogSizes.fullHeight()
-
     AppBottomSheetDialog(
         onDismissRequest = onDismiss,
-        properties = AppDialogSizes.properties(),
-        maxHeight = sheetHeight,
     ) {
         AppTheme {
-            Surface(
-                color = AppTheme.colors.background,
-                // fillMaxSize 跟随外层: 默认被 maxHeight 钳在 0.7 锚点高, 上拉拖拽展开时
-                // 跟着变高到视觉全屏 (AppBottomSheetDialog 自带的双向拖拽语义);
-                // 之前写死 .height(sheetHeight) 会把展开高度钉死, 上拉只放大外层空壳
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)),
+            // fillMaxSize 跟随外层: 默认被半屏锚点高钳住, 上拉拖拽展开时
+            // 跟着变高到整窗 (AppBottomSheetDialog 自带的双向拖拽语义);
+            // 写死 .height(sheetHeight) 会把展开高度钉死, 上拉只放大外层空壳
+            AppSheetSurface(
+                modifier = Modifier.fillMaxSize(),
             ) {
                 ReviewListContent(
                     book = book,

@@ -4,6 +4,7 @@ import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.source.SourceCacheProvider
 import io.legado.app.help.source.SourceCacheProviders
 import io.legado.app.utils.File
+import okio.IOException
 
 /**
  * nativeMain: [SourceCacheProvider] 的 iOS / 鸿蒙 两端共用真实实现
@@ -53,12 +54,15 @@ class NativeSourceCacheProvider : SourceCacheProvider {
      * 持久化根目录: `{AppFilesDirs.filesDir}/cache_manager/`。
      *
      * 启动时确保目录存在 (mkdirs 失败静默, 后续真实 I/O 时再报错更易定位;
-     * 与各端 BookStorage saveText 父目录创建行为对齐)。
+     * 与各端 BookStorage saveText 父目录创建行为对齐), 并在此清点回收整份写入被强杀留下的
+     * 孤儿临时件: 本 provider 没有 LRU 与目录清点, 不回收它们就永久占空间。
      */
     private val cacheRoot: String = run {
         val filesDir = AppFilesDirs.get().filesDir
         val root = if (filesDir.endsWith("/")) "${filesDir}cache_manager" else "$filesDir/cache_manager"
         runCatching { File(root).mkdirs() }
+        // 本 provider 无 LRU: 启动清点里回收整份写入被强杀留下的孤儿临时件 (不回收就永久占空间)
+        deleteOrphanAtomicWriteTempFiles(root)
         root
     }
 
@@ -82,14 +86,13 @@ class NativeSourceCacheProvider : SourceCacheProvider {
     }
 
     override fun put(key: String, value: String) {
-        val file = File(resolvePath(key))
-        val parent = file.parentFile
-        // 父目录不存在则递归创建 (与各端 BookStorage.saveText 行为对齐)
-        if (parent != null && !parent.exists()) {
-            parent.mkdirs()
+        // 整份落盘 (同目录临时件 + 改名就位): 登录头/用户信息/书源变量按同一路径整读,
+        // 直接覆盖写会在写完之前把条目截断, 读方会把半截内容当成已保存的值。
+        // 落盘失败如实上抛: 调用方 (如 BaseSource.putLoginInfo) 靠它判定保存失败
+        val path = resolvePath(key)
+        if (!writeTextAtomically(path, value)) {
+            throw IOException("写入书源缓存失败: $path")
         }
-        // writeText 默认 UTF-8 (与 encodeToByteArray() 行为等价)
-        file.writeText(value)
     }
 
     override fun delete(key: String) {
