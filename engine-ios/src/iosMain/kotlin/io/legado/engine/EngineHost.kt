@@ -70,6 +70,12 @@ internal object EngineHost {
         return withContext(operation + observer) {
             try {
                 action()
+            } catch (error: Throwable) {
+                // The JS exception no longer carries the original Kotlin rejection.
+                // Translate it before leaving its operation-local failure context.
+                currentCoroutineContext().ensureActive()
+                operation.interactionFailure()?.let { throw EngineHostRejection(it) }
+                throw error
             } finally {
                 currentCoroutineContext().ensureActive()
             }
@@ -80,8 +86,8 @@ internal object EngineHost {
         currentCoroutineContext()[EngineOperation]?.interactionFailure()
 
     private fun reject(code: EngineErrorCode, message: String): Nothing {
-        // The upstream C bridge catches Throwable and returns JS undefined. Preserve
-        // the failure separately so a later successful JS value cannot hide it.
+        // Preserve typed rejection even if JavaScript catches the bridge error
+        // and returns an otherwise successful value.
         EngineOperation.currentScript()?.reject(code, message)
         throw EngineHostRejection(EngineFailure(code, message))
     }

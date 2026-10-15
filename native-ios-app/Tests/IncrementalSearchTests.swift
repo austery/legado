@@ -175,7 +175,7 @@ final class IncrementalSearchTests: XCTestCase {
         XCTAssertTrue(model.hasNextPage)
         model.loadMoreSearch()
         try await waitUntil { !model.searchRunning && !model.searchCommandPending && model.results.count == 2 }
-        let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/counts")))
+        let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/stats")))
         let counts = try JSONDecoder().decode([String: Int].self, from: data)
         let namespace = try XCTUnwrap(URL(string: base)?.lastPathComponent)
         XCTAssertEqual(counts[namespace + "/search/cursor/1"], 2)

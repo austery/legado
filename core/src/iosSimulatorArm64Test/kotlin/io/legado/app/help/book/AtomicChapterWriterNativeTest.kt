@@ -20,6 +20,22 @@ import kotlin.test.assertEquals
 
 class AtomicChapterWriterNativeTest {
     @Test
+    fun concurrentStagingIdentifiersRemainDistinct() = runBlocking {
+        val start = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val ready = kotlinx.coroutines.channels.Channel<Unit>(8)
+        val workers = List(8) { async(Dispatchers.Default) {
+            ready.send(Unit)
+            start.await()
+            List(1000) { randomUUIDString() }
+        } }
+        repeat(8) { ready.receive() }
+        start.complete(Unit)
+        val identifiers = workers.awaitAll().flatten()
+        assertEquals(8000, identifiers.toSet().size)
+        assertTrue(identifiers.all { it.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")) })
+    }
+
+    @Test
     fun replacesExistingChapterWithExactUtf8AndNoStagingFiles() {
         val directory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / ("PROTOTYPE-chapter-" + randomUUIDString())
         FileSystem.SYSTEM.createDirectories(directory)
