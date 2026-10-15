@@ -1,8 +1,8 @@
 ---
 specId: SPEC-004
 title: Incremental Multi-Source Search and Expandable Candidates
-status: ready-for-implementation
-revision: R3
+status: implemented-pending-device-acceptance
+revision: R4
 creationDate: 2026-10-14
 lastUpdateDate: 2026-10-14
 relatedSpecs: [ADR-001, SPEC-001, SPEC-003]
@@ -21,6 +21,27 @@ This is incremental result display. It is not necessarily demand-triggered lazy 
 R2 replaced the original draft's premature decisions to require sequential search, separate source rows as the main presentation, and a manually selected small source set. The product requirement does not prohibit temporary UI grouping across sources. On 2026-10-14, the owner approved merging this documentation and starting implement-spec execution. R3 records that authorization and removes fresh Wanyuan observation as a prerequisite. ADR-001 is unchanged; implementation PR merging and device installation remain separate approvals.
 
 [SPEC-003 C3-A](https://github.com/austery/legado/pull/8) merged at `7e8c522ead9cf4b3301e8dc6fd87b42a61b2ed7f`. All code findings below use that fixed baseline, not an unverified newer upstream version. The next slice follows [ADR-001](../decisions/ADR-001-native-experience-and-upstream-ownership.md): reuse existing capabilities, keep one authority per category of state, and avoid speculative storage redesign.
+
+## Implementation and acceptance checkpoint (R4)
+
+Implementation merged in [PR #16](https://github.com/austery/legado/pull/16)
+(`8fd9921c4`); the physical reader overscroll follow-up merged in
+[PR #17](https://github.com/austery/legado/pull/17) (`eba022605`). The product
+behavior and exclusions below remain unchanged. The fixed-source analysis below
+is historical rationale, not a claim that implementation has yet to begin.
+
+Build 7 physical checks on 2026-10-14 passed the observed Stop-to-narrowed-scope
+and Stop-to-replacement-query sequences. Incremental results, expansion, and
+candidate-to-reader navigation were observed. Expansion/selection while a peer
+remains in flight is still inconclusive: real sources completed before the
+confirming UI observation. Physical source-local paging/retry/restart and a
+search/shelf-resume round trip also remain pending. Do not mark full device
+acceptance complete. See [dated evidence and limitations](../../evidence/2026-10-14-spec004-ipad.md#follow-up-stop-and-query-replacement-on-build-7).
+
+Next acceptance priority is a controlled delayed-peer physical check, with test
+sources/state isolated from owner data. Rotation, split view and offline restart
+remain broader reader regression gaps; importing or certifying the 66-source
+bundle and changing Loading are not prerequisites for this search slice.
 
 ## Existing shared capability
 
