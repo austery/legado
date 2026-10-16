@@ -5,6 +5,7 @@ on:
     branches: [native-reader]
     paths:
       - 'engine-ios/**'
+      - 'native-ios-app/**'
       - 'scripts/**'
       - 'core/**'
       - 'data/**'
@@ -21,6 +22,7 @@ on:
     branches: [native-reader]
     paths:
       - 'engine-ios/**'
+      - 'native-ios-app/**'
       - 'scripts/**'
       - 'core/**'
       - 'data/**'
@@ -121,10 +123,14 @@ jobs:
             build 2>&1 | tee ci-results/harness-build.log
       - name: Run network, restart cache and fresh network regressions
         run: python3 scripts/path-c/ci_harness.py --output ci-results
+      - name: Run native Swift product regressions
+        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: c1-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ci-results/
+          path: |
+            ci-results/
+            !ci-results/native-product/DerivedData/
           retention-days: 7

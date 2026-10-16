@@ -165,6 +165,13 @@ gh workflow run c1-engine.yml --repo austery/legado \
 
 Both routes build the debug device and simulator engine frameworks, compile the original UI, build the isolated Swift harness, and run full network, process-restart cache and fresh network suites against local fixtures. Gradle and Kotlin/Native caches stay under this runner's tool-cache directory. Local caches persist; GitHub Gradle-cache upload/restore is disabled for self-hosted execution. `scripts/path-c/ci_harness.py` creates and shuts down only its own simulator and terminates only its fixture processes. Shutdown simulators are retained for inspection; no existing simulator or reader app is deleted. The script also runs against an already-built harness with `python3 scripts/path-c/ci_harness.py --output <new-evidence-directory>` and an explicit `DEVELOPER_DIR` when needed.
 
+The same workflow also triggers on `native-ios-app/**` and runs the ordinary
+Swift product suites after the C1 harness, using a separate, newly created iPad
+simulator and synthetic loopback sources. See the [native product gate](../native-ios-app/README.md#automatic-native-product-gate)
+for its scope, failure checks and evidence. External process-interruption/restart
+suites and physical-device acceptance remain separate. This adds a failing CI
+check on regression; it does not change repository branch-protection settings.
+
 The job uses read-only repository permissions, a 60-minute timeout and seven-day evidence retention. New commits do not automatically cancel a running local job, allowing its owned fixture/simulator cleanup to finish. The single local runner serializes jobs. It does not sign an app, publish a release, use live community sources or implement C2. Standard hosted minutes remain free for this public repository. Required branch checks are a separate setting. Passing either route proves the bounded C1 contract, not physical-device acceptance or equivalence between the two Xcode versions.
 
 ## Upstream patch inventory and cost review

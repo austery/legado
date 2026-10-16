@@ -99,6 +99,61 @@ Import remains independent of transport reachability and live source correctness
 
 ## Validation status
 
+### Automatic native product gate
+
+The `C1 Engine` workflow also runs the existing Swift product suites whenever
+`native-ios-app/**` or its shared runtime/build dependencies change. After the C1
+engine harness, it runs:
+
+```sh
+python3 scripts/path-c/native_product_ci.py --output /absolute/path/to/new-evidence-directory
+```
+
+Prerequisites are the already-built simulator ReaderEngine framework, Xcode,
+XcodeGen and the repository's Python fixture environment. The runner builds the
+actual test host, creates its own iPad simulator, and supplies owned loopback
+fixtures. Reading uses port 18769; an occupied port fails instead of reusing or
+terminating another server. Search uses an OS-assigned port. Parallel XCTest
+workers are disabled because the suites exercise process-wide runtime state.
+Only this invocation's simulator is shut down afterward; it is retained.
+
+The ordinary gate currently covers 29 tests: reading journeys (7), incremental
+search (5), restoration (3), save coordination (8), and resume engine behavior (6).
+The runner discovers ordinary test methods from the test sources and checks the
+XCTest result summary: missing tests, failures, skipped tests and zero-test runs
+fail the gate. Available logs, the source commit, selected runtime/simulator,
+scope manifest, summary and `.xcresult` are uploaded even on failure; build
+intermediates are not.
+
+`ProcessInterruptionTests` and `ShelfProcessRestartTests` require external,
+multi-process orchestration and are explicitly excluded and recorded in the
+scope manifest. They are not counted as passing or silently skipped coverage.
+Changes to storage publication, migration, or lifecycle guarantees still require
+their focused validation; this gate alone does not certify those paths.
+
+### What counts as sufficient regression evidence
+
+- Each required user contract has an observable assertion: exact candidate opens,
+  current text survives a failed next chapter, and navigation waits for a saved
+  position acknowledgement. Method names or a coverage percentage are not proof.
+- Important failures cover state as well as errors: failed writes preserve the
+  previous revision; stale callbacks cannot replace new results; cancellation
+  does not cancel an already accepted save. A happy-path test is insufficient.
+- Exercise the real boundary when that boundary is the risk: real ReaderEngine,
+  SQLite/cache and Kotlin/Native bridges for integration; controlled writers and
+  clocks for save-coordinator logic. A recording double cannot certify storage.
+- A gate must fail when a test fails or disappears, run on the candidate source,
+  and retain inspectable evidence. A previous commit's green run is historical.
+- Use separate processes for restart/interruption promises and physical iPad
+  checks for touch/layout comfort, system permissions and platform lifecycles.
+  Synthetic loopback sources do not certify all community sites or providers.
+
+The stopping rule is risk-based: cover the changed contract, its meaningful
+failure/recovery paths and affected existing journeys. Expand testing when a
+failure or new dependency reveals additional risk, rather than pursuing 100%
+coverage or indiscriminately running every platform. Physical acceptance remains
+separate from automated regression.
+
 2026-10-14 SPEC-004 checks on a dedicated task iOS simulator:
 
 - Hosted Swift build succeeded with the actual ReaderEngine debug framework.
