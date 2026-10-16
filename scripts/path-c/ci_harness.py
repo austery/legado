@@ -10,6 +10,7 @@ import sys
 import time
 from typing import Iterator, TypedDict, cast
 from urllib.request import urlopen
+from uuid import UUID
 
 
 class Runtime(TypedDict):
@@ -20,6 +21,25 @@ class Runtime(TypedDict):
 
 def simctl(*args: str) -> str:
     return subprocess.check_output(["xcrun", "simctl", *args], text=True).strip()
+
+
+def delete_owned_simulator(simulator: str, env: dict[str, str] | None = None) -> None:
+    """Delete only a UUID returned by this invocation's simctl create call."""
+    UUID(simulator)  # Reject selectors such as "all" and "booted" before running commands.
+    original_error = sys.exc_info()[1]
+    try:
+        subprocess.run(["xcrun", "simctl", "shutdown", simulator],
+                       check=False, env=env, timeout=60)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"Simulator shutdown failed for {simulator}: {error}", file=sys.stderr)
+    try:
+        subprocess.run(["xcrun", "simctl", "delete", simulator],
+                       check=True, env=env, timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"Simulator cleanup failed; device {simulator} may remain: {error}", file=sys.stderr)
+        if original_error is None:
+            raise
+        # Preserve the test failure while making the leaked device explicit in its log.
 
 
 def stop(process: subprocess.Popen[bytes]) -> None:
@@ -80,8 +100,8 @@ def main() -> None:
     runtime = max(available, key=lambda item: tuple(int(part) for part in item["version"].split(".")))
     simulator = simctl("create", "C1 Engine CI", "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
                        runtime["identifier"])
-    (output / "simulator.txt").write_text(f"{simulator}\n{runtime['identifier']}\n")
     try:
+        (output / "simulator.txt").write_text(f"{simulator}\n{runtime['identifier']}\n")
         with fixtures(output):
             # Ready fixtures before simulator startup competes for the hosted VM resources.
             simctl("boot", simulator)
@@ -95,8 +115,7 @@ def main() -> None:
                                 "--simulator", simulator, "--output", str(output / f"{name}.json"),
                                 *flags], check=True, timeout=240)
     finally:
-        # Only shut down the simulator created by this invocation. The hosted VM is disposable.
-        subprocess.run(["xcrun", "simctl", "shutdown", simulator], check=False)
+        delete_owned_simulator(simulator)
 
 
 if __name__ == "__main__":
