@@ -12,7 +12,7 @@ import sys
 from threading import Thread
 from typing import Iterator, cast
 
-from c2_fixture_server import C2Handler
+from boundary_fixture_server import BoundaryHandler
 from ci_harness import Runtime, simctl
 from fixture_server import FixtureServer
 
@@ -49,7 +49,7 @@ def fixtures() -> Iterator[str]:
     with ExitStack() as stack:
         # Bind before launching anything. An occupied port fails without contacting
         # or terminating its owner. The existing reading tests require port 18769.
-        reading = stack.enter_context(FixtureServer(("127.0.0.1", 18769), C2Handler))
+        reading = stack.enter_context(FixtureServer(("127.0.0.1", 18769), BoundaryHandler))
         search = stack.enter_context(FixtureServer(("127.0.0.1", 0), SearchHandler))
         for server in (reading, search):
             worker = Thread(target=server.serve_forever, daemon=True)

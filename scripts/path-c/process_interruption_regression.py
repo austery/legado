@@ -17,7 +17,28 @@ import uuid
 from c2_fixture_server import C2Handler
 from fixture_server import FixtureServer
 
-SIMULATOR = "C6BC346D-0C34-4CB9-B93C-706F38DAB7F6"
+from ci_harness import simctl
+
+
+def validate_template(template: dict, root: Path) -> None:
+    targets = [target for config in template["TestConfigurations"] for target in config["TestTargets"]]
+    if len(targets) != 1 or targets[0].get("BlueprintName") != "NativeReaderTests":
+        raise ValueError("Only the synthetic NativeReaderTests host is permitted")
+    host = Path(targets[0]["TestHostPath"].replace("__TESTROOT__", str(root.resolve())))
+    host = host.resolve()
+    if not host.is_relative_to(root.resolve()) or host.name != "NativeReader.app":
+        raise ValueError("Test host must be the generated synthetic app under TESTROOT")
+    info = plistlib.loads((host / "Info.plist").read_bytes())
+    if info.get("CFBundleIdentifier") != BUNDLE:
+        raise ValueError("Unexpected test host bundle")
+
+
+def owned_documents(container: str, simulator: str) -> Path:
+    value = Path(container.strip()).resolve()
+    expected = (Path.home() / "Library/Developer/CoreSimulator/Devices" / simulator / "data/Containers/Data/Application").resolve()
+    if value.parent != expected:
+        raise ValueError("Container is outside the newly created simulator")
+    return value / "Documents"
 BUNDLE = "io.legado.pathc.nativereader"
 PlistValue = Union[str, int, float, bool, bytes, datetime.datetime, List["PlistValue"], Dict[str, "PlistValue"]]
 
@@ -26,8 +47,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--xctestrun", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--shelf-restart", action="store_true", help="Run the two-process offline shelf journey instead of interruption cases")
     parser.add_argument("--case", choices=("before-file", "after-file", "before-db", "after-db"), action="append")
     args = parser.parse_args()
+    template = plistlib.loads(args.xctestrun.read_bytes())
+    validate_template(template, args.xctestrun.parent)
     args.output.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer")
     gate = threading.Event()
@@ -45,7 +69,7 @@ def main() -> None:
     server = FixtureServer(("127.0.0.1", 18771), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    template = plistlib.loads(args.xctestrun.read_bytes())
+    simulator = ""
 
     def relocate(value: object) -> PlistValue:
         if isinstance(value, str):
@@ -76,6 +100,8 @@ def main() -> None:
                 environment = target.setdefault("EnvironmentVariables", {})
                 if not isinstance(environment, dict):
                     raise TypeError("Expected test environment dictionary")
+                if phase == "restart":
+                    environment["SPEC003_RESTART_PHASE"] = mode
                 environment.update({
                     "SPEC003_INTERRUPT_RUN": run,
                     "SPEC003_INTERRUPT_CASE": phase,
@@ -87,13 +113,39 @@ def main() -> None:
 
     def command(config: Path, method: str) -> list[str]:
         return ["xcodebuild", "test-without-building", "-xctestrun", str(config),
-                "-destination", "platform=iOS Simulator,id=" + SIMULATOR,
-                "-only-testing:NativeReaderTests/ProcessInterruptionTests/" + method,
-                "-parallel-testing-enabled", "NO"]
+                "-destination", "platform=iOS Simulator,id=" + simulator,
+                "-only-testing:NativeReaderTests/" + method,
+                "-parallel-testing-enabled", "NO", "-derivedDataPath", str(args.output / "DerivedData")]
 
     results = []
     process: subprocess.Popen[bytes] | None = None
     try:
+        runtimes = json.loads(simctl("list", "runtimes", "--json"))["runtimes"]
+        available = [item for item in runtimes if item["isAvailable"] and ".iOS-" in item["identifier"]]
+        runtime = max(available, key=lambda item: tuple(map(int, item["version"].split("."))))
+        simulator = simctl("create", "Native Boundary Interruption " + str(uuid.uuid4()),
+                           "com.apple.CoreSimulator.SimDeviceType.iPhone-16", runtime["identifier"])
+        uuid.UUID(simulator)
+        (args.output / "simulator.txt").write_text(simulator + "\n")
+        simctl("boot", simulator)
+        subprocess.run(["xcrun", "simctl", "bootstatus", simulator, "-b"], check=True, env=env, timeout=180)
+        if args.shelf_restart:
+            reading = FixtureServer(("127.0.0.1", 18769), C2Handler)
+            worker = threading.Thread(target=reading.serve_forever, daemon=True)
+            worker.start()
+            try:
+                config = run_config(str(uuid.uuid4()), "restart", "prepare")
+                with (args.output / "restart-prepare.log").open("w") as log:
+                    subprocess.run(command(config, "ShelfProcessRestartTests/testPrepare"), stdout=log,
+                                   stderr=subprocess.STDOUT, env=env, check=True, timeout=180)
+            finally:
+                reading.shutdown(); reading.server_close(); worker.join(5)
+            # No reading listener exists in this process during offline verification.
+            config = run_config(str(uuid.uuid4()), "restart", "verify")
+            with (args.output / "restart-verify.log").open("w") as log:
+                subprocess.run(command(config, "ShelfProcessRestartTests/testVerify"), stdout=log,
+                               stderr=subprocess.STDOUT, env=env, check=True, timeout=180)
+            return
         for phase in args.case or ["before-file", "after-file", "before-db", "after-db"]:
             gate.clear()
             run = str(uuid.uuid4()).upper()
@@ -101,16 +153,16 @@ def main() -> None:
             prepare = run_config(run, phase, "prepare")
             log_path = args.output / (phase + "-prepare.log")
             with log_path.open("w") as log:
-                process = subprocess.Popen(command(prepare, "testPrepareInterruption"), stdout=log, stderr=subprocess.STDOUT, env=env)
+                process = subprocess.Popen(command(prepare, "ProcessInterruptionTests/testPrepareInterruption"), stdout=log, stderr=subprocess.STDOUT, env=env)
                 container = None
                 deadline = time.monotonic() + 90
                 while time.monotonic() < deadline:
                     if process.poll() is not None:
                         raise RuntimeError(f"Prepare exited before boundary: {phase}; see {log_path}")
-                    found = subprocess.run(["xcrun", "simctl", "get_app_container", SIMULATOR, BUNDLE, "data"],
+                    found = subprocess.run(["xcrun", "simctl", "get_app_container", simulator, BUNDLE, "data"],
                                            capture_output=True, text=True, env=env)
                     if found.returncode == 0:
-                        container = Path(found.stdout.strip()) / "Documents"
+                        container = owned_documents(found.stdout, simulator)
                         ready = container / f"spec003-interrupt-{run}.ready"
                         network_ready = args.output / (run + ".network-ready")
                         if ready.exists() and (phase != "before-file" or network_ready.exists()):
@@ -125,7 +177,7 @@ def main() -> None:
                 if (container / f"spec003-interrupt-{run}.ack").exists():
                     raise RuntimeError("Acknowledgement arrived before intended interruption")
                 (args.output / (phase + "-manifest.json")).write_text(json.dumps(manifest, indent=2))
-                subprocess.run(["xcrun", "simctl", "terminate", SIMULATOR, BUNDLE], check=True, env=env)
+                subprocess.run(["xcrun", "simctl", "terminate", simulator, BUNDLE], check=True, env=env)
                 gate.set()
                 prepared_exit = process.wait(timeout=90)
                 if prepared_exit == 0:
@@ -136,14 +188,12 @@ def main() -> None:
             verify = run_config(run, phase, "verify")
             verify_log = args.output / (phase + "-verify.log")
             with verify_log.open("w") as log:
-                verified = subprocess.run(command(verify, "testVerifyInterruption"), stdout=log, stderr=subprocess.STDOUT, env=env)
+                verified = subprocess.run(command(verify, "ProcessInterruptionTests/testVerifyInterruption"), stdout=log, stderr=subprocess.STDOUT, env=env)
             if verified.returncode:
                 raise RuntimeError("Restart verification failed: " + str(verify_log))
-            containers = Path.home() / "Library/Developer/CoreSimulator/Devices" / SIMULATOR / "data/Containers/Data/Application"
-            artifacts = list(containers.glob(f"*/Documents/spec003-interrupt-{run}.verified.json"))
-            if len(artifacts) != 1:
-                raise RuntimeError("Expected one exact-run verification artifact in the dedicated simulator")
-            result = json.loads(artifacts[0].read_text())
+            current = subprocess.check_output(["xcrun", "simctl", "get_app_container", simulator, BUNDLE, "data"], text=True, env=env)
+            container = owned_documents(current, simulator)
+            result = json.loads((container / f"spec003-interrupt-{run}.verified.json").read_text())
             result["interruptedPrepareExit"] = prepared_exit
             results.append(result)
             (args.output / "results.json").write_text(json.dumps(results, indent=2))
@@ -155,6 +205,8 @@ def main() -> None:
         gate.set()
         server.shutdown()
         server.server_close()
+        if simulator:
+            subprocess.run(["xcrun", "simctl", "shutdown", simulator], check=False, env=env, timeout=60)
 
 
 if __name__ == "__main__":
