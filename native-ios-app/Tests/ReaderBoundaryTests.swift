@@ -111,22 +111,137 @@ final class ReaderBoundaryTests: XCTestCase {
         XCTAssertEqual(model.route, .reading)
     }
 
-    // Proposed empty-TOC presentation from the audit; its mismatch needs an owner decision.
-    // Preserve this reproducer rather than changing engine semantics or weakening the assertion.
-    func testEmptyCatalogPresentsContentsWithoutAdmittingBook() async throws {
+    /// Snapshot both native resume and the shared projection, without issuing a write.
+    private func storedProgress(_ bookID: String) throws -> [String] {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(documents.appendingPathComponent("legado.db").path, &connection, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        let db = try XCTUnwrap(connection)
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        let query = "SELECT r.sourceId, r.chapterUrl, r.chapterIndex, r.textVersion, r.textSha256, r.textUtf16Length, r.paragraphUtf16Offset, r.revision, r.savedAt, b.origin, b.durChapterIndex, b.durChapterTitle, b.durChapterPos, b.durChapterTime FROM native_reading_resume r JOIN books b ON b.bookUrl = r.bookUrl WHERE r.bookUrl = ?"
+        XCTAssertEqual(sqlite3_prepare_v2(db, query, -1, &statement, nil), SQLITE_OK)
+        let row = try XCTUnwrap(statement)
+        defer { sqlite3_finalize(row) }
+        return try bookID.withCString { id in
+            XCTAssertEqual(sqlite3_bind_text(row, 1, id, -1, nil), SQLITE_OK)
+            XCTAssertEqual(sqlite3_step(row), SQLITE_ROW)
+            return try (0..<sqlite3_column_count(row)).map { column in
+                String(cString: try XCTUnwrap(sqlite3_column_text(row, column)))
+            }
+        }
+    }
+
+    func testEmptyCatalogReportsRuleFailureWithoutAdmissionOrProgressLoss() async throws {
         let model = ReaderModel()
+        let (_, savedCandidate) = try await fixture(model)
+        model.select(savedCandidate); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(model.chapters[0]); try await settle(model)
+        let previous = try XCTUnwrap(model.content)
+        let token = try XCTUnwrap(previous.reading?.token)
+        let paragraph = (previous.text as NSString).paragraphRange(for: (previous.text as NSString).range(of: "MIDDLE")).location
+        XCTAssertGreaterThan(paragraph, 0)
+        model.readingDisplayed(token, paragraph)
+        model.showShelf(); try await settle(model)
+        let stored = try storedProgress(savedCandidate.id)
+        let shelfIDs = Set(model.shelf.map { $0.book.id })
+
         let (_, candidate) = try await fixture(model, toc: "empty")
-        model.select(candidate); try await settle(model)
-        XCTAssertEqual(model.route, .contents)
+        model.select(candidate); try await wait { !model.busy }
+        let failure = try XCTUnwrap(model.message)
+        XCTAssertTrue(failure.hasPrefix("RULE:"))
+        XCTAssertTrue(failure.contains("chapter_list_empty"))
+        XCTAssertEqual(model.route, .search, "Failed TOC must not take the successful Contents path")
+        XCTAssertTrue(model.canRetry)
+        XCTAssertNil(model.book); XCTAssertNil(model.content)
         XCTAssertTrue(model.chapters.isEmpty)
         let window = try await host(model)
         defer { window.isHidden = true }
-        try assertVisible("No chapters available.", in: window)
-        try assertVisible("Add to shelf", in: window)
-        model.addCurrentBook(); try await settle(model)
+        try assertVisible("RULE: chapter_list_empty", in: window)
+        try assertVisible("Retry", in: window)
+        model.retry(); try await wait { !model.busy }
+        XCTAssertEqual(model.message, failure)
+        XCTAssertTrue(model.canRetry)
+        model.addCurrentBook()
+        XCTAssertEqual(model.message, failure)
+        XCTAssertEqual(model.route, .search)
         XCTAssertNil(model.content)
+        window.isHidden = true
         model.showShelf(); try await settle(model)
-        XCTAssertFalse(model.shelf.contains { $0.book.sourceId == candidate.sourceId })
+        XCTAssertEqual(Set(model.shelf.map { $0.book.id }), shelfIDs)
+        XCTAssertFalse(model.shelf.contains { $0.book.id == candidate.id })
+        XCTAssertEqual(try storedProgress(savedCandidate.id), stored, "Neither the resume row nor shared projection may change")
+        model.openShelfBook(try XCTUnwrap(model.shelf.first { $0.book.id == savedCandidate.id })); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.sourceId, previous.chapter.sourceId)
+        XCTAssertEqual(model.content?.chapter.bookId, previous.chapter.bookId)
+        XCTAssertEqual(model.content?.chapter.id, previous.chapter.id)
+        XCTAssertEqual(model.content?.text, previous.text)
+        XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, Int32(paragraph))
+    }
+
+    private final class ReplyQueue {
+        let stage: ReaderModel.ReplyStage
+        private var holdNext = true
+        var pending: (reply: EngineReply, apply: (EngineReply) -> Void)?
+        var tocSources: [String] = []
+        var replayCount = 0
+        init(stage: ReaderModel.ReplyStage) { self.stage = stage }
+        func deliver(_ stage: ReaderModel.ReplyStage, _ reply: EngineReply, _ apply: @escaping (EngineReply) -> Void) {
+            if let toc = reply as? TocReply, let source = toc.chapters.first?.sourceId { tocSources.append(source) }
+            if holdNext && stage == self.stage && (reply is BookReply || reply is TocReply) {
+                holdNext = false
+                pending = (reply, apply)
+            } else { apply(reply) }
+        }
+        func replay() throws {
+            let held = try XCTUnwrap(pending)
+            pending = nil
+            replayCount += 1
+            held.apply(held.reply)
+        }
+    }
+
+    func testDeliveredLateDetailSuccessCannotReplaceCompletedReading() async throws { try await delayedDelivery(stage: .detail) }
+    func testDeliveredLateTocSuccessCannotReplaceCompletedReading() async throws { try await delayedDelivery(stage: .contents) }
+    private func delayedDelivery(stage: ReaderModel.ReplyStage) async throws {
+        let queue = ReplyQueue(stage: stage)
+        let model = ReaderModel(deliverReply: queue.deliver)
+        let (a, candidateA) = try await fixture(model)
+        let (b, candidateB) = try await fixture(model)
+        model.select(candidateA)
+        try await wait { queue.pending != nil }
+        let reply = try XCTUnwrap(queue.pending?.reply)
+        if stage == .detail {
+            XCTAssertEqual(try XCTUnwrap(reply as? BookReply).book.sourceId, a)
+        } else {
+            XCTAssertTrue(try XCTUnwrap(reply as? TocReply).chapters.allSatisfy { $0.sourceId == a })
+        }
+        XCTAssertFalse(reply is EngineFailure, "Hold an actual engine success after cancellation conversion, not a delayed HTTP request")
+        model.select(candidateB); try await settle(model)
+        let catalog = model.chapters.map(\.id)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let body = try XCTUnwrap(model.content)
+        XCTAssertEqual(body.chapter.sourceId, b)
+        XCTAssertEqual(body.chapter.bookId, candidateB.id)
+        XCTAssertEqual(model.route, .reading)
+        let aTocCount = queue.tocSources.filter { $0 == a }.count
+        print("DELIVERY held=\(stage) A=\(a) B-completed=\(body.chapter.id)")
+        try queue.replay()
+        XCTAssertEqual(queue.replayCount, 1, "The late success must actually reach the adapter")
+        try await settle(model)
+        XCTAssertEqual(queue.tocSources.filter { $0 == a }.count, aTocCount, "Late detail must not start an A TOC follow-up")
+        XCTAssertEqual(model.book?.sourceId, b)
+        XCTAssertEqual(model.book?.id, candidateB.id)
+        XCTAssertEqual(model.chapters.map(\.id), catalog)
+        XCTAssertTrue(model.chapters.allSatisfy { $0.sourceId == b && $0.bookId == candidateB.id })
+        XCTAssertEqual(model.content?.chapter.sourceId, b)
+        XCTAssertEqual(model.content?.chapter.bookId, candidateB.id)
+        XCTAssertEqual(model.content?.chapter.id, body.chapter.id)
+        XCTAssertEqual(model.content?.text, body.text)
+        XCTAssertEqual(model.route, .reading)
+        XCTAssertFalse(model.canRetry)
+        print("DELIVERY replayed=\(queue.replayCount) retained=\(model.content?.chapter.id ?? "missing")")
     }
 
     func testSingleFirstAndLastChapterBoundaries() async throws {

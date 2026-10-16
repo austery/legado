@@ -29,16 +29,24 @@ our real Kotlin bridge and synthetic data, and are cross-module integration test
 some also assert UI-facing compatibility properties. Hosted Swift views establish
 selected rendering/control-state evidence, not an end-to-end tapping journey.
 
-`ReaderBoundaryTests` includes a deliberately unresolved empty-catalog presentation
-reproducer: the engine currently returns `RULE: chapter_list_empty` before the
-model reaches Contents. Do not change that behavior or weaken the proposed
-assertion without an owner decision. A run containing this reproducer is not green.
+`ReaderBoundaryTests` characterizes the real upstream empty-TOC failure as
+`RULE: chapter_list_empty`: visible/retryable failure, no successful Contents/body
+transition or shelf admission, and unchanged persisted resume/shared projection.
+It does not change upstream parsing to return a successful empty catalog.
 
-The remaining tests cover detail and TOC replacement separately, shelved-body
-`cancelLoading` with and without a pending real save, empty/single/first/last
-chapters, and SQLite save rejection followed by retry and navigation. Assert exact
-source/book/chapter, body, route, token and persisted position; do not substitute
-`busy == false` for these properties. Existing suites remain in the ordinary
+Real network replacement tests remain in place. Separate deterministic adapter
+tests hold an actual successful detail or TOC reply at Swift delivery, complete B
+through its body, then replay A after cancellation can no longer rewrite the held
+payload. They assert B's identity/catalog/body/route and reject a stale A TOC
+follow-up. The internal `ReaderModel` delivery initializer defaults to immediate
+application; it is not a new Kotlin/public API or a parser behavior change.
+Removing only the completion generation guard must fail those adapter assertions;
+HTTP cancellation alone is not sufficient evidence of that protection.
+
+The remaining tests cover shelved-body `cancelLoading` with and without a pending
+real save, single/first/last chapters, and SQLite save rejection followed by retry
+and navigation. Assert exact source/book/chapter, body, route, token and persisted
+position; do not substitute `busy == false` for these properties. Existing suites remain in the ordinary
 `native_product_ci.py` run, which rejects failures, skips or missing execution.
 The owned reading fixture on 18769 additionally supplies per-run HTTP response
 gates; binding an occupied port fails without using or terminating its owner.

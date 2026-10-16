@@ -8,6 +8,15 @@ enum ReaderSearchScope: String, CaseIterable { case all, selected }
 
 @MainActor
 final class ReaderModel: ObservableObject {
+    enum ReplyStage { case operation, detail, contents }
+    typealias ReplyDelivery = (ReplyStage, EngineReply, @escaping (EngineReply) -> Void) -> Void
+    private let deliverReply: ReplyDelivery
+
+    /// Internal delivery seam; normal app requests apply their real reply immediately.
+    init(deliverReply: @escaping ReplyDelivery = { _, reply, apply in apply(reply) }) {
+        self.deliverReply = deliverReply
+    }
+
     @Published var shelf: [ShelfBookSnapshot] = []
     @Published var shelfNotice: String?
     @Published var resumeNotice: String?
@@ -284,7 +293,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func select(_ selected: BookSnapshot) {
-        perform(retry: { [weak self] in self?.select(selected) }, start: {
+        perform(stage: .detail, retry: { [weak self] in self?.select(selected) }, start: {
             self.engine.loadBook(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? BookReply else { return }
@@ -293,7 +302,7 @@ final class ReaderModel: ObservableObject {
     }
 
     private func loadContents(_ selected: BookSnapshot) {
-        perform(retry: { [weak self] in self?.loadContents(selected) }, start: {
+        perform(stage: .contents, retry: { [weak self] in self?.loadContents(selected) }, start: {
             self.engine.loadToc(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? TocReply else { return }
@@ -437,24 +446,27 @@ final class ReaderModel: ObservableObject {
         busy = false; message = nil; retryAction = nil
     }
 
-    private func perform(retry: @escaping () -> Void, failure: ((EngineFailure) -> Void)? = nil, start: @escaping (@escaping (EngineReply) -> Void) -> EngineRequest, success: @escaping (EngineReply) -> Void) {
+    private func perform(stage: ReplyStage = .operation, retry: @escaping () -> Void, failure: ((EngineFailure) -> Void)? = nil, start: @escaping (@escaping (EngineReply) -> Void) -> EngineRequest, success: @escaping (EngineReply) -> Void) {
         cancel()
         let token = generation
         busy = true; retryAction = retry
         finishReading { [weak self] in
             guard let self, self.generation == token else { return }
             self.request = start { [weak self] reply in
-            guard let self, self.generation == token else { return }
-            self.busy = false; self.request = nil
-            if let error = reply as? EngineFailure {
-                if error.code != .cancelled {
-                    self.message = "\(error.code.name): \(error.message)"
-                    failure?(error)
+                guard let self else { return }
+                self.deliverReply(stage, reply) { [weak self] reply in
+                    guard let self, self.generation == token else { return }
+                    self.busy = false; self.request = nil
+                    if let error = reply as? EngineFailure {
+                        if error.code != .cancelled {
+                            self.message = "\(error.code.name): \(error.message)"
+                            failure?(error)
+                        }
+                        return
+                    }
+                    self.retryAction = nil
+                    success(reply)
                 }
-                return
-            }
-            self.retryAction = nil
-            success(reply)
             }
         }
     }
