@@ -27,8 +27,11 @@ implementation report and test results at their exact revisions.
 ## Decision
 
 Before developing a feature, identify the dependencies and behavior it relies on.
-Reuse existing checks and add the smallest necessary boundary evidence for the
-actual risk. Keep upstream engine reuse and our UI responsibilities explicit.
+First observe and characterize the actual upstream behavior at the pinned revision,
+rather than assuming how it works. Reuse existing checks and add the smallest
+necessary boundary evidence for the actual risk. Keep upstream engine reuse and
+our UI responsibilities explicit. Core parsing and source-rule execution follow
+upstream; do not maintain a private fork of core functionality to implement a feature.
 Before updating upstream, validate the candidate in isolation against the retained
 usable version; preserve its source revision and the applicable recovery path.
 Changing persisted data may prevent a simple code rollback and needs human review.
@@ -53,8 +56,14 @@ no upstream messages or issues.
 Classify a failed check before changing anything: an intentional upstream contract
 change, an upstream regression, or an incorrect assumption/adaptation on our side.
 Record the old/new behavior and smallest reproduction. Do not relax assertions,
-remove tests or redefine expected behavior merely to obtain a green run. Prefer a
-bounded local adaptation when it preserves the approved journey. Stop for human
+remove tests or redefine expected behavior merely to obtain a green run. If an
+upstream bug is confirmed, pause development of the affected feature, ask upstream
+whether they want it changed, and contribute a fix upstream only with their agreement.
+This describes the future process, not authorization to contact upstream in this task.
+Prefer a bounded local adaptation for our native UI and already approved persistence
+responsibilities when it preserves the approved journey. That is not permission to
+patch core parsing or source-rule execution independently; ADR-001's reviewed native
+extensions and existing approved exceptions remain valid. Stop for human
 assessment before changing data formats, public/shared contracts or core reading
 semantics, or before spreading changes broadly into upstream code.
 
