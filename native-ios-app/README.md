@@ -13,7 +13,7 @@ These are product defaults awaiting owner feedback, not recovered Wanyuan values
 
 - System-available PingFang, Songti and Kaiti candidates; unavailable fonts are omitted.
 - 22-point initial text; size range 16–36, line spacing 6 (0–18), paragraph spacing
-  12 (0–30), margins 24 (12–64). Maximum text column width is approximately 760 points.
+  12 (0–30), margins 28 (12–64). Maximum text column width is approximately 680 points.
 - Warm light background; optional dark appearance. Settings last for the view session.
 - Explicit show/hide control button instead of guessed tap regions. Long-press text
   selection follows UITextView behavior. No custom pagination engine.
@@ -247,3 +247,40 @@ observed the original source failing safely and Dingdian returning 50 results.
 The existing two reading/typography cases also passed. A standalone native probe
 compiled with the actual guard verified invalid ranges, empty matches, capture
 replacement and cancellation propagation. Gradle nativeTest was not run.
+
+
+### Minimal reading UI and actual control validation
+
+Reading keeps the book/chapter heading above a bounded paper-colored text column.
+The shelf return and control toggle stay in the toolbar; chapter navigation,
+contents and typography sit together below the body. Text size and appearance
+are immediately available in the typography sheet, with existing font/spacing
+controls under More text options. Contents can continue the saved current chapter
+through the real engine, obtaining a fresh writable reading token. A successful
+shelf return confirms the acknowledged position; a failed save retains the body
+and existing retry/discard choices. Whole shelf rows accept a tap.
+
+The separate synthetic UI host compiles the same reader sources with
+`READER_UI_TEST_HOST`, excludes the product app entry point, and uses bundle ID
+`io.legado.pathc.ui-fixture`. Its setup imports an owned loopback source through
+the real engine, searches and shelves its original test book. Test-only controls
+hold a chapter request and install/remove a rejecting SQLite trigger solely in
+that host database. None of this setup or fault injection is part of NativeReader.
+
+With the simulator engine already built, run:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+python3 scripts/path-c/reader_ui_ci.py --output /absolute/path/to/new-ui-evidence
+```
+
+This creates a new simulator, operates actual controls with XCUITest, and retains
+screenshots and `.xcresult`. It checks row-centre opening, chapter body markers,
+first-chapter boundary, cancel/retry, real swipes, contents/continue, controls,
+text size and rotation, rejected save without leaving, cancelling discard,
+retry, acknowledged shelf return and same-chapter/paragraph reopening, including
+process relaunch. The test host observes the actual TextKit paragraph anchor;
+only setup and fault injection use test controls. No production provider, physical
+device or existing reader data is involved. The ordinary 38-test Swift product
+gate remains separate; UI tests do not replace it. XcodeGen's ordinary
+`project.yml` generation excludes this host and UI test target.

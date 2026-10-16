@@ -6,7 +6,7 @@ struct ReadingStyle: Equatable {
     var size: Double = 22
     var lineSpacing: Double = 6
     var paragraphSpacing: Double = 12
-    var margin: Double = 24
+    var margin: Double = 28
     var dark = false
 }
 
@@ -135,11 +135,21 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
         setNeedsLayout()
     }
 
+    // UIKit can adjust contentOffset during a size change before layoutSubviews.
+    // Keep the accepted text anchor until that new layout has restored it.
+    override var bounds: CGRect {
+        willSet { if newValue.size != bounds.size { needsAnchorRestoration = true } }
+    }
+
+    override var frame: CGRect {
+        willSet { if newValue.size != frame.size { needsAnchorRestoration = true } }
+    }
+
     override func layoutSubviews() {
         let wasRestoring = restoring
         restoring = true
         let changed = previousSize != bounds.size
-        let inset = max(style.margin, (bounds.width - 760) / 2)
+        let inset = max(style.margin, (bounds.width - 680) / 2)
         let desiredInset = UIEdgeInsets(top: 24, left: inset, bottom: 40, right: inset)
         if textContainerInset != desiredInset { textContainerInset = desiredInset }
         super.layoutSubviews()

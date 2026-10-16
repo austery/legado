@@ -130,7 +130,12 @@ final class ReaderModel: ObservableObject {
     }
 
     func showShelf() {
-        navigate(.shelf) { [weak self] in self?.refreshShelf() }
+        let confirmsSavedPosition = positionSaver.hasPosition
+        navigate(.shelf) { [weak self] in
+            guard let self else { return }
+            if confirmsSavedPosition { self.shelfNotice = "Reading position saved." }
+            self.refreshShelf()
+        }
     }
 
     func addCurrentBook() {
