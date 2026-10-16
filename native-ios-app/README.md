@@ -120,10 +120,11 @@ Only this invocation's simulator is shut down afterward; it is retained.
 The ordinary gate currently covers 29 tests: reading journeys (7), incremental
 search (5), restoration (3), save coordination (8), and resume engine behavior (6).
 The runner discovers ordinary test methods from the test sources and checks the
-XCTest result summary: missing tests, failures, skipped tests and zero-test runs
-fail the gate. Available logs, the source commit, selected runtime/simulator,
-scope manifest, summary and `.xcresult` are uploaded even on failure; build
-intermediates are not.
+XCTest result summary: execution counts that differ from the tests discovered in
+the current source, failures, skipped tests and zero-test runs fail the gate.
+This does not detect tests deleted from the source. Available logs, the source
+commit, selected runtime/simulator, scope manifest, summary and `.xcresult` are
+uploaded even on failure; build intermediates are not.
 
 `ProcessInterruptionTests` and `ShelfProcessRestartTests` require external,
 multi-process orchestration and are explicitly excluded and recorded in the
@@ -142,8 +143,10 @@ their focused validation; this gate alone does not certify those paths.
 - Exercise the real boundary when that boundary is the risk: real ReaderEngine,
   SQLite/cache and Kotlin/Native bridges for integration; controlled writers and
   clocks for save-coordinator logic. A recording double cannot certify storage.
-- A gate must fail when a test fails or disappears, run on the candidate source,
-  and retain inspectable evidence. A previous commit's green run is historical.
+- A gate must fail when a test fails or tests discovered in the current source
+  are missing from execution, run on the candidate source, and retain inspectable
+  evidence. This gate compares counts, not stable test identities, and does not
+  detect source-test deletion. A previous commit's green run is historical.
 - Use separate processes for restart/interruption promises and physical iPad
   checks for touch/layout comfort, system permissions and platform lifecycles.
   Synthetic loopback sources do not certify all community sites or providers.
