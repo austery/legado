@@ -65,9 +65,9 @@ python3 scripts/path-c/process_interruption_regression.py \
 Use the actual generated filename for the installed Xcode version. Each invocation
 validates the synthetic host bundle and creates a new simulator internally; there
 is deliberately no existing-device/UDID argument. All destinations, container
-lookups, termination and shutdown use only its returned UUID. Container paths must
-belong directly to that simulator's application directory, and are refreshed after
-Xcode reinstalls the host. Only the exact-run manifest/verification artifact is
+lookups, termination, shutdown and deletion use only its returned UUID. Container
+paths must belong directly to that simulator's application directory, and are
+refreshed after Xcode reinstalls the host. Only the exact-run manifest/verification artifact is
 read. Four interruption phases preserve expected nonzero interrupted prepare exits
 and require a successful independent verification process. Offline shelf verification
 runs after the driver stops its own 18769 listener. Port 18771 is owned by the
@@ -84,3 +84,13 @@ Record commands, versions, exit codes, executed counts and any environment failu
 A build is not an executed test. If simulator dyld or XCTest symbolication stalls
 opening host Documents paths, inspect the owned process and use task-private `/tmp`
 source/build copies; do not claim the stalled test passed.
+
+## Temporary simulator cleanup
+
+The C1, native product and interruption/restart runners shut down and delete only
+simulators created by their own invocation, on success and on Python exception
+unwinding (including KeyboardInterrupt). Evidence directories, logs and test
+results remain on the host; the simulator's installed apps and data are disposable.
+A shutdown error does not prevent deletion. A deletion error fails a successful run
+or is logged alongside the original test failure, including the UUID to inspect.
+Forced termination (for example SIGKILL) cannot execute Python cleanup.

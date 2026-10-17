@@ -115,7 +115,8 @@ actual test host, creates its own iPad simulator, and supplies owned loopback
 fixtures. Reading uses port 18769; an occupied port fails instead of reusing or
 terminating another server. Search uses an OS-assigned port. Parallel XCTest
 workers are disabled because the suites exercise process-wide runtime state.
-Only this invocation's simulator is shut down afterward; it is retained.
+Only this invocation's simulator is shut down and deleted afterward, including
+when a build or test fails. Logs and `.xcresult` evidence remain on the host.
 
 The ordinary gate currently covers 29 tests: reading journeys (7), incremental
 search (5), restoration (3), save coordination (8), and resume engine behavior (6).

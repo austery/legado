@@ -17,7 +17,7 @@ import uuid
 from c2_fixture_server import C2Handler
 from fixture_server import FixtureServer
 
-from ci_harness import simctl
+from ci_harness import delete_owned_simulator, simctl
 
 
 def validate_template(template: dict, root: Path) -> None:
@@ -199,14 +199,18 @@ def main() -> None:
             (args.output / "results.json").write_text(json.dumps(results, indent=2))
             print(json.dumps(result), flush=True)
     finally:
-        if process is not None and process.poll() is None:
-            process.terminate()
-            process.wait(timeout=20)
-        gate.set()
-        server.shutdown()
-        server.server_close()
-        if simulator:
-            subprocess.run(["xcrun", "simctl", "shutdown", simulator], check=False, env=env, timeout=60)
+        try:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=20)
+        finally:
+            try:
+                gate.set()
+                server.shutdown()
+                server.server_close()
+            finally:
+                if simulator:
+                    delete_owned_simulator(simulator, env=env)
 
 
 if __name__ == "__main__":
