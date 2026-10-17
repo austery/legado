@@ -61,7 +61,7 @@ struct ReaderScreen: View {
                 }
                 ZStack {
                     if let content = model.content {
-                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled)
+                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading)
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)
@@ -261,7 +261,7 @@ struct ReaderScreen: View {
                     Text(ReaderModel.authorLabel(book.author)).font(.subheadline).foregroundStyle(.secondary)
                     if !book.intro.isEmpty { Text(book.intro).font(.callout).foregroundStyle(.secondary) }
                     if let content = model.content {
-                        Button { model.resumeCurrentBook() } label: {
+                        Button { model.returnToCurrentReading() } label: {
                             Label("Continue reading · " + content.chapter.title, systemImage: "book")
                         }.disabled(model.busy).accessibilityIdentifier("contents.continue")
                     }
@@ -276,7 +276,7 @@ struct ReaderScreen: View {
                 ForEach(model.chapters, id: \.id) { chapter in
                     Button {
                         if model.content?.chapter.id == chapter.id {
-                            model.resumeCurrentBook()
+                            model.returnToCurrentReading()
                         } else {
                             model.read(chapter)
                         }

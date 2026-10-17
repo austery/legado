@@ -263,7 +263,11 @@ not evidence that this candidate passed device acceptance.
 - Already delivered: whole shelf-row taps, paragraph-preserving typography and
   rotation, Contents continuation, save rejection/retry and acknowledged shelf return.
 - This candidate: tapping the marked current chapter in Contents uses the same
-  engine resume operation as Continue reading; other chapters still open normally.
+  return operation as Continue reading: writable shelf sessions reopen their saved
+  position through the engine; unshelved or read-only sessions retain their current
+  text view and paragraph without reopening an older stored chapter. Other chapters
+  still open normally. The retained text view freezes its session anchor while the
+  reading route is inactive, including UIKit scroll callbacks during directory layout.
   Shelf/Contents navigation is disabled during loading, while Cancel stays available.
   Save notices put the explanation above clearly separated action buttons.
 - Acceptance: both directory return paths preserve the same nonzero paragraph;
@@ -289,7 +293,10 @@ and existing retry/discard choices. Whole shelf rows accept a tap.
 The separate synthetic UI host compiles the same reader sources with
 `READER_UI_TEST_HOST`, excludes the product app entry point, and uses bundle ID
 `io.legado.pathc.ui-fixture`. Its setup imports an owned loopback source through
-the real engine, searches and shelves its original test book. Test-only controls
+the real engine and searches its test book. The original journey explicitly shelves
+its book; separate scenarios leave it unshelved or seed an unsupported saved-format
+record to obtain a real canSave=false reply on a different chapter. Each test starts
+with a fresh host database; only the relaunch check preserves it. Test-only controls
 hold a chapter request and install/remove a rejecting SQLite trigger solely in
 that host database. None of this setup or fault injection is part of NativeReader.
 
@@ -308,5 +315,8 @@ retry, acknowledged shelf return and same-chapter/paragraph reopening, including
 process relaunch. The test host observes the actual TextKit paragraph anchor;
 only setup and fault injection use test controls. No production provider, physical
 device or existing reader data is involved. The ordinary 38-test Swift product
-gate remains separate; UI tests do not replace it. XcodeGen's ordinary
+gate remains separate; UI tests do not replace it. The UI gate requires exactly
+three passing tests with no failures or skips. Both directory buttons are exercised
+for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
+no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.

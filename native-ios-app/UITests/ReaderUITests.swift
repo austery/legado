@@ -5,6 +5,7 @@ final class ReaderUITests: XCTestCase {
 
     @MainActor func testShelfReadingRecoveryAndResume() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
@@ -140,13 +141,69 @@ final class ReaderUITests: XCTestCase {
         capture("portrait-after-landscape-interactions")
         app.buttons["reader.shelf"].tap()
         XCTAssertTrue(book.waitForExistence(timeout: 10))
-        app.terminate(); app.launch()
+        app.terminate(); app.launchEnvironment.removeValue(forKey: "READER_UI_RESET"); app.launch()
         XCTAssertTrue(book.waitForExistence(timeout: 20))
         book.tap()
         wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
         XCTAssertTrue((app.textViews["reader.text"].value as? String ?? "").contains("C2-LAST"))
         print("UI POSITION after process relaunch: \(state(app))")
         capture("after-relaunched-position")
+    }
+
+    @MainActor func testUnshelvedDirectoryReturnKeepsSession() throws {
+        try checkSessionReturn(scenario: "preview", canSave: "nil")
+    }
+
+    @MainActor func testReadOnlyDirectoryReturnKeepsSessionAndStoredRecord() throws {
+        try checkSessionReturn(scenario: "readonly", canSave: "false")
+    }
+
+    @MainActor private func checkSessionReturn(scenario: String, canSave: String) throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = scenario
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let body = app.textViews["reader.text"]
+        XCTAssertTrue(body.waitForExistence(timeout: 40), app.debugDescription)
+        wait(app) { self.state(app).contains("canSave=\(canSave);") && self.state(app).contains("chapter=1;") }
+        XCTAssertTrue((body.value as? String ?? "").contains("C2-LAST"))
+        body.swipeUp(); body.swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        var lastAnchor = -1
+        var stableSamples = 0
+        wait(app) {
+            let current = self.anchor(app)
+            stableSamples = current == lastAnchor ? stableSamples + 1 : 0
+            lastAnchor = current
+            return stableSamples >= 3 && current > 0 && self.state(app).contains("dragging=false;decelerating=false;")
+        }
+        let position = anchor(app)
+        print("SESSION BASELINE \(scenario): expected=\(position); \(state(app))")
+        let stored = app.staticTexts["fixture.stored"].value as? String ?? ""
+        if scenario == "preview" {
+            XCTAssertEqual(stored, "resume=none;books=0")
+        } else {
+            XCTAssertTrue(stored.contains("ui-unsupported"), stored)
+            XCTAssertTrue(stored.contains("/chapter/1"), stored)
+        }
+        capture("\(scenario)-before-contents")
+        for entry in ["contents.continue", "contents.currentChapter"] {
+            app.buttons["reader.contents"].tap()
+            XCTAssertTrue(app.buttons[entry].waitForExistence(timeout: 10))
+            print("SESSION DIRECTORY \(scenario): \(state(app))")
+            app.buttons[entry].tap()
+            wait(app) { app.buttons["reader.contents"].exists && self.anchor(app) == position && self.state(app).contains("chapter=1;") }
+            XCTAssertTrue((body.value as? String ?? "").contains("C2-LAST"))
+            XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
+            XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
+            print("SESSION \(scenario) \(entry): \(state(app)); stored=\(stored)")
+            capture("\(scenario)-\(entry)-returned")
+        }
+        app.buttons["reader.shelf"].tap()
+        wait(app) { !app.buttons["reader.contents"].exists }
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
+        app.terminate()
     }
 
     @MainActor private func state(_ app: XCUIApplication) -> String {

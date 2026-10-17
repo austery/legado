@@ -18,6 +18,7 @@ struct ReadingRestoration: Equatable {
 
 final class AnchoredTextView: UITextView, UITextViewDelegate {
     var anchor = 0
+    private var readingIsActive = true
     var restoring = false
     var chapterKey = ""
     var style = ReadingStyle()
@@ -57,7 +58,15 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
 
     func configure(chapterKey: String, body: String, style: ReadingStyle,
                    restoration: ReadingRestoration?, onDisplayed: ((String, Int) -> Void)?,
-                   onParagraphScroll: ((String, Int) -> Void)?) {
+                   onParagraphScroll: ((String, Int) -> Void)?, isReading: Bool = true) {
+        // Navigation changes the view size before its opacity necessarily changes.
+        // Preserve the session anchor through those non-reading layout callbacks.
+        if readingIsActive != isReading {
+            readingIsActive = isReading
+            userScrolling = false
+            needsAnchorRestoration = true
+            setNeedsLayout()
+        }
         self.onDisplayed = onDisplayed
         self.onParagraphScroll = onParagraphScroll
         let newChapter = self.chapterKey != chapterKey
@@ -104,7 +113,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { userScrolling = false }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !restoring, !needsAnchorRestoration, !text.isEmpty else { return }
+        guard readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty else { return }
         let point = CGPoint(x: textContainerInset.left + 1, y: contentOffset.y + textContainerInset.top + 1)
         guard let position = closestPosition(to: point),
               let normalized = paragraphStart(offset(from: beginningOfDocument, to: position)) else { return }
@@ -199,6 +208,7 @@ struct ReadingText: UIViewRepresentable {
     var restoration: ReadingRestoration? = nil
     var onDisplayed: ((String, Int) -> Void)? = nil
     var onParagraphScroll: ((String, Int) -> Void)? = nil
+    var isReading = true
 
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
@@ -213,6 +223,6 @@ struct ReadingText: UIViewRepresentable {
 
     func updateUIView(_ view: AnchoredTextView, context: Context) {
         view.configure(chapterKey: chapterKey, body: text, style: style, restoration: restoration,
-                       onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll)
+                       onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll, isReading: isReading)
     }
 }

@@ -11,6 +11,8 @@ struct FixtureReaderApp: App {
     @State private var rejectingSave = false
     @State private var heldChapter = false
     @State private var positionStatus = "preparing"
+    @State private var storedStatus = "preparing"
+    private var scenario: String { ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] ?? "shelf" }
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
     var body: some Scene {
         WindowGroup {
@@ -20,6 +22,7 @@ struct FixtureReaderApp: App {
                     HStack {
                         Text("SYNTHETIC UI HOST").font(.caption2)
                         Text("Fixture position").accessibilityIdentifier("fixture.position").accessibilityValue(positionStatus)
+                        Text("Stored record").accessibilityIdentifier("fixture.stored").accessibilityValue(storedStatus)
                         Spacer()
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
                             Task { @MainActor in
@@ -44,7 +47,8 @@ struct FixtureReaderApp: App {
                 let text = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                     .flatMap(\.windows).compactMap { $0.rootViewController?.view }.lazy.compactMap(findText).first
                 let chapter = model.chapterPosition.map(String.init) ?? "none"
-                positionStatus = "chapter=\(chapter);anchor=\(text?.anchor ?? -1);source=\(model.content?.chapter.sourceId ?? "none");book=\(model.content?.chapter.bookId ?? "none");id=\(model.content?.chapter.id ?? "none")"
+                storedStatus = (try? storedRecord()) ?? "query-failed"
+                positionStatus = "dragging=\(text?.isDragging ?? false);decelerating=\(text?.isDecelerating ?? false);canSave=\(model.content?.reading.map { $0.canSave ? "true" : "false" } ?? "nil");chapter=\(chapter);anchor=\(text?.anchor ?? -1);source=\(model.content?.chapter.sourceId ?? "none");book=\(model.content?.chapter.bookId ?? "none");id=\(model.content?.chapter.id ?? "none")"
             }.task {
                 guard !prepared else { return }
                 do { try await prepare(); prepared = true }
@@ -63,8 +67,15 @@ struct FixtureReaderApp: App {
         }
     }
     @MainActor private func prepare() async throws {
+        if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            for name in ["legado.db", "legado.db-wal", "legado.db-shm"] {
+                let url = documents.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            }
+        }
         model.start(); try await settle()
-        if !model.shelf.isEmpty { model.showShelf(); try await settle(); return }
+        if scenario == "shelf", !model.shelf.isEmpty { model.showShelf(); try await settle(); return }
         let base = "http://127.0.0.1:18769/runs/ui-\(UUID().uuidString)"
         let (data, _) = try await URLSession.shared.data(from: URL(string: base + "/sources.json")!)
         let json = String(decoding: data, as: UTF8.self)
@@ -75,12 +86,53 @@ struct FixtureReaderApp: App {
         model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle()
         guard let book = model.results.first else { throw NSError(domain: "FixtureSetup", code: 2) }
         model.select(book); try await settle()
-        model.addCurrentBook(); try await settle()
-        model.showShelf(); try await settle()
+        if scenario == "preview" {
+            model.read(model.chapters[1]); try await settle()
+        } else {
+            model.addCurrentBook(); try await settle()
+            if scenario == "readonly" {
+                model.read(model.chapters[0]); try await settle()
+                guard let reading = model.content?.reading else { throw NSError(domain: "FixtureSetup", code: 3) }
+                model.readingDisplayed(reading.token, 0)
+                model.navigate(.contents); try await settle()
+                // An unsupported stored format makes the real engine return canSave=false.
+                // This modifies only this independent host's synthetic book.
+                try sql("UPDATE native_reading_resume SET textVersion = 'ui-unsupported' WHERE bookUrl = '" + model.book!.id.replacingOccurrences(of: "'", with: "''") + "'")
+                model.read(model.chapters[1]); try await settle()
+                guard model.content?.reading?.canSave == false else { throw NSError(domain: "FixtureSetup", code: 4) }
+            } else {
+                model.showShelf(); try await settle()
+            }
+        }
     }
     private func findText(_ view: UIView) -> AnchoredTextView? {
         if let text = view as? AnchoredTextView { return text }
         return view.subviews.lazy.compactMap(findText).first
+    }
+    private func storedRecord() throws -> String {
+        guard let book = model.book else { return "none" }
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("legado.db")
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { throw NSError(domain: "FixtureSQL", code: 3) }
+        defer { sqlite3_close(db) }
+        let id = book.id.replacingOccurrences(of: "'", with: "''")
+        // Include the whole resume row and shared book projection, not only its chapter.
+        let query = "SELECT r.*, b.durChapterIndex, b.durChapterTitle, b.durChapterPos, b.durChapterTime FROM native_reading_resume r JOIN books b ON b.bookUrl = r.bookUrl WHERE r.bookUrl = '" + id + "'"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { throw NSError(domain: "FixtureSQL", code: 4) }
+        defer { sqlite3_finalize(statement) }
+        let result = sqlite3_step(statement)
+        if result == SQLITE_DONE {
+            var count: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT count(*) FROM books WHERE bookUrl = '" + id + "'", -1, &count, nil) == SQLITE_OK else { throw NSError(domain: "FixtureSQL", code: 5) }
+            defer { sqlite3_finalize(count) }
+            guard sqlite3_step(count) == SQLITE_ROW else { throw NSError(domain: "FixtureSQL", code: 6) }
+            return "resume=none;books=\(sqlite3_column_int(count, 0))"
+        }
+        guard result == SQLITE_ROW else { throw NSError(domain: "FixtureSQL", code: 7) }
+        return (0..<sqlite3_column_count(statement)).map { column in
+            sqlite3_column_text(statement, column).map { String(cString: $0) } ?? "NULL"
+        }.joined(separator: "|")
     }
     private func sql(_ statement: String) throws {
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("legado.db")

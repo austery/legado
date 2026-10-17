@@ -29,9 +29,11 @@ def main() -> None:
         raise RuntimeError('No iPad Pro 11-inch M4 simulator type')
     (output / 'commit.txt').write_text(subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True))
     (output / 'scope.json').write_text(json.dumps({
-        'app': 'io.legado.pathc.ui-fixture', 'expectedTests': 1,
+        'app': 'io.legado.pathc.ui-fixture', 'expectedTests': 3,
         'fixture': 'owned loopback only', 'physicalDevice': False,
-        'suites': ['ReaderUITests/testShelfReadingRecoveryAndResume']}, indent=2))
+        'suites': ['ReaderUITests/testShelfReadingRecoveryAndResume',
+                   'ReaderUITests/testUnshelvedDirectoryReturnKeepsSession',
+                   'ReaderUITests/testReadOnlyDirectoryReturnKeepsSessionAndStoredRecord']}, indent=2))
     with fixtures():
         simulator = simctl('create', 'Native Reader UI', tablets[0], runtime['identifier'])
         try:
@@ -48,7 +50,7 @@ def main() -> None:
             summary = subprocess.check_output(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary',
                                                '--path', str(output / 'UI.xcresult')], text=True)
             (output / 'summary.json').write_text(summary)
-            validate_summary(json.loads(summary), 1)
+            validate_summary(json.loads(summary), 3)
             run(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(output / 'UI.xcresult'),
                  '--output-path', str(output / 'screenshots')], output / 'screenshots.log', 60)
         finally:

@@ -354,6 +354,17 @@ final class ReaderModel: ObservableObject {
         read(chapters[index + delta])
     }
 
+    /// Directory return uses the retained view for session-only text. Reopening
+    /// a persistent position would require shelf membership or select an older chapter.
+    func returnToCurrentReading() {
+        guard !busy, let content else { return }
+        if content.reading?.canSave == true {
+            resumeCurrentBook()
+        } else {
+            navigate(.reading)
+        }
+    }
+
     func resumeCurrentBook() {
         guard let book else { return }
         perform(retry: { [weak self] in self?.resumeCurrentBook() }, start: {
