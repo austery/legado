@@ -140,6 +140,16 @@ jobs:
           gh release download 2.46.0 --repo yonaskolb/XcodeGen --pattern xcodegen.zip --dir "$RUNNER_TEMP/c1-xcodegen"
           unzip -q "$RUNNER_TEMP/c1-xcodegen/xcodegen.zip" -d "$RUNNER_TEMP/c1-xcodegen"
           echo "$RUNNER_TEMP/c1-xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Record hosted command versions
+        if: inputs.execution == 'cloud'
+        run: |
+          python3 --version
+          git --version
+          gh --version
+          java -version
+          xcodegen --version
+          ./gradlew --version
+          sed -n '1,25p' gradle/libs.versions.toml
       - name: Build native libraries
         run: bash scripts/build-ios-native.sh ios_simulator_arm64 ios_arm64 2>&1 | tee ci-results/native-build.log
       - name: Build engine and compile original UI regression
@@ -185,12 +195,15 @@ jobs:
             ${{ env.GRADLE_USER_HOME }}/wrapper
             ${{ env.KONAN_DATA_DIR }}
           key: c1-cloud-xcode27-arm64-v1-${{ github.sha }}
+      - name: Print hosted evidence to Actions logs
+        if: always() && inputs.execution == 'cloud'
+        run: python3 scripts/path-c/cloud_evidence.py
       - name: Upload validation evidence
-        if: always()
+        if: always() && inputs.execution != 'cloud'
         uses: actions/upload-artifact@v6
         with:
           name: c1-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ci-results/
             !ci-results/native-product/DerivedData/
-          retention-days: ${{ inputs.execution == 'cloud' && 1 || 7 }}
+          retention-days: 7
