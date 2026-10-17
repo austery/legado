@@ -1,0 +1,30 @@
+name: Sync upstream master
+
+on:
+  schedule:
+    - cron: '17 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-mirror-master
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'austery/legado' && github.ref == 'refs/heads/native-reader'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Fast-forward master to the pinned upstream commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/sync-upstream-mirror.sh --apply

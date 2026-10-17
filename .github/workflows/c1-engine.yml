@@ -3,38 +3,8 @@ name: C1 Engine
 on:
   pull_request:
     branches: [native-reader]
-    paths:
-      - 'engine-ios/**'
-      - 'native-ios-app/**'
-      - 'scripts/**'
-      - 'core/**'
-      - 'data/**'
-      - 'foundation/**'
-      - 'modules/**'
-      - 'ui/**'
-      - 'build-logic/**'
-      - 'gradle/**'
-      - '**/*.gradle.kts'
-      - 'gradle.properties'
-      - 'gradlew*'
-      - '.github/workflows/c1-engine.yml'
   push:
     branches: [native-reader]
-    paths:
-      - 'engine-ios/**'
-      - 'native-ios-app/**'
-      - 'scripts/**'
-      - 'core/**'
-      - 'data/**'
-      - 'foundation/**'
-      - 'modules/**'
-      - 'ui/**'
-      - 'build-logic/**'
-      - 'gradle/**'
-      - '**/*.gradle.kts'
-      - 'gradle.properties'
-      - 'gradlew*'
-      - '.github/workflows/c1-engine.yml'
   workflow_dispatch:
     inputs:
       execution:
@@ -56,8 +26,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  engine:
+  # Keep the required check independent of skipped or failed test jobs.
+  regression:
     name: C1 engine regression
+    if: ${{ always() }}
+    needs: engine
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Require successful engine and native product tests
+        env:
+          ENGINE_RESULT: ${{ needs.engine.result }}
+        shell: bash
+        run: |
+          if [[ "$ENGINE_RESULT" != "success" ]]; then
+            echo "::error::C1 tests did not succeed (result: $ENGINE_RESULT)."
+            if [[ "$ENGINE_RESULT" == "skipped" ]]; then
+              echo "::error::Fork PRs cannot use the self-hosted runner. A maintainer must review and transfer the changes to a repository-owned branch, then pass C1 on its PR before merging."
+            fi
+            exit 1
+          fi
+          echo "Engine and native product regressions passed."
+
+  engine:
+    name: C1 engine and native product tests
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJSON(inputs.execution == 'cloud' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
     timeout-minutes: 60
