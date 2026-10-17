@@ -13,7 +13,7 @@ from threading import Thread
 from typing import Iterator, cast
 
 from boundary_fixture_server import BoundaryHandler
-from ci_harness import Runtime, simctl
+from ci_harness import Runtime, delete_owned_simulator, simctl
 from fixture_server import FixtureServer
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,8 +118,8 @@ def main() -> None:
         raise RuntimeError("No iPad Pro 11-inch M4 simulator device type")
     with fixtures() as fixture_url:
         simulator = simctl("create", "Native Product CI", tablets[0], runtime["identifier"])
-        (output / "simulator.txt").write_text(f"{simulator}\n{runtime['identifier']}\n")
         try:
+            (output / "simulator.txt").write_text(f"{simulator}\n{runtime['identifier']}\n")
             run(["xcodegen", "generate", "--spec", "native-ios-app/project.yml"],
                 output / "project.log", 60)
             derived = output / "DerivedData"
@@ -146,8 +146,7 @@ def main() -> None:
             validate_summary(cast(dict[str, object], json.loads(summary_text)), expected)
             print(f"Native product: {expected} tests passed, no failures or skips", flush=True)
         finally:
-            # Retain the owned simulator and evidence; never shut down an existing reader.
-            subprocess.run(["xcrun", "simctl", "shutdown", simulator], check=False, timeout=60)
+            delete_owned_simulator(simulator)
 
 
 if __name__ == "__main__":
