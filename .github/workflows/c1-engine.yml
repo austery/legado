@@ -10,19 +10,19 @@ on:
       execution:
         description: Runner to use for this C1 validation
         type: choice
-        default: local
+        default: cloud
         options: [local, cloud]
       cloud_cache:
-        description: Cold skips restore; warm requires the same commit cache
+        description: auto restores compatible caches; cold skips restore; warm requires both hits
         type: choice
-        default: cold
-        options: [cold, warm]
+        default: auto
+        options: [auto, cold, warm]
 
 permissions:
   contents: read
 
 concurrency:
-  group: c1-engine-${{ inputs.execution || 'local' }}-${{ github.event.pull_request.number || github.ref }}
+  group: c1-engine-${{ inputs.execution || 'cloud' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
           if [[ "$ENGINE_RESULT" != "success" ]]; then
             echo "::error::C1 tests did not succeed (result: $ENGINE_RESULT)."
             if [[ "$ENGINE_RESULT" == "skipped" ]]; then
-              echo "::error::Fork PRs cannot use the self-hosted runner. A maintainer must review and transfer the changes to a repository-owned branch, then pass C1 on its PR before merging."
+              echo "::error::Fork PRs require a maintainer to review and transfer the changes to a repository-owned branch, then pass C1 on its PR before merging."
             fi
             exit 1
           fi
@@ -52,13 +52,13 @@ jobs:
   engine:
     name: C1 engine and native product tests
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ fromJSON(inputs.execution == 'cloud' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
+    runs-on: ${{ fromJSON(inputs.execution != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
     env:
-      DEVELOPER_DIR: ${{ inputs.execution == 'cloud' && '/Applications/Xcode_27.0.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
+      DEVELOPER_DIR: ${{ inputs.execution != 'local' && '/Applications/Xcode_27.0.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - name: Isolate build caches
         run: |
@@ -72,29 +72,50 @@ jobs:
         with:
           persist-credentials: false
       - name: Preflight hosted ARM64 environment
-        if: inputs.execution == 'cloud'
+        if: inputs.execution != 'local'
         env:
           C1_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: bash scripts/path-c/cloud_preflight.sh
-      - name: Restore isolated cloud cache
-        if: inputs.execution == 'cloud' && inputs.cloud_cache == 'warm'
-        id: cloud-cache
+      - name: Define reusable toolchain cache keys
+        if: inputs.execution != 'local'
+        id: cache-keys
+        env:
+          FINGERPRINT: ${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle.properties') }}
+        run: |
+          test -n "$FINGERPRINT"
+          echo "gradle=c1-cloud-gradle-arm64-xcode27-v2-$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "native=c1-cloud-native-arm64-xcode27-v2-$FINGERPRINT" >> "$GITHUB_OUTPUT"
+      - name: Restore Gradle dependencies and task cache
+        if: inputs.execution != 'local' && inputs.cloud_cache != 'cold'
+        id: gradle-cache
         uses: actions/cache/restore@v4
         with:
           path: |
-            ${{ env.GRADLE_USER_HOME }}/caches
+            ${{ env.GRADLE_USER_HOME }}/caches/modules-2
+            ${{ env.GRADLE_USER_HOME }}/caches/build-cache-1
             ${{ env.GRADLE_USER_HOME }}/wrapper
-            ${{ env.KONAN_DATA_DIR }}
-          key: c1-cloud-xcode27-arm64-v1-${{ github.sha }}
-      - name: Record cloud cache state
-        if: inputs.execution == 'cloud'
+          key: ${{ steps.cache-keys.outputs.gradle }}
+      - name: Restore Kotlin Native toolchain
+        if: inputs.execution != 'local' && inputs.cloud_cache != 'cold'
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.KONAN_DATA_DIR }}
+          key: ${{ steps.cache-keys.outputs.native }}
+      - name: Record and validate cloud cache state
+        if: inputs.execution != 'local'
         env:
-          CACHE_MODE: ${{ inputs.cloud_cache }}
-          CACHE_HIT: ${{ steps.cloud-cache.outputs.cache-hit }}
+          CACHE_MODE: ${{ inputs.cloud_cache || 'auto' }}
+          GRADLE_HIT: ${{ steps.gradle-cache.outputs.cache-hit }}
+          NATIVE_HIT: ${{ steps.native-cache.outputs.cache-hit }}
+          GRADLE_KEY: ${{ steps.cache-keys.outputs.gradle }}
+          NATIVE_KEY: ${{ steps.cache-keys.outputs.native }}
         run: |
-          printf 'mode=%s\nhit=%s\nkey=c1-cloud-xcode27-arm64-v1-%s\n' "$CACHE_MODE" "$CACHE_HIT" "$GITHUB_SHA" > ci-results/cache.txt
-          if [[ "$CACHE_MODE" == warm && "$CACHE_HIT" != true ]]; then
-            echo '::warning::Cache did not hit; this run is not a warm-cache validation.'
+          printf 'mode=%s\ngradle_hit=%s\nnative_hit=%s\ngradle_key=%s\nnative_key=%s\n' \
+            "$CACHE_MODE" "$GRADLE_HIT" "$NATIVE_HIT" "$GRADLE_KEY" "$NATIVE_KEY" > ci-results/cache.txt
+          if [[ "$CACHE_MODE" == warm && ( "$GRADLE_HIT" != true || "$NATIVE_HIT" != true ) ]]; then
+            echo '::error::Warm validation requires exact hits for both cache layers.'
+            exit 1
           fi
       - name: Preflight local fixtures
         run: |
@@ -110,10 +131,10 @@ jobs:
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v5
         with:
-          cache-disabled: true # Cloud uses the explicit commit-isolated cache above.
+          cache-disabled: true # Explicit hosted cache layers; persistent local caches are untouched.
           cache-read-only: ${{ github.event_name == 'pull_request' }}
       - name: Start hosted resource sampler
-        if: inputs.execution == 'cloud'
+        if: inputs.execution != 'local'
         run: |
           # Aggregate process RSS is sampled, not an exact physical-memory peak.
           nohup python3 -u scripts/path-c/cloud_resources.py > ci-results/resources.jsonl 2> ci-results/resources-error.log < /dev/null &
@@ -134,7 +155,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/c1-xcodegen/xcodegen.zip" -d "$RUNNER_TEMP/c1-xcodegen"
           echo "$RUNNER_TEMP/c1-xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Record hosted command versions
-        if: inputs.execution == 'cloud'
+        if: inputs.execution != 'local'
         run: |
           python3 --version
           git --version
@@ -161,38 +182,54 @@ jobs:
             -derivedDataPath engine-ios/harness/build ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee ci-results/harness-build.log
       - name: Run network, restart cache and fresh network regressions
-        run: python3 scripts/path-c/ci_harness.py --output ci-results ${{ inputs.execution == 'cloud' && '--runtime-version 27.0' || '' }}
+        run: python3 scripts/path-c/ci_harness.py --output ci-results ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
       - name: Run native Swift product regressions
-        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ inputs.execution == 'cloud' && '--runtime-version 27.0' || '' }}
+        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
       - name: Stop hosted resource sampler
-        if: always() && inputs.execution == 'cloud'
+        if: always() && inputs.execution != 'local'
         run: |
           if [[ -f "$RUNNER_TEMP/c1-resource-sampler.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/c1-resource-sampler.pid")" || true
           fi
-      - name: Measure cloud cache and evidence sizes
-        if: always() && inputs.execution == 'cloud'
+      - name: Measure bounded cache layers and evidence
+        if: always() && inputs.execution != 'local'
         id: cloud-size
         run: |
+          mkdir -p ci-results "$GRADLE_USER_HOME/caches/modules-2" \
+            "$GRADLE_USER_HOME/caches/build-cache-1" "$GRADLE_USER_HOME/wrapper" "$KONAN_DATA_DIR"
           df -h . | tee ci-results/disk-final.txt
           du -sk ci-results "$GRADLE_USER_HOME" "$KONAN_DATA_DIR" | tee ci-results/sizes-kib.txt
-          # Bound the new cache below 2 GiB uncompressed; no quota expansion.
-          kib=$(du -sk "$GRADLE_USER_HOME/caches" "$GRADLE_USER_HOME/wrapper" "$KONAN_DATA_DIR" | awk '{s += $1} END {print s}')
-          if (( kib < 2097152 )); then echo 'save=true' >> "$GITHUB_OUTPUT"; fi
-      - name: Save bounded cloud cache
-        if: success() && inputs.execution == 'cloud' && steps.cloud-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
+          gradle_kib=$(du -sk "$GRADLE_USER_HOME/caches/modules-2" \
+            "$GRADLE_USER_HOME/caches/build-cache-1" "$GRADLE_USER_HOME/wrapper" | awk '{s += $1} END {print s}')
+          native_kib=$(du -sk "$KONAN_DATA_DIR" | awk '{print $1}')
+          printf 'gradle_kib=%s\nnative_kib=%s\n' "$gradle_kib" "$native_kib" | tee ci-results/cache-sizes.txt
+          # Each layer <2 GiB, combined <3.5 GiB uncompressed; repo limit stays 10 GiB.
+          # Exclude Gradle version-specific transforms and generated jars.
+          if (( gradle_kib < 2097152 && native_kib < 2097152 && gradle_kib + native_kib < 3670016 )); then
+            echo 'save=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::warning::Cache layers exceed the bounded save policy; no new cache saved.'
+          fi
+      - name: Save bounded Gradle cache
+        if: success() && inputs.execution != 'local' && steps.gradle-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
         uses: actions/cache/save@v4
         with:
           path: |
-            ${{ env.GRADLE_USER_HOME }}/caches
+            ${{ env.GRADLE_USER_HOME }}/caches/modules-2
+            ${{ env.GRADLE_USER_HOME }}/caches/build-cache-1
             ${{ env.GRADLE_USER_HOME }}/wrapper
-            ${{ env.KONAN_DATA_DIR }}
-          key: c1-cloud-xcode27-arm64-v1-${{ github.sha }}
+          key: ${{ steps.cache-keys.outputs.gradle }}
+      - name: Save bounded Kotlin Native cache
+        if: success() && inputs.execution != 'local' && steps.native-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.KONAN_DATA_DIR }}
+          key: ${{ steps.cache-keys.outputs.native }}
       - name: Print hosted evidence to Actions logs
-        if: always() && inputs.execution == 'cloud'
+        if: always() && inputs.execution != 'local'
         run: python3 scripts/path-c/cloud_evidence.py
       - name: Upload validation evidence
-        if: always() && inputs.execution != 'cloud'
+        if: always() && inputs.execution == 'local'
         uses: actions/upload-artifact@v6
         with:
           name: c1-results-${{ github.run_id }}-${{ github.run_attempt }}
