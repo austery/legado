@@ -85,6 +85,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--fixtures-only", action="store_true")
+    parser.add_argument("--runtime-version", help="Require this exact iOS version; fail if unavailable")
     args = parser.parse_args()
     output: Path = args.output
     output.mkdir(parents=True, exist_ok=True)
@@ -95,6 +96,8 @@ def main() -> None:
     runtimes = cast(dict[str, list[Runtime]], json.loads(simctl("list", "runtimes", "--json")))
     available = [item for item in runtimes["runtimes"]
                  if item["isAvailable"] and ".iOS-" in item["identifier"]]
+    if args.runtime_version:
+        available = [item for item in available if item["version"] == args.runtime_version]
     if not available:
         raise SystemExit("No available iOS simulator runtime")
     runtime = max(available, key=lambda item: tuple(int(part) for part in item["version"].split(".")))
