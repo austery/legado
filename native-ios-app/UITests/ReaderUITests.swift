@@ -71,8 +71,37 @@ final class ReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { self.anchor(app) == position && app.frame.width > app.frame.height }
         capture("after-landscape")
-        XCUIDevice.shared.orientation = .portrait
-        wait(app) { self.anchor(app) == position && app.frame.width < app.frame.height }
+        for id in ["reader.previous", "reader.next", "reader.contents", "reader.typography", "reader.shelf", "reader.controls"] {
+            XCTAssertTrue(app.buttons[id].isHittable, "Landscape control must be hittable: \(id)")
+            XCTAssertTrue(app.frame.contains(app.buttons[id].frame), "Landscape control must be inside window: \(id)")
+        }
+        XCTAssertLessThanOrEqual(body.frame.maxY, app.buttons["reader.contents"].frame.minY + 1)
+        app.buttons["reader.controls"].tap()
+        XCTAssertFalse(app.buttons["reader.contents"].exists)
+        wait(app) { self.anchor(app) == position }
+        app.buttons["reader.controls"].tap()
+        app.buttons["reader.contents"].tap()
+        XCTAssertTrue(app.buttons["contents.continue"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["contents.continue"].isHittable)
+        capture("landscape-contents")
+        app.buttons["contents.continue"].tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
+        app.buttons["reader.contents"].tap()
+        XCTAssertTrue(app.buttons["contents.currentChapter"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["contents.currentChapter"].isHittable)
+        app.buttons["contents.currentChapter"].tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["typography.larger"].isHittable)
+        app.buttons["typography.larger"].tap()
+        capture("landscape-typography")
+        app.buttons["typography.smaller"].tap()
+        XCTAssertTrue(app.buttons["Done"].isHittable)
+        app.buttons["Done"].tap()
+        wait(app) { self.anchor(app) == position }
+        print("LANDSCAPE directory and typography: \(state(app)); frame=\(app.frame)")
+        capture("landscape-restored-reading")
 
         app.buttons["fixture.saveFailure"].tap()
         app.buttons["reader.shelf"].tap()
@@ -81,8 +110,16 @@ final class ReaderUITests: XCTestCase {
         XCTAssertEqual(anchor(app), position)
         XCTAssertFalse(book.exists)
         capture("after-save-rejected")
+        XCTAssertGreaterThan(app.frame.width, app.frame.height)
+        for name in ["Retry save", "Return without saving", "Dismiss"] {
+            XCTAssertTrue(app.buttons[name].isHittable)
+            XCTAssertTrue(app.frame.contains(app.buttons[name].frame))
+        }
+        capture("landscape-save-rejected")
         app.buttons["Return without saving"].tap()
         XCTAssertTrue(app.buttons["Keep reading"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Keep reading"].isHittable)
+        capture("landscape-discard-confirmation")
         app.buttons["Keep reading"].tap()
         XCTAssertTrue(body.exists)
         app.buttons["fixture.saveFailure"].tap()
@@ -97,6 +134,10 @@ final class ReaderUITests: XCTestCase {
         wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
         print("UI POSITION after shelf reopen: \(state(app))")
         capture("after-reopened-position")
+        print("LANDSCAPE save recovery and reopen: \(state(app)); frame=\(app.frame)")
+        XCUIDevice.shared.orientation = .portrait
+        wait(app) { self.anchor(app) == position && app.frame.width < app.frame.height }
+        capture("portrait-after-landscape-interactions")
         app.buttons["reader.shelf"].tap()
         XCTAssertTrue(book.waitForExistence(timeout: 10))
         app.terminate(); app.launch()
