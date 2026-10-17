@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import TypedDict, cast
+from uuid import uuid4
 
 
 class Check(TypedDict):
@@ -32,7 +33,10 @@ def main() -> int:
     if output.exists():
         raise SystemExit("Output already exists; choose a new evidence path")
     container = Path(simctl("get_app_container", args.simulator, bundle, "data"))
-    report = container / "Documents" / "results.json"
+    report_name = f"results-{uuid4().hex}.json"
+    report = container / "Documents" / report_name
+    # The old process keeps its previous filename even if it writes during relaunch.
+    os.environ["SIMCTL_CHILD_PATH_C_REPORT_NAME"] = report_name
     started = time.time()
     if args.persistence:
         os.environ["SIMCTL_CHILD_PATH_C_PERSISTENCE"] = "1"

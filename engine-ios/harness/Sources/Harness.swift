@@ -15,6 +15,7 @@ final class Harness: ObservableObject {
     private let engine = ReaderEngine()
     private var sourceID = ""
     private let persistenceRun = ProcessInfo.processInfo.environment["PATH_C_PERSISTENCE"] == "1"
+    private let reportName = ProcessInfo.processInfo.environment["PATH_C_REPORT_NAME"] ?? "results.json"
 
     private func record(_ name: String, _ passed: Bool, _ detail: String = "") {
         checks.append(Check(name: name, passed: passed, detail: detail))
@@ -22,7 +23,7 @@ final class Harness: ObservableObject {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(checks).write(to: directory.appendingPathComponent("results.json"), options: .atomic)
+            try encoder.encode(checks).write(to: directory.appendingPathComponent(reportName), options: .atomic)
         } catch {
             NSLog("Harness report write failed: %@", error.localizedDescription)
         }
