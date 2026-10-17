@@ -6,7 +6,7 @@ struct ReadingStyle: Equatable {
     var size: Double = 22
     var lineSpacing: Double = 6
     var paragraphSpacing: Double = 12
-    var margin: Double = 24
+    var margin: Double = 28
     var dark = false
 }
 
@@ -18,6 +18,7 @@ struct ReadingRestoration: Equatable {
 
 final class AnchoredTextView: UITextView, UITextViewDelegate {
     var anchor = 0
+    private var readingIsActive = true
     var restoring = false
     var chapterKey = ""
     var style = ReadingStyle()
@@ -57,7 +58,15 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
 
     func configure(chapterKey: String, body: String, style: ReadingStyle,
                    restoration: ReadingRestoration?, onDisplayed: ((String, Int) -> Void)?,
-                   onParagraphScroll: ((String, Int) -> Void)?) {
+                   onParagraphScroll: ((String, Int) -> Void)?, isReading: Bool = true) {
+        // Navigation changes the view size before its opacity necessarily changes.
+        // Preserve the session anchor through those non-reading layout callbacks.
+        if readingIsActive != isReading {
+            readingIsActive = isReading
+            userScrolling = false
+            needsAnchorRestoration = true
+            setNeedsLayout()
+        }
         self.onDisplayed = onDisplayed
         self.onParagraphScroll = onParagraphScroll
         let newChapter = self.chapterKey != chapterKey
@@ -104,7 +113,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { userScrolling = false }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !restoring, !needsAnchorRestoration, !text.isEmpty else { return }
+        guard readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty else { return }
         let point = CGPoint(x: textContainerInset.left + 1, y: contentOffset.y + textContainerInset.top + 1)
         guard let position = closestPosition(to: point),
               let normalized = paragraphStart(offset(from: beginningOfDocument, to: position)) else { return }
@@ -135,11 +144,21 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
         setNeedsLayout()
     }
 
+    // UIKit can adjust contentOffset during a size change before layoutSubviews.
+    // Keep the accepted text anchor until that new layout has restored it.
+    override var bounds: CGRect {
+        willSet { if newValue.size != bounds.size { needsAnchorRestoration = true } }
+    }
+
+    override var frame: CGRect {
+        willSet { if newValue.size != frame.size { needsAnchorRestoration = true } }
+    }
+
     override func layoutSubviews() {
         let wasRestoring = restoring
         restoring = true
         let changed = previousSize != bounds.size
-        let inset = max(style.margin, (bounds.width - 760) / 2)
+        let inset = max(style.margin, (bounds.width - 680) / 2)
         let desiredInset = UIEdgeInsets(top: 24, left: inset, bottom: 40, right: inset)
         if textContainerInset != desiredInset { textContainerInset = desiredInset }
         super.layoutSubviews()
@@ -189,6 +208,7 @@ struct ReadingText: UIViewRepresentable {
     var restoration: ReadingRestoration? = nil
     var onDisplayed: ((String, Int) -> Void)? = nil
     var onParagraphScroll: ((String, Int) -> Void)? = nil
+    var isReading = true
 
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
@@ -203,6 +223,6 @@ struct ReadingText: UIViewRepresentable {
 
     func updateUIView(_ view: AnchoredTextView, context: Context) {
         view.configure(chapterKey: chapterKey, body: text, style: style, restoration: restoration,
-                       onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll)
+                       onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll, isReading: isReading)
     }
 }

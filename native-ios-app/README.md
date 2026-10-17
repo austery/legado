@@ -13,7 +13,7 @@ These are product defaults awaiting owner feedback, not recovered Wanyuan values
 
 - System-available PingFang, Songti and Kaiti candidates; unavailable fonts are omitted.
 - 22-point initial text; size range 16–36, line spacing 6 (0–18), paragraph spacing
-  12 (0–30), margins 24 (12–64). Maximum text column width is approximately 760 points.
+  12 (0–30), margins 28 (12–64). Maximum text column width is approximately 680 points.
 - Warm light background; optional dark appearance. Settings last for the view session.
 - Explicit show/hide control button instead of guessed tap regions. Long-press text
   selection follows UITextView behavior. No custom pagination engine.
@@ -248,3 +248,75 @@ observed the original source failing safely and Dingdian returning 50 results.
 The existing two reading/typography cases also passed. A standalone native probe
 compiled with the actual guard verified invalid ranges, empty matches, capture
 replacement and cancellation propagation. Gradle nativeTest was not run.
+
+
+### Minimal reading UI and actual control validation
+
+#### UI review contract (2026-10-17 candidate)
+
+Keep the existing warm paper, bounded text column, chapter heading and optional
+bottom controls. This continuation changes directory return behavior and feedback,
+not the visual direction. Design rationale remains in local SPEC-002, persistence
+in SPEC-003, and search in SPEC-004; those specs are historical scope documents,
+not evidence that this candidate passed device acceptance.
+
+- Already delivered: whole shelf-row taps, paragraph-preserving typography and
+  rotation, Contents continuation, save rejection/retry and acknowledged shelf return.
+- This candidate: tapping the marked current chapter in Contents uses the same
+  return operation as Continue reading: writable shelf sessions reopen their saved
+  position through the engine; unshelved or read-only sessions retain their current
+  text view and paragraph without reopening an older stored chapter. Other chapters
+  still open normally. The retained text view freezes its session anchor while the
+  reading route is inactive, including UIKit scroll callbacks during directory layout.
+  Shelf/Contents navigation is disabled during loading, while Cancel stays available.
+  Save notices put the explanation above clearly separated action buttons.
+- Acceptance: both directory return paths preserve the same nonzero paragraph;
+  held next-chapter requests disable competing navigation and can be cancelled;
+  save rejection retains the text, retry succeeds, and reopening after relaunch
+  returns to the same chapter/paragraph. Inspect actual screenshots as well as tests.
+- Remaining owner review: visual comfort, physical iPad touch/rotation and compact
+  layouts. Session typography persistence remains unchanged. No new providers,
+  source rules, database schema, or engine behavior are introduced.
+
+The UI runner now uses PR22's shared cleanup helper on its own newly created
+simulator, including failures; host screenshots/logs/results remain available.
+
+Reading keeps the book/chapter heading above a bounded paper-colored text column.
+The shelf return and control toggle stay in the toolbar; chapter navigation,
+contents and typography sit together below the body. Text size and appearance
+are immediately available in the typography sheet, with existing font/spacing
+controls under More text options. Contents can continue the saved current chapter
+through the real engine, obtaining a fresh writable reading token. A successful
+shelf return confirms the acknowledged position; a failed save retains the body
+and existing retry/discard choices. Whole shelf rows accept a tap.
+
+The separate synthetic UI host compiles the same reader sources with
+`READER_UI_TEST_HOST`, excludes the product app entry point, and uses bundle ID
+`io.legado.pathc.ui-fixture`. Its setup imports an owned loopback source through
+the real engine and searches its test book. The original journey explicitly shelves
+its book; separate scenarios leave it unshelved or seed an unsupported saved-format
+record to obtain a real canSave=false reply on a different chapter. Each test starts
+with a fresh host database; only the relaunch check preserves it. Test-only controls
+hold a chapter request and install/remove a rejecting SQLite trigger solely in
+that host database. None of this setup or fault injection is part of NativeReader.
+
+With the simulator engine already built, run:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+python3 scripts/path-c/reader_ui_ci.py --output /absolute/path/to/new-ui-evidence
+```
+
+This creates a new simulator, operates actual controls with XCUITest, and retains
+screenshots and `.xcresult`. It checks row-centre opening, chapter body markers,
+first-chapter boundary, cancel/retry, real swipes, contents/continue, controls,
+text size and rotation, rejected save without leaving, cancelling discard,
+retry, acknowledged shelf return and same-chapter/paragraph reopening, including
+process relaunch. The test host observes the actual TextKit paragraph anchor;
+only setup and fault injection use test controls. No production provider, physical
+device or existing reader data is involved. The ordinary 38-test Swift product
+gate remains separate; UI tests do not replace it. The UI gate requires exactly
+three passing tests with no failures or skips. Both directory buttons are exercised
+for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
+no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
+`project.yml` generation excludes this host and UI test target.

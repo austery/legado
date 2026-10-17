@@ -1,0 +1,38 @@
+include: project.yml
+targets:
+  NativeReaderFixture:
+    type: application
+    platform: iOS
+    sources: [Sources, UITestHost]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.legado.pathc.ui-fixture
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: '$(inherited) READER_UI_TEST_HOST'
+        FRAMEWORK_SEARCH_PATHS: ['$(inherited)', '$(SRCROOT)/../engine-ios/build/bin/iosSimulatorArm64/debugFramework']
+        OTHER_LDFLAGS: ['$(inherited)', '-framework', ReaderEngine]
+        LD_RUNPATH_SEARCH_PATHS: ['$(inherited)', '@executable_path/Frameworks']
+    postBuildScripts:
+      - name: Embed fixture engine
+        script: |
+          set -eu
+          mkdir -p "$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+          ditto "$SRCROOT/../engine-ios/build/bin/iosSimulatorArm64/debugFramework/ReaderEngine.framework" "$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/ReaderEngine.framework"
+        basedOnDependencyAnalysis: false
+  NativeReaderUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: NativeReaderFixture
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.legado.pathc.ui-fixture.tests
+        TEST_TARGET_NAME: NativeReaderFixture
+schemes:
+  NativeReaderUI:
+    build:
+      targets:
+        NativeReaderFixture: all
+        NativeReaderUITests: [test]
+    test:
+      targets: [NativeReaderUITests]
