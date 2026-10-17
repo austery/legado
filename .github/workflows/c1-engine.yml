@@ -42,6 +42,11 @@ on:
         type: choice
         default: local
         options: [local, cloud]
+      cloud_cache:
+        description: Cold skips restore; warm requires the same commit cache
+        type: choice
+        default: cold
+        options: [cold, warm]
 
 permissions:
   contents: read
@@ -54,13 +59,13 @@ jobs:
   engine:
     name: C1 engine regression
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ fromJSON(inputs.execution == 'cloud' && '["macos-26"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
+    runs-on: ${{ fromJSON(inputs.execution == 'cloud' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
     env:
-      DEVELOPER_DIR: ${{ inputs.execution == 'cloud' && '/Applications/Xcode_26.5.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
+      DEVELOPER_DIR: ${{ inputs.execution == 'cloud' && '/Applications/Xcode_27.0.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - name: Isolate build caches
         run: |
@@ -73,6 +78,31 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Preflight hosted ARM64 environment
+        if: inputs.execution == 'cloud'
+        env:
+          C1_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: bash scripts/path-c/cloud_preflight.sh
+      - name: Restore isolated cloud cache
+        if: inputs.execution == 'cloud' && inputs.cloud_cache == 'warm'
+        id: cloud-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.GRADLE_USER_HOME }}/caches
+            ${{ env.GRADLE_USER_HOME }}/wrapper
+            ${{ env.KONAN_DATA_DIR }}
+          key: c1-cloud-xcode27-arm64-v1-${{ github.sha }}
+      - name: Record cloud cache state
+        if: inputs.execution == 'cloud'
+        env:
+          CACHE_MODE: ${{ inputs.cloud_cache }}
+          CACHE_HIT: ${{ steps.cloud-cache.outputs.cache-hit }}
+        run: |
+          printf 'mode=%s\nhit=%s\nkey=c1-cloud-xcode27-arm64-v1-%s\n' "$CACHE_MODE" "$CACHE_HIT" "$GITHUB_SHA" > ci-results/cache.txt
+          if [[ "$CACHE_MODE" == warm && "$CACHE_HIT" != true ]]; then
+            echo '::warning::Cache did not hit; this run is not a warm-cache validation.'
+          fi
       - name: Preflight local fixtures
         run: |
           python3 -m unittest discover -s scripts/path-c -p 'test_*.py'
@@ -87,8 +117,14 @@ jobs:
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v5
         with:
-          cache-disabled: ${{ runner.environment == 'self-hosted' }}
+          cache-disabled: true # Cloud uses the explicit commit-isolated cache above.
           cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Start hosted resource sampler
+        if: inputs.execution == 'cloud'
+        run: |
+          # Aggregate process RSS is sampled, not an exact physical-memory peak.
+          nohup python3 -u scripts/path-c/cloud_resources.py > ci-results/resources.jsonl 2> ci-results/resources-error.log < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/c1-resource-sampler.pid"
       - name: Check environment
         run: |
           test "$(uname -m)" = arm64
@@ -122,9 +158,33 @@ jobs:
             -derivedDataPath engine-ios/harness/build ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee ci-results/harness-build.log
       - name: Run network, restart cache and fresh network regressions
-        run: python3 scripts/path-c/ci_harness.py --output ci-results
+        run: python3 scripts/path-c/ci_harness.py --output ci-results ${{ inputs.execution == 'cloud' && '--runtime-version 27.0' || '' }}
       - name: Run native Swift product regressions
-        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product
+        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ inputs.execution == 'cloud' && '--runtime-version 27.0' || '' }}
+      - name: Stop hosted resource sampler
+        if: always() && inputs.execution == 'cloud'
+        run: |
+          if [[ -f "$RUNNER_TEMP/c1-resource-sampler.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/c1-resource-sampler.pid")" || true
+          fi
+      - name: Measure cloud cache and evidence sizes
+        if: always() && inputs.execution == 'cloud'
+        id: cloud-size
+        run: |
+          df -h . | tee ci-results/disk-final.txt
+          du -sk ci-results "$GRADLE_USER_HOME" "$KONAN_DATA_DIR" | tee ci-results/sizes-kib.txt
+          # Bound the new cache below 2 GiB uncompressed; no quota expansion.
+          kib=$(du -sk "$GRADLE_USER_HOME/caches" "$GRADLE_USER_HOME/wrapper" "$KONAN_DATA_DIR" | awk '{s += $1} END {print s}')
+          if (( kib < 2097152 )); then echo 'save=true' >> "$GITHUB_OUTPUT"; fi
+      - name: Save bounded cloud cache
+        if: success() && inputs.execution == 'cloud' && steps.cloud-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.GRADLE_USER_HOME }}/caches
+            ${{ env.GRADLE_USER_HOME }}/wrapper
+            ${{ env.KONAN_DATA_DIR }}
+          key: c1-cloud-xcode27-arm64-v1-${{ github.sha }}
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v6
@@ -133,4 +193,4 @@ jobs:
           path: |
             ci-results/
             !ci-results/native-product/DerivedData/
-          retention-days: 7
+          retention-days: ${{ inputs.execution == 'cloud' && 1 || 7 }}
