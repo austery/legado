@@ -35,14 +35,15 @@ struct ReaderScreen: View {
                     }.padding().background(.regularMaterial)
                 }
                 if let notice = model.saveNotice ?? model.resumeNotice {
-                    HStack {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text(notice).font(.callout)
-                        Spacer()
+                        HStack {
                         if model.saveNotice != nil && model.canRetryPosition { Button("Retry save") { model.flushReadingPosition() } }
                         if model.canRetryPosition {
                             Button("Return without saving") { confirmingDiscard = true }
                         }
                         Button("Dismiss") { model.resumeNotice = nil; model.saveNotice = nil }
+                        }.buttonStyle(.bordered)
                     }.padding().background(.regularMaterial)
                 }
                 if model.busy {
@@ -81,6 +82,7 @@ struct ReaderScreen: View {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button { model.showShelf() } label: { Label("Shelf", systemImage: "chevron.left") }
                             .accessibilityIdentifier("reader.shelf")
+                            .disabled(model.busy)
                     }
                 }
                 if model.route == .shelf || model.route == .contents {
@@ -273,7 +275,11 @@ struct ReaderScreen: View {
                 if model.chapters.isEmpty { Text("No chapters available.") }
                 ForEach(model.chapters, id: \.id) { chapter in
                     Button {
-                        model.read(chapter)
+                        if model.content?.chapter.id == chapter.id {
+                            model.resumeCurrentBook()
+                        } else {
+                            model.read(chapter)
+                        }
                     } label: {
                         HStack {
                             Text(chapter.title).foregroundStyle(.primary)
@@ -282,8 +288,9 @@ struct ReaderScreen: View {
                                 Label("Current chapter", systemImage: "bookmark.fill")
                                     .labelStyle(.iconOnly).font(.caption)
                             }
-                        }.padding(.vertical, 5)
+                        }.padding(.vertical, 5).contentShape(Rectangle())
                     }.disabled(model.busy)
+                        .accessibilityIdentifier(model.content?.chapter.id == chapter.id ? "contents.currentChapter" : "contents.chapter.\(chapter.id)")
                 }
             }
         }
@@ -303,6 +310,7 @@ struct ReaderScreen: View {
                         Label("Contents", systemImage: "list.bullet").frame(minHeight: 44).contentShape(Rectangle())
                     }
                         .accessibilityIdentifier("reader.contents")
+                        .disabled(model.busy)
                     Spacer(minLength: 12)
                     Button { settings = true } label: {
                         Label("Typography", systemImage: "textformat.size")

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from ci_harness import simctl
+from ci_harness import delete_owned_simulator, simctl
 from native_product_ci import fixtures, run, validate_summary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,8 +34,8 @@ def main() -> None:
         'suites': ['ReaderUITests/testShelfReadingRecoveryAndResume']}, indent=2))
     with fixtures():
         simulator = simctl('create', 'Native Reader UI', tablets[0], runtime['identifier'])
-        (output / 'simulator.txt').write_text(simulator + '\n' + runtime['identifier'])
         try:
+            (output / 'simulator.txt').write_text(simulator + '\n' + runtime['identifier'])
             run(['xcodegen', 'generate', '--spec', 'native-ios-app/ui-tests.yml'], output / 'project.log', 60)
             simctl('boot', simulator)
             run(['xcrun', 'simctl', 'bootstatus', simulator, '-b'], output / 'boot.log', 180)
@@ -52,7 +52,7 @@ def main() -> None:
             run(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(output / 'UI.xcresult'),
                  '--output-path', str(output / 'screenshots')], output / 'screenshots.log', 60)
         finally:
-            subprocess.run(['xcrun', 'simctl', 'shutdown', simulator], check=False, timeout=60)
+            delete_owned_simulator(simulator)
 
 
 if __name__ == '__main__':

@@ -252,6 +252,31 @@ replacement and cancellation propagation. Gradle nativeTest was not run.
 
 ### Minimal reading UI and actual control validation
 
+#### UI review contract (2026-10-17 candidate)
+
+Keep the existing warm paper, bounded text column, chapter heading and optional
+bottom controls. This continuation changes directory return behavior and feedback,
+not the visual direction. Design rationale remains in local SPEC-002, persistence
+in SPEC-003, and search in SPEC-004; those specs are historical scope documents,
+not evidence that this candidate passed device acceptance.
+
+- Already delivered: whole shelf-row taps, paragraph-preserving typography and
+  rotation, Contents continuation, save rejection/retry and acknowledged shelf return.
+- This candidate: tapping the marked current chapter in Contents uses the same
+  engine resume operation as Continue reading; other chapters still open normally.
+  Shelf/Contents navigation is disabled during loading, while Cancel stays available.
+  Save notices put the explanation above clearly separated action buttons.
+- Acceptance: both directory return paths preserve the same nonzero paragraph;
+  held next-chapter requests disable competing navigation and can be cancelled;
+  save rejection retains the text, retry succeeds, and reopening after relaunch
+  returns to the same chapter/paragraph. Inspect actual screenshots as well as tests.
+- Remaining owner review: visual comfort, physical iPad touch/rotation and compact
+  layouts. Session typography persistence remains unchanged. No new providers,
+  source rules, database schema, or engine behavior are introduced.
+
+The UI runner now uses PR22's shared cleanup helper on its own newly created
+simulator, including failures; host screenshots/logs/results remain available.
+
 Reading keeps the book/chapter heading above a bounded paper-colored text column.
 The shelf return and control toggle stay in the toolbar; chapter navigation,
 contents and typography sit together below the body. Text size and appearance

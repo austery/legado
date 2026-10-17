@@ -23,6 +23,9 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Release chapter"].waitForExistence(timeout: 5))
         app.buttons["reader.next"].tap()
         XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["reader.next"].isEnabled)
+        XCTAssertFalse(app.buttons["reader.shelf"].isEnabled)
+        XCTAssertFalse(app.buttons["reader.contents"].isEnabled)
         app.buttons["Cancel"].tap()
         app.buttons["fixture.hold"].tap()
         wait(app) { self.state(app).contains("chapter=0;") && !app.buttons["Cancel"].exists }
@@ -46,6 +49,13 @@ final class ReaderUITests: XCTestCase {
         app.buttons["contents.continue"].tap()
         wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
         XCTAssertTrue((body.value as? String ?? "").contains("第199段"))
+
+        // Both directory return paths must resume the same saved paragraph.
+        app.buttons["reader.contents"].tap()
+        XCTAssertTrue(app.buttons["contents.currentChapter"].waitForExistence(timeout: 10))
+        app.buttons["contents.currentChapter"].tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
+        capture("after-current-chapter-resume")
 
         app.buttons["reader.controls"].tap()
         XCTAssertFalse(app.buttons["reader.contents"].exists)
