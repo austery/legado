@@ -18,6 +18,7 @@ import io.legado.app.model.audio.AudioPlaySession
 import io.legado.app.model.audio.LyricPublisher
 import io.legado.app.model.audio.NowPlayingSessionHost
 import io.legado.app.help.media.maxLoadedTimeRangeEndMs
+import io.legado.app.utils.canonicalizeUri
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -157,7 +158,7 @@ private class IosAvAudioPlayController : AudioPlayController {
     fun setSource(url: String, headers: Map<String, String>, startPosMs: Long) {
         releaseCurrent()
         pendingSeekMs = startPosMs
-        val nsUrl = NSURL.URLWithString(url) ?: run {
+        val nsUrl = NSURL.URLWithString(url.canonicalizeUri()) ?: run {
             listener?.onPlayerError(IllegalArgumentException("非法 URL: $url"))
             return
         }
@@ -170,6 +171,8 @@ private class IosAvAudioPlayController : AudioPlayController {
         item = newItem
         player = AVPlayer.playerWithPlayerItem(newItem)
         registerItemObservers(newItem)
+        // 音频能量采集: 挂 AudioProcessingTap (音轨未加载完时这项会落空, 就绪后再试一次)
+        IosAudioEnergyTap.attach(newItem)
     }
 
     /**
@@ -212,6 +215,7 @@ private class IosAvAudioPlayController : AudioPlayController {
 
     /** 就绪: 先 seek 起播位置, playWhenReady 则起播, 再回调 STATE_READY */
     private fun onItemReady() {
+        item?.let { IosAudioEnergyTap.attach(it) }
         if (pendingSeekMs > 0) {
             player?.seekToTime(CMTimeMake(pendingSeekMs, 1000))
             pendingSeekMs = 0
@@ -281,6 +285,7 @@ private class IosAvAudioPlayController : AudioPlayController {
     }
 
     private fun releaseCurrent() {
+        IosAudioEnergyTap.detach()
         statusObserver?.dispose()
         statusObserver = null
         val center = NSNotificationCenter.defaultCenter
