@@ -3,6 +3,7 @@
 package io.legado.app.model.script
 
 import com.fleeksoft.ksoup.nodes.Node
+import com.script.jsdispatch.JsValueConverters
 import io.legado.app.help.JsCryptoProviders
 import io.legado.app.data.entities.BaseBook
 import io.legado.app.data.entities.BaseSource
@@ -437,19 +438,11 @@ object NativeJsExtensionsBridge {
             }
 
             obj is AnalyzeRuleCore && methodId == 29 -> {
-                // getElement(rule) → 单个节点 handle (0 = null, JS 层 __createElementObj 包装)
-                val node = obj.getElement(args.getString(0)) as? Node
-                if (node == null) qjs_NewFloat64(ctx, 0.0)
-                else qjs_NewFloat64(ctx, NativeJsPropertyBridge.registerScopedHandle(node).toDouble())
+                anyToJs(ctx, obj.getElement(args.getString(0)))
             }
 
             obj is AnalyzeRuleCore && methodId == 30 -> {
-                // getElements(rule) → 节点 handle 数组 (JS 层逐个包装, 空结果 → [])
-                val list = obj.getElements(args.getString(0))
-                NativeJsPropertyBridge.nodeListToJsHandleArray(
-                    ctx,
-                    list.mapNotNull { it as? Node }
-                )
+                anyToJs(ctx, obj.getElements(args.getString(0)))
             }
 
             obj is AnalyzeRuleCore && methodId == 31 -> {
@@ -489,9 +482,8 @@ object NativeJsExtensionsBridge {
             }
 
             obj is AnalyzeRuleCore && methodId == 35 -> {
-                // close() → undefined (释放 topScope, 与 JVM 端一致无返回值)
-                obj.close()
-                jsUndefined()
+                // Only the Kotlin owner may release a scope, after script execution returns.
+                throw IllegalStateException("Analyzer close is not available to scripts")
             }
 
             // ============ JsCryptoProviders 摘要/HMAC 面 (100-199) ============
@@ -976,19 +968,12 @@ function __createJavaObj(handle) {
     obj.evalJS = function(jsStr) { return __nativeDispatch(handle, 26, [jsStr]); };
     obj.getString = function(rule, content, isUrl) { return __nativeDispatch(handle, 27, [rule, content, isUrl]); };
     obj.getStringList = function(rule, content, isUrl) { return __nativeDispatch(handle, 28, [rule, content, isUrl]); };
-    obj.getElement = function(rule) { var h = __nativeDispatch(handle, 29, [rule]); return h ? __createElementObj(h) : null; };
-    obj.getElements = function(rule) {
-        var hs = __nativeDispatch(handle, 30, [rule]);
-        if (!hs) return [];
-        var out = [];
-        for (var i = 0; i < hs.length; i++) out.push(__createElementObj(hs[i]));
-        return out;
-    };
+    obj.getElement = function(rule) { return __nativeDispatch(handle, 29, [rule]); };
+    obj.getElements = function(rule) { return __nativeDispatch(handle, 30, [rule]); };
     obj.setContent = function(content, baseUrl) { return __createAnalyzeObj(__nativeDispatch(handle, 31, [content, baseUrl])); };
     obj.setBaseUrl = function(baseUrl) { return __createAnalyzeObj(__nativeDispatch(handle, 32, [baseUrl])); };
     obj.setRedirectUrl = function(url) { return __nativeDispatch(handle, 33, [url]); };
     obj.splitSourceRule = function(rule, allInOne) { return __nativeDispatch(handle, 34, [rule, allInOne]); };
-    obj.close = function() { return __nativeDispatch(handle, 35, []); };
     // ============ 网络族 (300-399) ============
     obj.ajax = function(url) { return __nativeDispatch(handle, 301, [url]); };
     obj.ajaxAll = function(urlList) {
@@ -1256,7 +1241,8 @@ function __createJsUrlObj(handle) {
             return qjs_ValueGetBool(v) != 0
         }
         if (qjs_IsNumber(v) != 0) {
-            return qjs_ValueGetFloat64(v)
+            return if (qjs_ValueGetTag(v) == JS_TAG_INT) qjs_ValueGetInt(v)
+            else qjs_ValueGetFloat64(v)
         }
         if (qjs_IsString(v) != 0) {
             return jsValueToString(ctx, v)
@@ -1347,23 +1333,24 @@ function __createJsUrlObj(handle) {
         else -> null
     }
 
-    /**
-     * 任意 Kotlin 值 → JSValue (evalJS 返回值用):
-     * 基本类型直转; Map/List 递归构造 JS 对象/数组 (JS_SetProperty 转移所有权, 不额外 free);
-     * 其余对象 toString 降级 (与 JVM 反射包装的差异, 复杂对象不可桥接)。
-     */
-    private fun anyToJs(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue> = when (value) {
+    /** Preserve rule results, including JSON values, collections and scoped DOM nodes. */
+    private fun anyToJs(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue> = when (val converted = JsValueConverters.convertAll(value)) {
         null -> jsNull()
-        is String -> stringToJsValue(ctx, value)
-        is Boolean -> qjs_NewBool(ctx, if (value) 1 else 0)
+        is String -> stringToJsValue(ctx, converted)
+        is Boolean -> qjs_NewBool(ctx, if (converted) 1 else 0)
         is Number -> {
-            val d = value.toDouble()
+            val d = converted.toDouble()
             if (d.isNaN() || d.isInfinite()) jsNull() else qjs_NewFloat64(ctx, d)
+        }
+
+        is Node -> {
+            val handle = NativeJsPropertyBridge.registerScopedHandle(converted)
+            qjsEvalUtf8(ctx, "__createElementObj($handle)", "<rule-node>", qjs_EvalTypeGlobal())
         }
 
         is Map<*, *> -> {
             val obj = JS_NewObject(ctx)
-            for ((k, v) in value) {
+            for ((k, v) in converted) {
                 val key = k?.toString() ?: continue
                 JS_SetPropertyStr(ctx, obj, key, anyToJs(ctx, v))
             }
@@ -1372,13 +1359,13 @@ function __createJsUrlObj(handle) {
 
         is List<*> -> {
             val arr = JS_NewArray(ctx)
-            value.forEachIndexed { i, v ->
+            converted.forEachIndexed { i, v ->
                 JS_SetPropertyUint32(ctx, arr, i.toUInt(), anyToJs(ctx, v))
             }
             arr
         }
 
-        else -> stringToJsValue(ctx, value.toString())
+        else -> stringToJsValue(ctx, converted.toString())
     }
 }
 
