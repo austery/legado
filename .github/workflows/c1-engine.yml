@@ -74,6 +74,7 @@ jobs:
         if: inputs.execution != 'local'
         env:
           C1_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          C1_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bash scripts/path-c/cloud_preflight.sh
       - name: Define reusable toolchain cache keys
         if: inputs.execution != 'local'
@@ -250,6 +251,7 @@ jobs:
         shell: bash
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      C1_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -263,6 +265,7 @@ jobs:
           echo "ANDROID_HOME=$android_sdk" >> "$GITHUB_ENV"
           mkdir -p ci-results
           git rev-parse HEAD > ci-results/commit.txt
+          test "$(git rev-parse HEAD)" = "$C1_EXPECTED_SHA"
           test "$(uname -m)" = arm64
           xcodebuild -version
       - uses: actions/setup-java@v5

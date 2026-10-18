@@ -23,6 +23,19 @@ class C1GateTest(unittest.TestCase):
                          'ci_harness.py --output ci-results', 'native_product_ci.py --output'):
             self.assertIn(required, engine)
 
+    def test_preflight_checks_selected_head_and_rejects_mismatches(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        script = (root / 'scripts/path-c/cloud_preflight.sh').read_text()
+        check = next(line for line in script.splitlines() if line.startswith('test "$(git rev-parse HEAD)"'))
+        head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+        for selected, event, passed in ((head, 'merge-sha', True), ('wrong', head, False),
+                                        ('', head, True), ('', 'wrong', False)):
+            with self.subTest(selected=selected, event=event):
+                result = subprocess.run(['bash', '-eu', '-c', check], cwd=root,
+                    env={**os.environ, 'C1_EXPECTED_SHA': selected, 'GITHUB_SHA': event},
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, passed)
+
     def test_only_two_successful_jobs_can_pass(self) -> None:
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/c1-engine.yml').read_text()
         gate = workflow.split('  regression:\n', 1)[1].split('\n  engine:', 1)[0]

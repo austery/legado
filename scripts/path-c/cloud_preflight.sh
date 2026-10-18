@@ -10,7 +10,7 @@ printf 'run=%s/%s/actions/runs/%s\nattempt=%s\nimage=%s %s\n' \
   "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
 date -u '+%Y-%m-%dT%H:%M:%SZ'
 git rev-parse HEAD HEAD^{tree} | tee ci-results/checkout-and-tree.txt
-test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+test "$(git rev-parse HEAD)" = "${C1_EXPECTED_SHA:-$GITHUB_SHA}"
 sw_vers
 sysctl hw.ncpu hw.memsize
 vm_stat
