@@ -13,6 +13,10 @@ from native_product_ci import fixtures
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULES = ("data", "core", "engine-ios")
+REQUIRED_DATA_SUITES = (
+    "NativeJsConcurrentScopeTest", "NativeJsRuleBridgeTest",
+    "NativeJsCryptoBridgeTest", "NativeUrlCanonicalTest",
+)
 
 
 def validate_reports(root: Path) -> dict[str, int]:
@@ -22,8 +26,10 @@ def validate_reports(root: Path) -> dict[str, int]:
         cases = [case for path in files for case in ET.parse(path).getroot().iter("testcase")]
         if not cases or any(case.find(tag) is not None for case in cases for tag in ("failure", "error", "skipped")):
             raise RuntimeError(f"{module}: missing, failed or skipped Kotlin/Native tests")
-        if module == "data" and not any("NativeJsConcurrentScopeTest" in case.get("classname", "") for case in cases):
-            raise RuntimeError("Missing native JS concurrency regression suite")
+        if module == "data":
+            for suite in REQUIRED_DATA_SUITES:
+                if not any(case.get("classname", "").split(".")[-1] == suite for case in cases):
+                    raise RuntimeError(f"Missing required native regression suite: {suite}")
         counts[module] = len(cases)
     return counts
 

@@ -53,6 +53,8 @@ interface AudioPlayPlatformProvider {
         state: AudioPlayUiState,
         onBack: () -> Unit,
         onOpenChangeSource: () -> Unit,
+        /** 点顶栏标题进书籍详情 */
+        onOpenBookInfo: () -> Unit,
         onOpenToc: () -> Unit,
         onOpenBookSourceEdit: (String) -> Unit,
         onOpenReview: () -> Unit,
@@ -86,6 +88,12 @@ data class AudioPlayOverflowActions(
     val onShowAppLog: () -> Unit,
     /** 是否显示登录项 (取自页面状态, 随书源就绪刷新) */
     val hasLogin: Boolean,
+    /** 动态辉光开关是否显示 (仅 Android: 与 DSP offload 互斥) */
+    val showGlowToggle: Boolean = false,
+    /** 动态辉光当前是否开启 */
+    val glowEnabled: Boolean = false,
+    /** 切换动态辉光 */
+    val onToggleGlow: () -> Unit = {},
 )
 
 object AudioPlayPlatformProviders {
@@ -339,6 +347,11 @@ class AudioPlayScreenModel : ScreenModel {
             is AudioPlayUiEvent.UpdateInShelf -> _state.update {
                 it.copy(inShelf = event.inShelf).withSourceEntries()
             }
+
+            // 详情页返回后书名/书源可能已改: 用最新快照刷新展示字段, 不重启动装载
+            is AudioPlayUiEvent.UpdateBook -> _state.update {
+                it.copy(title = event.book.name).withSourceEntries()
+            }
         }
     }
 
@@ -468,4 +481,7 @@ sealed interface AudioPlayUiEvent {
 
     /** 更新书架状态 (对照 Activity 上架/下架后回写 inBookshelf) */
     data class UpdateInShelf(val inShelf: Boolean) : AudioPlayUiEvent
+
+    /** 详情页返回后刷新书名/书源 (不重启动装载) */
+    data class UpdateBook(val book: Book) : AudioPlayUiEvent
 }

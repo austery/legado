@@ -344,6 +344,15 @@ fun KotlinDependencyHandler.sharedJvmAndroidDeps() {
     api(sharedLibs.findLibrary("injekt-core").get())
 }
 
+// Execute the upstream desktop URI contract suite in C1's existing JVM task.
+// Stage only this file so unrelated desktop dependencies do not enter :data.
+val stageUpstreamUriTests = tasks.register<Sync>("stageUpstreamUriTests") {
+    from(rootProject.file("desktop/src/test/kotlin")) {
+        include("io/legado/app/utils/UriCanonicalTest.kt")
+    }
+    into(layout.buildDirectory.dir("generated/upstreamUriTests"))
+}
+
 kotlin {
     jvm()
 
@@ -564,6 +573,7 @@ kotlin {
         }
         jvmTest {
             dependsOn(jvmAndAndroidTest)
+            kotlin.srcDir(stageUpstreamUriTests)
         }
         // 真机测试: 正则语义依赖 libcore (与 JDK 不同), jvmAndAndroidTest 在 JVM 上跑不到,
         // 故设备侧用例单独落 androidDeviceTest (withDeviceTest 已在 android {} 中启用)。
