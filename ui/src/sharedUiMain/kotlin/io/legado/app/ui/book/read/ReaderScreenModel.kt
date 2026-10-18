@@ -314,6 +314,7 @@ class ReaderScreenModel(
     menuControllerFactory: (ReaderScreenModel) -> ReadMenuController,
     private val getBatteryLevel: () -> Int,
     layoutConfig: ReadBookViewModelShared.LayoutConfig = ReadBookViewModelShared.LayoutConfig.DEFAULT,
+    private val onSourceChanged: (Book, BookSource, Book, List<BookChapter>) -> Unit = { _, _, _, _ -> },
     private val onOpenSearch: (ReaderScreenModel, Book, String?) -> Unit = { _, _, _ -> },
 ) : ScreenModel {
 
@@ -840,7 +841,11 @@ class ReaderScreenModel(
     fun changeTo(source: BookSource, newBook: Book, toc: List<BookChapter>) {
         scope.launch {
             runCatching {
-                currentBook?.changeSourceTo(newBook, toc)
+                val previous = currentBook ?: return@launch
+                previous.changeSourceTo(newBook, toc)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onSourceChanged(previous, source, newBook, toc)
+                }
                 readBook.loadBook(newBook)
                 readBook.bookSourceValue = source
                 // 对照原版 chapterListData.postValue(toc): 目录先进内存,

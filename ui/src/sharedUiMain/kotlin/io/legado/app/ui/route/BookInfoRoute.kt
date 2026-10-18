@@ -98,7 +98,11 @@ fun BookInfoRoute(
     // 显式 copy, 此处直接共享路由快照; 页面改动走 bookDao.update 落库, 快照随 DB 一致)
     val book = route.book.asBook()
 
-    val screenModel = screenModelStore.getOrCreateTyped(entry) { BookInfoScreenModel(book) }
+    val screenModel = screenModelStore.getOrCreateTyped(entry) {
+        BookInfoScreenModel(book) { loadedBook, toc ->
+            navigator.updateSourceCatalog(entry.id, loadedBook, toc)
+        }
+    }
     val state by screenModel.state.collectAsState()
     val scope = rememberCoroutineScope()
     // 本页封面端点的共享身份: 页转场 token 来自发起方 (被点的卡片) 经导航带过来的 entry.sharedToken,
@@ -740,6 +744,10 @@ fun BookInfoRoute(
 
                         // 阅读器返回: 刷新阅读进度 + 书架状态 (对照 app 端 readBookResult launcher)
                         RouteResults.READER -> {
+                            (result.payload as? RouteResultPayload.ChangeSource)?.let { changed ->
+                                bookSource = changed.source
+                                screenModel.acceptSourceReturn(changed.book, changed.toc)
+                            }
                             val b = screenModel.state.value.book ?: book
                             // 书籍可能在阅读中被加入书架/删除, 重新查询 DB 同步状态
                             scope.launch(IoDispatcher) {
@@ -867,8 +875,8 @@ fun BookInfoRoute(
                 showChangeSourceDialog = false
                 val audioRevision = io.legado.app.model.AudioPlayShared.sourceRevision
                 scope.launch {
+                    val oldBook = screenModel.state.value.book ?: book
                     try {
-                        val oldBook = screenModel.state.value.book ?: book
                         withContext(IoDispatcher) {
                             oldBook.changeSourceTo(newBook, toc, screenModel.state.value.inBookshelf)
                         }
@@ -879,10 +887,8 @@ fun BookInfoRoute(
                         return@launch
                     }
                     bookSource = source
-                    navigator.setPendingResult(entry.id, RouteResultPayload.ChangeSource(source, newBook, toc, audioRevision))
-                    screenModel.dispatch(
-                        BookInfoUiEvent.ShowBook(newBook, screenModel.lastedTitleOf(newBook))
-                    )
+                    navigator.publishSourceChange(entry.id, oldBook, RouteResultPayload.ChangeSource(source, newBook, toc, audioRevision))
+                    screenModel.acceptSourceReturn(newBook, toc)
                     // 重新拉取新书信息 + 目录 (对照原版 changeTo 后 onSourceChanged 刷新)
                     screenModel.refresh(
                         newBook, source, errorLoadTocLabel,

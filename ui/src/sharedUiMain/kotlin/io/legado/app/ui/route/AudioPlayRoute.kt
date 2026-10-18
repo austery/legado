@@ -496,6 +496,7 @@ fun AudioPlayRoute(
         sidePanelSlot = { kind ->
             when (kind) {
                 AudioPlaySidePanelKind.TOC -> TocContent(
+                    ownerEntryId = entry.id,
                     // 播放器现行书籍优先 (同换源弹窗口径): 换源后 route 快照的 bookUrl 已被删行,
                     // 按它查库只会空白; 进度/totalChapterNum 也停在进页时的旧值 (目录会被截断)
                     book = AudioPlayShared.book ?: book,
@@ -597,6 +598,7 @@ fun AudioPlayRoute(
     // adjustProgress; pos=0 → skipTo 重开), 关闭由宿主回调处理)
     if (showTocDialog) {
         TocDialogHost(
+            ownerEntryId = entry.id,
             // 同上: 播放器现行书籍优先, 不用进页时的 route 快照
             book = AudioPlayShared.book ?: book,
             navigator = navigator,

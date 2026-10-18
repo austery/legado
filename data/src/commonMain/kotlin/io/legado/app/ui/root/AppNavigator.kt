@@ -1,5 +1,7 @@
 package io.legado.app.ui.root
 
+import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.constant.AppLog
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -207,6 +209,33 @@ class AppNavigator(
     /** Preserve a completed edit for toolbar, gesture and platform back navigation. */
     fun setPendingResult(entryId: RouteEntryId, payload: RouteResultPayload) {
         if (backStack.value.any { it.id == entryId }) pendingResults[entryId] = payload
+    }
+
+    /** Publish a successful migration, replacing snapshots held by its ancestors. */
+    fun publishSourceChange(entryId: RouteEntryId, previous: Book, result: RouteResultPayload.ChangeSource) {
+        val ancestors = backStack.value.takeWhile { it.id != entryId }
+        if (ancestors.size == backStack.value.size) return
+        for (ancestor in ancestors) {
+            val pending = pendingResults[ancestor.id] as? RouteResultPayload.ChangeSource ?: continue
+            if (pending.book.bookUrl == previous.bookUrl && pending.book.origin == previous.origin) {
+                pendingResults[ancestor.id] = result.copy(audioSourceRevision = pending.audioSourceRevision)
+            }
+        }
+        setPendingResult(entryId, result)
+    }
+
+    /** Refresh only matching live snapshots; an obsolete loader cannot undo a migration. */
+    fun updateSourceCatalog(entryId: RouteEntryId, book: Book, chapters: List<BookChapter>) {
+        val entries = backStack.value
+        val index = entries.indexOfFirst { it.id == entryId }
+        if (index < 0) return
+        require(chapters.all { it.bookUrl == book.bookUrl })
+        for (owner in entries.take(index + 1)) {
+            val pending = pendingResults[owner.id] as? RouteResultPayload.ChangeSource ?: continue
+            if (pending.book.bookUrl == book.bookUrl && pending.book.origin == book.origin) {
+                pendingResults[owner.id] = pending.copy(toc = chapters)
+            }
+        }
     }
 
     fun registerRefreshHandler(entryId: RouteEntryId, handler: () -> Unit) {

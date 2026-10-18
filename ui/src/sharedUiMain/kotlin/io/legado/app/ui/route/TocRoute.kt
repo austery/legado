@@ -62,6 +62,7 @@ fun TocRoute(
         navigator = navigator,
         onBack = { navigator.pop() },
         isTopEntry = backStack.lastOrNull()?.id == entry.id,
+        ownerEntryId = entry.id,
         onOpenChapter = { chapterIndex, chapterPos, chapterChanged ->
             if (resultKey != null) {
                 navigator.pop(
@@ -91,6 +92,7 @@ fun TocDialogHost(
     navigator: AppNavigator,
     onOpenChapter: (chapterIndex: Int, chapterPos: Int) -> Unit,
     onTocRegexChanged: (book: Book, tocRegex: String) -> Unit = { _, _ -> },
+    ownerEntryId: io.legado.app.ui.root.RouteEntryId? = null,
     onDismiss: () -> Unit,
 ) {
     AppBottomSheetDialog(
@@ -108,6 +110,7 @@ fun TocDialogHost(
                         onOpenChapter(chapterIndex, chapterPos)
                     },
                     onTocRegexChanged = onTocRegexChanged,
+                    ownerEntryId = ownerEntryId,
                 )
             }
         }
@@ -133,6 +136,7 @@ fun TocContent(
     onBack: () -> Unit,
     onOpenChapter: (chapterIndex: Int, chapterPos: Int, chapterChanged: Boolean) -> Unit,
     onTocRegexChanged: (book: Book, tocRegex: String) -> Unit = { _, _ -> },
+    ownerEntryId: io.legado.app.ui.root.RouteEntryId? = null,
     // 目录页是否栈顶: 非栈顶时搜索返回拦截失效 (防不可见目录页吞掉压栈页面的返回键)
     isTopEntry: Boolean = true,
 ) {
@@ -216,6 +220,7 @@ fun TocContent(
                 screenModel.dispatch(TocUiEvent.ReverseChapterList(reversed))
                 val curBook = screenModel.state.value.book ?: return
                 curBook.config.reverseToc = !curBook.config.reverseToc
+                ownerEntryId?.let { navigator.updateSourceCatalog(it, curBook, reversed) }
                 scope.launch {
                     val db = AppDbProviders.get()
                     // 未入架的书不落库 (books 行都没有), UI 已由上面 dispatch 反转

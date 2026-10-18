@@ -363,6 +363,7 @@ fun MangaReaderRoute(
     // 选章跳转对齐原 RouteResults.TOC 回传消费 → OpenChapter 事件, 关闭由宿主回调处理)
     if (showTocDialog) {
         TocDialogHost(
+            ownerEntryId = entry.id,
             // 必须用阅读器现行书籍, 不能用路由快照 book: 换源后 currentBook 换了 bookUrl,
             // 旧 url 的行已被删, 目录按旧 url 查库只会空白; 进度类字段也停在进入时的值
             book = screenModel.currentBook ?: book,

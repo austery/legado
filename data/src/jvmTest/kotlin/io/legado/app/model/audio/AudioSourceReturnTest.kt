@@ -107,6 +107,70 @@ class AudioSourceReturnTest {
         assertEquals("d-0", AudioPlayShared.durChapter?.url)
     }
 
+    @Test
+    fun nestedTextMigrationReturnsLatestIdentityWithoutChangingAudioRevision() = runBlocking {
+        AudioPlayCommanders.register(RecordingCommander())
+        val a = Book(bookUrl = "audio-a", origin = "a")
+        AudioPlayShared.book = a
+        val revision = AudioPlayShared.sourceRevision
+        val navigator = AppNavigator(AppRoute.AudioPlay(a.toRouteRef()))
+        val outer = navigator.currentEntry.id
+        val details = navigator.push(AppRoute.BookInfo(a.toRouteRef()), RouteResults.BOOK_INFO)
+        val b = Book(bookUrl = "text-b", origin = "b")
+        val c = Book(bookUrl = "text-c", origin = "c")
+        fun result(book: Book) = RouteResultPayload.ChangeSource(
+            BookSource(bookSourceUrl = book.origin), book,
+            listOf(BookChapter(bookUrl = book.bookUrl, url = "${book.bookUrl}-0")), revision,
+        )
+        navigator.publishSourceChange(details, a, result(b))
+        val reader = navigator.push(AppRoute.Reader(b.toRouteRef()), RouteResults.READER)
+        navigator.publishSourceChange(reader, b, result(c).copy(audioSourceRevision = null))
+        navigator.pop()
+        assertSame(c, (withTimeout(1000) { navigator.resultsFor(details).first() }.payload as RouteResultPayload.ChangeSource).book)
+        navigator.pop()
+        val returned = withTimeout(1000) { navigator.resultsFor(outer).first() }.payload as RouteResultPayload.ChangeSource
+        assertSame(c, returned.book)
+        assertEquals("c", returned.source.bookSourceUrl)
+        assertEquals(revision, returned.audioSourceRevision)
+        assertEquals(true, AudioPlayShared.isCurrentSourceReturn(returned.audioSourceRevision))
+        assertSame(a, AudioPlayShared.book)
+    }
+
+    @Test
+    fun refreshedCatalogReplacesPendingSnapshot() = verifyCatalogReturn(reverse = false)
+
+    @Test
+    fun reversedCatalogReplacesPendingSnapshot() = verifyCatalogReturn(reverse = true)
+
+    private fun verifyCatalogReturn(reverse: Boolean) = runBlocking {
+        AudioPlayCommanders.register(RecordingCommander())
+        val a = Book(bookUrl = "catalog-a", origin = "a")
+        val b = Book(bookUrl = "catalog-b", origin = "b")
+        AudioPlayShared.book = a
+        val navigator = AppNavigator(AppRoute.AudioPlay(a.toRouteRef()))
+        val outer = navigator.currentEntry.id
+        val details = navigator.push(AppRoute.BookInfo(a.toRouteRef()), RouteResults.BOOK_INFO)
+        val old = listOf(BookChapter(bookUrl = b.bookUrl, url = "old"))
+        navigator.publishSourceChange(details, a, RouteResultPayload.ChangeSource(
+            BookSource(bookSourceUrl = b.origin), b, old, AudioPlayShared.sourceRevision,
+        ))
+        val refreshed = (0..2).map { BookChapter(bookUrl = b.bookUrl, url = "fresh-$it", index = it) }
+        navigator.updateSourceCatalog(details, b, refreshed)
+        val toc = navigator.push(AppRoute.Toc(b.toRouteRef()), RouteResults.TOC)
+        val reversed = refreshed.reversed().mapIndexed { index, chapter -> chapter.copy(index = index) }
+        if (reverse) navigator.updateSourceCatalog(toc, b, reversed)
+        // An obsolete loader for A cannot replace B's pending catalog.
+        navigator.updateSourceCatalog(details, a, listOf(BookChapter(bookUrl = a.bookUrl, url = "obsolete")))
+        navigator.pop()
+        withTimeout(1000) { navigator.resultsFor(details).first() }
+        navigator.pop()
+        val returned = withTimeout(1000) { navigator.resultsFor(outer).first() }.payload as RouteResultPayload.ChangeSource
+        val expected = if (reverse) listOf("fresh-2", "fresh-1", "fresh-0") else listOf("fresh-0", "fresh-1", "fresh-2")
+        assertEquals(expected, returned.toc.map { it.url })
+        assertEquals(true, AudioPlayShared.restoreSource(returned.book, returned.source, returned.toc, returned.audioSourceRevision))
+        assertEquals(expected.first(), AudioPlayShared.durChapter?.url)
+    }
+
     private class RecordingCommander : AudioPlayCommander {
         var stopped = 0
         override val isServiceRunning = false
