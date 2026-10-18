@@ -660,3 +660,17 @@ if (enableOhosTarget) {
         verifyOhosRoomDerived?.let { dependsOn(it) }
     }
 }
+
+// This regression changes process-wide playback providers and must own its JVM.
+val audioSourceReturnTest by tasks.registering(Test::class) {
+    val sharedTests = tasks.named<Test>("jvmTest")
+    testClassesDirs = sharedTests.get().testClassesDirs
+    classpath = sharedTests.get().classpath
+    include("**/AudioSourceReturnTest.class")
+    forkEvery = 1
+    failOnNoDiscoveredTests = true
+}
+tasks.named<Test>("jvmTest") {
+    exclude("**/AudioSourceReturnTest.class")
+    dependsOn(audioSourceReturnTest)
+}

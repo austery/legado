@@ -13,13 +13,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 
+/** Runs in its own JVM via audioSourceReturnTest; never shares playback providers with other tests. */
 class AudioSourceReturnTest {
     @Test
     fun returningFromDetailsReplacesIdentityCatalogAndPlaybackPosition() = runBlocking {
-        val previousCommander = AudioPlayCommanders.getOrNull()
-        val previousBook = AudioPlayShared.book
-        val previousSource = AudioPlayShared.bookSource
-        val previousChapters = AudioPlayShared.chapterList
         var stopped = 0
         val commander = object : AudioPlayCommander {
             override val isServiceRunning = false
@@ -37,33 +34,26 @@ class AudioSourceReturnTest {
             override fun loadPlayUrl() = Unit
         }
         AudioPlayCommanders.register(commander)
-        try {
-            val old = Book(bookUrl = "book-a", origin = "source-a")
-            AudioPlayShared.book = old
-            AudioPlayShared.chapterList = listOf(BookChapter(bookUrl = "book-a", url = "old"))
-            AudioPlayShared.durPlayUrl = "old-media"
-            val replacement = Book(bookUrl = "book-b", origin = "source-b", durChapterIndex = 1, durChapterPos = 345)
-            val source = BookSource(bookSourceUrl = "source-b")
-            val chapters = (0..2).map { BookChapter(bookUrl = "book-b", url = "b-$it", index = it, title = "Chapter $it") }
-            AudioPlayShared.restoreSource(replacement, source, chapters)
-            assertEquals(1, stopped)
-            assertSame(replacement, AudioPlayShared.book)
-            assertSame(source, AudioPlayShared.bookSource)
-            assertEquals(3, AudioPlayShared.simulatedChapterSize)
-            assertEquals("b-1", AudioPlayShared.durChapter?.url)
-            assertEquals(345, AudioPlayShared.durChapterPos)
-            assertEquals("", AudioPlayShared.durPlayUrl)
-            assertEquals("b-2", resolveChapter(replacement, 2, AudioPlayShared.chapterList)?.url)
-            assertFailsWith<IllegalArgumentException> {
-                AudioPlayShared.restoreSource(old, source, chapters)
-            }
-            assertSame(replacement, AudioPlayShared.book)
-            assertEquals(1, stopped)
-        } finally {
-            AudioPlayShared.book = previousBook
-            AudioPlayShared.bookSource = previousSource
-            AudioPlayShared.chapterList = previousChapters
-            if (previousCommander != null) AudioPlayCommanders.register(previousCommander)
+        val old = Book(bookUrl = "book-a", origin = "source-a")
+        AudioPlayShared.book = old
+        AudioPlayShared.chapterList = listOf(BookChapter(bookUrl = "book-a", url = "old"))
+        AudioPlayShared.durPlayUrl = "old-media"
+        val replacement = Book(bookUrl = "book-b", origin = "source-b", durChapterIndex = 1, durChapterPos = 345)
+        val source = BookSource(bookSourceUrl = "source-b")
+        val chapters = (0..2).map { BookChapter(bookUrl = "book-b", url = "b-$it", index = it, title = "Chapter $it") }
+        AudioPlayShared.restoreSource(replacement, source, chapters)
+        assertEquals(1, stopped)
+        assertSame(replacement, AudioPlayShared.book)
+        assertSame(source, AudioPlayShared.bookSource)
+        assertEquals(3, AudioPlayShared.simulatedChapterSize)
+        assertEquals("b-1", AudioPlayShared.durChapter?.url)
+        assertEquals(345, AudioPlayShared.durChapterPos)
+        assertEquals("", AudioPlayShared.durPlayUrl)
+        assertEquals("b-2", resolveChapter(replacement, 2, AudioPlayShared.chapterList)?.url)
+        assertFailsWith<IllegalArgumentException> {
+            AudioPlayShared.restoreSource(old, source, chapters)
         }
+        assertSame(replacement, AudioPlayShared.book)
+        assertEquals(1, stopped)
     }
 }
