@@ -12,9 +12,7 @@ for name in ['checkout-and-tree.txt', 'commit.txt', 'xcode-version.txt', 'cache.
              'native-product/simulator.txt', 'native-product/summary.json',
              'native-product/project.log', 'native-product/build.log',
              'native-product/boot.log', 'native-product/tests.log',
-             'kotlin-native/summary.json', 'kotlin-native/tests.log', 'kotlin-native/simulator.txt',
-             'native-product/interruption.log', 'native-product/interruption/results.json',
-             'native-product/shelf-restart.log', 'native-product/shelf-restart/results.json']:
+             'kotlin-native/summary.json', 'kotlin-native/tests.log', 'kotlin-native/simulator.txt']:
     path = root / name
     print(f'===== C1 EVIDENCE {name} =====', flush=True)
     print(path.read_text(errors='replace') if path.is_file() else 'NOT PRODUCED', flush=True)

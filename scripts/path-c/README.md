@@ -107,10 +107,23 @@ up-to-date even when compiled artifacts come from cache. Every module must emit
 nonempty XML results without failures, errors or skips; the native JS concurrency
 suite must be present. No default or pre-existing simulator is selected.
 
-C1 then invokes `native_product_ci.py --include-process-tests`. The ordinary
-Swift suite finishes and releases its fixtures before interruption and offline
-shelf restart checks start. Process checks honor the selected Xcode and optional
-`--runtime-version`; each successful phase verifies XCTest execution counts.
+The cloud job runs the network/cache harness and ordinary Swift suite via
+`native_product_ci.py`, without process tests. A parallel local job checks out the
+same PR head, builds its own simulator engine and fresh Swift test host, and runs
+`native_product_ci.py --process-tests-only --runtime-version 27.0`. This mode runs
+all four interruption boundaries and the offline shelf restart without repeating
+the ordinary Swift suite or starting its fixtures. The existing
+`--include-process-tests` mode remains available for full local validation.
+
+The required `C1 engine regression` check depends on both jobs and fails unless
+both report success; failure, cancellation, missing results and skipped jobs never
+pass. Fork PRs cannot execute either job and therefore cannot satisfy the gate.
+A manual `execution=local` run moves the regular job locally too; process tests
+always remain local. An offline local runner leaves required validation pending.
+Both jobs retain invocation-owned simulator cleanup. Local process logs and
+xcresults are uploaded even after failure. No timeout or assertion is relaxed.
+Process checks honor the selected Xcode; each successful verification phase
+requires exactly one passed XCTest and no skipped tests.
 
 For the 2026-10-17 upstream synchronization, retain product schema 89/90/91 and
 migration lineage unchanged. The new shared JS evaluator must inherit the
