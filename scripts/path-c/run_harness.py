@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import TypedDict, cast
+from uuid import uuid4
 
 
 class Check(TypedDict):
@@ -31,18 +32,19 @@ def main() -> int:
     output: Path = args.output
     if output.exists():
         raise SystemExit("Output already exists; choose a new evidence path")
-    # This tool only terminates its dedicated test application, never a reader app.
-    print("Terminating previous harness process", flush=True)
-    subprocess.run(["xcrun", "simctl", "terminate", args.simulator, bundle],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
     container = Path(simctl("get_app_container", args.simulator, bundle, "data"))
-    report = container / "Documents" / "results.json"
+    report_name = f"results-{uuid4().hex}.json"
+    report = container / "Documents" / report_name
+    # The old process keeps its previous filename even if it writes during relaunch.
+    os.environ["SIMCTL_CHILD_PATH_C_REPORT_NAME"] = report_name
     started = time.time()
     if args.persistence:
         os.environ["SIMCTL_CHILD_PATH_C_PERSISTENCE"] = "1"
     else:
         os.environ.pop("SIMCTL_CHILD_PATH_C_PERSISTENCE", None)
-    print(simctl("launch", args.simulator, bundle), flush=True)
+    # Relaunch only this harness. The first run has no process to terminate;
+    # combining both operations avoids a separate cold-simulator terminate RPC.
+    print(simctl("launch", "--terminate-running-process", args.simulator, bundle), flush=True)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if report.exists() and report.stat().st_mtime >= started:
