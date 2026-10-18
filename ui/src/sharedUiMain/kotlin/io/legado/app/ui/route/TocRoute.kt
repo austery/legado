@@ -210,23 +210,7 @@ fun TocContent(
 
             // 反转章节列表: 重排 index 后 dispatch, 并持久化 (对照原版 TocViewModel.reverseToc)
             override fun reverseChapterList() {
-                val current = screenModel.state.value.chapters
-                if (current.isEmpty()) return
-                // 产出副本, 不就地改 index: 这些 BookChapter 实例是经 IntentData 从
-                // 阅读器/播放器内存目录交接过来的同一批对象, 就地改 .index 会让它们的
-                // "列表下标 ↔ chapter.index" 映射整体翻转 (列表顺序没动而 index 全反),
-                // 之后阅读器按下标取章全部错位 (原版 ChapterListFragment 同样就地改, 是上游缺陷)
-                val reversed = current.reversed().mapIndexed { i, c -> c.copy(index = i) }
-                screenModel.dispatch(TocUiEvent.ReverseChapterList(reversed))
-                val curBook = screenModel.state.value.book ?: return
-                curBook.config.reverseToc = !curBook.config.reverseToc
-                ownerEntryId?.let { navigator.updateSourceCatalog(it, curBook, reversed) }
-                scope.launch {
-                    val db = AppDbProviders.get()
-                    // 未入架的书不落库 (books 行都没有), UI 已由上面 dispatch 反转
-                    if (curBook.isNotShelf) return@launch
-                    db.bookChapterDao.insert(*reversed.toTypedArray())
-                }
+                reverseTocCatalog(screenModel, navigator, ownerEntryId, scope)
             }
 
             // 切换净化标题开关: AppConfig 写回与 state 同步由 ScreenModel 内部完成 (对照 Activity)

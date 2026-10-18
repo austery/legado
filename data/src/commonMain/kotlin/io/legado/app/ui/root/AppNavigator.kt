@@ -204,6 +204,12 @@ class AppNavigator(
             .receiveAsFlow()
     }
 
+    private val catalogHandlers = mutableMapOf<RouteEntryId, (Book, List<BookChapter>) -> Unit>()
+
+    fun registerCatalogHandler(entryId: RouteEntryId, handler: (Book, List<BookChapter>) -> Unit) {
+        if (backStack.value.any { it.id == entryId }) catalogHandlers[entryId] = handler
+    }
+
     private val pendingResults = mutableMapOf<RouteEntryId, RouteResultPayload>()
 
     /** Preserve a completed edit for toolbar, gesture and platform back navigation. */
@@ -234,6 +240,7 @@ class AppNavigator(
             val pending = pendingResults[owner.id] as? RouteResultPayload.ChangeSource ?: continue
             if (pending.book.bookUrl == book.bookUrl && pending.book.origin == book.origin) {
                 pendingResults[owner.id] = pending.copy(toc = chapters)
+                catalogHandlers[owner.id]?.invoke(book, chapters)
             }
         }
     }
@@ -259,6 +266,7 @@ class AppNavigator(
         val entryId = routeBackStack.replace(route)
         targetedResults.remove(replacedEntryId)?.close()
         refreshHandlers.remove(replacedEntryId)
+        catalogHandlers.remove(replacedEntryId)
         pendingResults.remove(replacedEntryId)
         targetedResults[entryId] = Channel(Channel.UNLIMITED)
         return entryId
@@ -284,6 +292,7 @@ class AppNavigator(
             removed?.let { removedEntry ->
                 targetedResults.remove(removedEntry.id)?.close()
                 refreshHandlers.remove(removedEntry.id)
+                catalogHandlers.remove(removedEntry.id)
             }
             removed?.resultKey?.let { resultKey ->
                 val result = RouteResult(resultKey, delivered)

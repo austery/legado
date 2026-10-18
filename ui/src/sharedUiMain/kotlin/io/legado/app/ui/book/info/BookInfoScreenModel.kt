@@ -120,6 +120,13 @@ class BookInfoScreenModel(
     )
     val actionLive: SharedFlow<String> = _actionLive.asSharedFlow()
 
+    fun updateLoadedCatalog(book: Book, chapters: List<BookChapter>) {
+        val current = state.value.book ?: return
+        if (current.bookUrl == book.bookUrl && current.origin == book.origin) {
+            loadedChapterList = chapters
+        }
+    }
+
     suspend fun acceptSourceReturn(book: Book, toc: List<BookChapter>) {
         refreshingJob?.cancelAndJoin()
         dispatch(BookInfoUiEvent.RefreshDone)

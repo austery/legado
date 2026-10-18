@@ -111,6 +111,7 @@ class TocScreenModel(
                 isLocalBook = book.isLocal,
                 useReplace = AppConfigProviders.get().tocUiUseReplace,
                 countWords = AppConfigProviders.get().tocCountWords,
+                catalogSearchKey = null,
             )
         }
         upChapterList(null)
@@ -162,11 +163,11 @@ class TocScreenModel(
                         ?: appDb.bookChapterDao.search(bookUrl, searchKey, 0, end)
                 }
             }
-            setChapterList(list)
+            setChapterList(list, searchKey.orEmpty())
         }
     }
 
-    private fun setChapterList(list: List<BookChapter>) {
+    private fun setChapterList(list: List<BookChapter>, catalogSearchKey: String = "") {
         val dur = _state.value.durChapterIndex
         // 目录含卷分组时默认只展开当前章所在分组 (无卷书返回空集, 列表全展开)
         val collapsed = defaultCollapsedVolumes(list, dur)
@@ -180,6 +181,7 @@ class TocScreenModel(
         _state.update {
             it.copy(
                 chapters = list,
+                catalogSearchKey = catalogSearchKey,
                 collapsedVolumes = collapsed,
                 chapterScroll = TocScrollCmd(scrollPos, it.chapterScroll.tick + 1),
             )

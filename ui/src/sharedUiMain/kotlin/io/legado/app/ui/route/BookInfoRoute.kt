@@ -101,6 +101,8 @@ fun BookInfoRoute(
     val screenModel = screenModelStore.getOrCreateTyped(entry) {
         BookInfoScreenModel(book) { loadedBook, toc ->
             navigator.updateSourceCatalog(entry.id, loadedBook, toc)
+        }.also { model ->
+            navigator.registerCatalogHandler(entry.id, model::updateLoadedCatalog)
         }
     }
     val state by screenModel.state.collectAsState()
@@ -295,9 +297,7 @@ fun BookInfoRoute(
             // 不交接时阅读/播放页只能读 DB, 未加书架的书目录不落库 → 落空后走回源重拉。
             // 在架书目录已落库 (DB 为权威), 不写避免残留过期内存目录 (与 TOC 交接的
             // !inBookshelf 条件一致)。
-            if (!screenModel.state.value.inBookshelf) {
-                IntentData.chapterList = screenModel.loadedChapterList
-            }
+            handoffDetailsCatalog(screenModel)
             val target = when {
                 b.isAudio -> AppRoute.AudioPlay(b.toRouteRef())
                 b.isVideo -> AppRoute.VideoPlay(b.toRouteRef())
@@ -718,9 +718,7 @@ fun BookInfoRoute(
                                 // 未加书架的书目录不落库, 不交接则阅读页读库落空后回源重拉目录
                                 // (表现为打开阅读页的加载空白/卡顿)。在架书优先 DB (目录页反转等
                                 // 已持久化, DB 为最新权威), 不做交接避免残留旧实例
-                                if (!screenModel.state.value.inBookshelf) {
-                                    IntentData.chapterList = screenModel.loadedChapterList
-                                }
+                                handoffDetailsCatalog(screenModel)
                                 // 同步 push: 目录页的 pop 与本次 push 落在同一批 dispatch,
                                 // 组合只看到最终栈 → 一次单段前进转场。中间夹 await 落库
                                 // (Room 整行写几十毫秒) 会让返回动画先播一截再改判前进, 出栈页
