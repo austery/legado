@@ -19,7 +19,7 @@ class C1GateTest(unittest.TestCase):
         self.assertIn('--process-tests-only --runtime-version 27.0', process)
         self.assertNotIn('--process-tests-only', engine)
         self.assertNotIn('--include-process-tests', engine)
-        for required in ('kotlin_native_ci.py', ':data:jvmTest :core:jvmTest :ui:jvmTest',
+        for required in ('verify_url_tests.py', 'kotlin_native_ci.py', ':data:jvmTest :core:jvmTest :ui:jvmTest',
                          'ci_harness.py --output ci-results', 'native_product_ci.py --output'):
             self.assertIn(required, engine)
 

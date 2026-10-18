@@ -45,10 +45,11 @@ internal class PercentCodecCore(private val safe: BooleanArray) {
             if (c == '%') {
                 if (i + 2 < str.length && isHexDigit(str[i + 1]) && isHexDigit(str[i + 2])) {
                     out.append(str, i, i + 3)
+                    i += 3
                 } else {
                     out.append("%25")
+                    i++
                 }
-                i++
                 continue
             }
             if (c.code < SIZE && safe[c.code]) {

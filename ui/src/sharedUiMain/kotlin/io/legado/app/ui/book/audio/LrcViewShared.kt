@@ -60,6 +60,7 @@ import io.legado.app.model.LrcLine
 import io.legado.app.model.LrcWord
 import io.legado.app.ui.compose.theme.LocalEInk
 import io.legado.app.utils.ColorUtils
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.sin
@@ -1403,7 +1404,7 @@ private class LrcRuntime {
             val run = slide.runs[k]
             // 横向弧线: 起点在左、目标在右时向右鼓, 全程 y 单调, 不与上下行文字重叠
             out[k * 2] = run.drawnX + if (run.start != null && run.jumped) {
-                sin(Math.PI.toFloat() * runProgress(run)) * WRAP_JUMP_BOW_PX
+                sin(PI.toFloat() * runProgress(run)) * WRAP_JUMP_BOW_PX
             } else {
                 0f
             }
