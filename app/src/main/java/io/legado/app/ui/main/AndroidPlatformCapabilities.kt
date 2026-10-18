@@ -11,43 +11,17 @@ import android.os.Build
 import android.provider.Settings
 import android.view.RoundedCorner
 import android.view.ViewConfiguration
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.DropdownMenuItem
-import androidx.compose.material.Icon
-import androidx.compose.material.IconButton
 import androidx.compose.material.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import androidx.fragment.app.commit
 import androidx.lifecycle.ViewModelProvider
@@ -57,7 +31,9 @@ import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
+import io.legado.app.constant.DirUsage
 import io.legado.app.constant.EventBus
+import io.legado.app.constant.LOG_DIR_NAME
 import io.legado.app.constant.appInfo
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
@@ -76,29 +52,29 @@ import io.legado.app.help.LauncherIconHelp
 import io.legado.app.help.book.BookChapterLoader
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.delBookCore
-import io.legado.app.help.book.getExportFileName
+import io.legado.app.help.book.bookshelfJson
 import io.legado.app.help.book.getRemoteUrl
+import io.legado.app.help.book.effectiveBookSaveDir
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isWebFile
-import io.legado.app.help.book.toShelfJsonMap
 import io.legado.app.help.book.toggleBookshelfCore
-import io.legado.app.help.book.tryParesExportFileName
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ThemeConfig
-import io.legado.app.help.config.effectiveBookExportDir
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.copyToFileAtomically
 import io.legado.app.help.file.AndroidDirAuthorizations
 import io.legado.app.help.i18n.androidAppString
-import io.legado.app.help.writeTextAtomically
 import io.legado.app.lib.theme.MonetColorExtract
 import io.legado.app.model.BookCover
 import io.legado.app.model.CheckSource
 import io.legado.app.model.Debug
+import io.legado.app.model.ReadAloud
 import io.legado.app.model.fileBook.FileBook
 import io.legado.app.model.fileBook.importFromArchive
+import io.legado.app.service.BaseReadAloudService
 import io.legado.app.service.WebService
+import io.legado.app.service.defaultTtsEngineConfig
 import io.legado.app.ui.book.import.ImportFileItem
 import io.legado.app.ui.book.import.ImportBookDirHost
 import io.legado.app.ui.book.import.ImportDirRef
@@ -108,19 +84,14 @@ import io.legado.app.ui.book.import.local.ImportBookViewModel
 import io.legado.app.ui.book.info.WebFileImportShared
 import io.legado.app.ui.book.manage.reportLocalBookSourceFileDeleteFailure
 import io.legado.app.ui.book.read.config.FontItem
+import io.legado.app.ui.book.read.config.saveFontBytesToInternalDir
 import io.legado.app.ui.book.source.BookSourceSort
 import io.legado.app.ui.book.source.manage.BookSourceViewModel
-import io.legado.app.ui.compose.component.AppAutoCompleteField
+import io.legado.app.ui.book.source.manage.selectedSourcesJson
 import io.legado.app.ui.compose.component.AppCheckbox
-import io.legado.app.ui.compose.component.AppDropdownMenu
-import io.legado.app.ui.compose.component.AppRadioButton
-import io.legado.app.ui.compose.component.AppSlider
-import io.legado.app.ui.compose.component.AppTextField
 import io.legado.app.ui.compose.dialogs.alert
 import io.legado.app.ui.compose.dialogs.selector
-import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.platform.rememberString
-import io.legado.app.ui.compose.platform.rememberStringArray
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.config.MODE_EDIT_CONFIG
@@ -131,34 +102,38 @@ import io.legado.app.ui.root.AppOverlay
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.BookRef
 import io.legado.app.ui.root.DialogTransitionSpec
+import io.legado.app.ui.root.PickedFile
 import io.legado.app.ui.root.RouteTransitionSpec
 import io.legado.app.ui.root.SharedPlatformCapabilities
 import io.legado.app.ui.root.TransitionEasing
 import io.legado.app.ui.root.encodeBookVariableOverlayPayload
 import io.legado.app.ui.root.encodeSourceVariableOverlayPayload
 import io.legado.app.ui.root.ensureBookSaveDirSelected
+import io.legado.app.ui.root.pushExportDispatch
+import io.legado.app.ui.root.reselectBookSaveDir
 import io.legado.app.ui.root.toReadRoute
 import io.legado.app.ui.root.toRouteRef
+import io.legado.app.ui.root.pushExportSectionConfig
 import io.legado.app.ui.widget.dialog.awaitWaitDialogDismissed
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.FileUtils
-import io.legado.app.utils.GSON
 import io.legado.app.utils.compress.ZipUtils
 import io.legado.app.utils.copyToDocumentAtomically
+import io.legado.app.utils.checkWrite
 import io.legado.app.utils.createFolderIfNotExist
 import io.legado.app.utils.delete
 import io.legado.app.utils.externalCache
 import io.legado.app.utils.externalFiles
 import io.legado.app.utils.find
 import io.legado.app.utils.getClipText
+import io.legado.app.utils.inputStream
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isContentScheme
 import io.legado.app.utils.isPad
 import io.legado.app.utils.isTv
 import io.legado.app.utils.isUri
 import io.legado.app.utils.list
-import io.legado.app.utils.toJson
 import io.legado.app.utils.openFileUri
 import io.legado.app.utils.openInputStream
 import io.legado.app.utils.openUrl
@@ -169,8 +144,7 @@ import io.legado.app.utils.sendToClip
 import io.legado.app.utils.share
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.toastOnUi
-import io.legado.app.utils.verificationField
-import io.legado.app.utils.writeToOutputStream
+import io.legado.app.utils.toExportJsonText
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers.IO
@@ -180,13 +154,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.io.File
 import java.io.InputStream
 
@@ -363,6 +330,31 @@ class AndroidPlatformCapabilities(
         activity.finish()
     }
 
+    /** 上次提醒"再按一次退出"的时刻 (对照原 MainActivity.exitTime)。 */
+    private var exitTime: Long = 0
+
+    /**
+     * 返回链没消费时的兜底 (对照原 MainActivity 的 onBackPressedDispatcher 回调): 首次提示,
+     * 2 秒内再按一次退回调用方 (朗读暂停时直接结束)。
+     *
+     * 与 MainActivity 的那条回调共用本实现: 预测式返回开关打开时根层接管返回链, 那条回调收不到
+     * 返回事件; 开关关闭时根层不接管, 事件走那条回调 —— 两路终点必须是同一份语义。
+     */
+    override fun onBackUnconsumed() {
+        if (System.currentTimeMillis() - exitTime > EXIT_INTERVAL) {
+            activity.toastOnUi(androidAppString("double_click_exit"))
+            exitTime = System.currentTimeMillis()
+        } else if (BaseReadAloudService.pause) {
+            activity.finish()
+        } else {
+            activity.moveTaskToBack(true)
+        }
+    }
+
+    private companion object {
+        private const val EXIT_INTERVAL = 2000L
+    }
+
     override fun openExternalUrl(url: String) {
         activity.openUrl(url)
     }
@@ -501,9 +493,20 @@ class AndroidPlatformCapabilities(
         )
     }
 
+    /** 引擎保存后重载正在播放的朗读 (与 iOS / 鸿蒙同语义, 对照原版 ReadAloudConfigDialog 保存后的重建)。 */
+    override fun onHttpTtsEdited(engine: HttpTTS) {
+        if (BaseReadAloudService.isRun && defaultTtsEngineConfig() == engine.id.toString()) {
+            // 先重取引擎实体: 服务类不变, 但下载与缓存键读的是实体里的 url/请求头,
+            // 不重取则重载后仍走旧配置
+            ReadAloud.refreshAloudClass()
+            // 正在朗读则重载; 暂停时记录重建位置, 继续朗读才启用新配置
+            ReadAloud.play(App.instance, play = !BaseReadAloudService.pause)
+        }
+    }
+
     // 对照 app 端 FontSelectDialog.loadFontFiles: pref 字体目录 + externalFiles/font 合并去重排序
     override suspend fun scanFontItems(): List<FontItem> = withContext(IO) {
-        val fontRegex = Regex("(?i).*\\.[ot]tf")
+        val fontRegex = AppPattern.fontFileRegex
         val items = arrayListOf<FontItem>()
         val fontPath = AppConfig.fontFolder
         if (!fontPath.isNullOrBlank()) {
@@ -666,6 +669,42 @@ class AndroidPlatformCapabilities(
             onComplete()
         }
     }
+
+    /**
+     * 选文件导入: 系统面板回传的文档地址直接当书籍引用入库 (不经列表勾选)。
+     *
+     * 选定文件的位置同时登记为书籍用途 —— 用途校验只放行书籍类入口选定的位置, 不登记的话
+     * "这个文件所在目录曾经为字体/图片选过"就会把用户刚亲手选定的书文件拦下。
+     */
+    override fun importPickedBookFiles(files: List<PickedFile>, onComplete: () -> Unit) {
+        if (files.isEmpty()) {
+            onComplete()
+            return
+        }
+        capabilityScope.launch(IO) {
+            val books = files.mapTo(HashSet()) { picked ->
+                AndroidDirAuthorizations.remember(picked.ref, DirUsage.BookTree)
+                ImportBook(FileDoc.fromUri(picked.ref.toUri(), false))
+            }
+            importViewModel.addToBookshelf(books, onNeedBooksDir = { ensureBookSaveDirSelected() }) {
+                ImportBookShared.refresh()
+                onComplete()
+            }
+        }
+    }
+
+    /**
+     * 字体导入: 面板回传的是文档地址 (读字节走既有的地址→流通道), 落内置字体目录用面板给的显示名
+     * (物化副本名带防重名前缀, 不能当字体名)。
+     */
+    override fun importPickedFontFiles(files: List<PickedFile>): List<String> =
+        files.mapNotNull { picked ->
+            val bytes = picked.ref.toUri().inputStream(App.instance).getOrNull()
+                ?.use { it.readBytes() }
+            bytes?.takeIf { it.isNotEmpty() }
+                ?.let { saveFontBytesToInternalDir(picked.name, it) }
+                ?.let { picked.name }
+        }
 
     // 对照 ImportBookActivity.onSearchTextChange / viewModel.updateCallBackFlow
     override fun updateImportBookFilter(key: String) {
@@ -1192,302 +1231,24 @@ class AndroidPlatformCapabilities(
     override fun enableCustomExport(): Boolean = AppConfig.enableCustomExport
 
     // 对照 BookshelfManageActivity.showExportConfig: 导出配置对话框
-    // (文件名/导出类型 txt|epub/字符集/不导出章节名, 复刻 dialog_export_config.xml)
+    // (文件名/导出类型 txt|epub/字符集/不导出章节名, 复刻 dialog_export_config.xml);
+    // 弹共享实现 (与鸿蒙同一形制)
     override fun showExportConfig() {
-        val fileNameState = mutableStateOf(AppConfig.bookExportFileName.orEmpty())
-        val typeState = mutableIntStateOf(if (AppConfig.exportType == 1) 1 else 0)
-        val charsetState = mutableStateOf(AppConfig.exportCharset)
-        val noChapterNameState = mutableStateOf(AppConfig.exportNoChapterName)
-        activity.alert(androidAppString("export_config")) {
-            customView {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = DesignTokens.spacingDefault)
-                ) {
-                    Text(
-                        androidAppString("export_file_name"),
-                        color = AppTheme.colors.primaryText,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(bottom = DesignTokens.spacingXs),
-                    )
-                    AppTextField(
-                        value = fileNameState.value,
-                        onValueChange = { fileNameState.value = it },
-                        singleLine = true,
-                        textStyle = TextStyle(textAlign = TextAlign.Start),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        androidAppString("export_type"),
-                        color = AppTheme.colors.primaryText,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(top = DesignTokens.spacingMd, bottom = DesignTokens.spacingXs),
-                    )
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .selectableGroup(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        listOf("txt" to 0, "epub" to 1).forEach { (label, value) ->
-                            Row(
-                                Modifier
-                                    .selectable(
-                                        selected = typeState.intValue == value,
-                                        role = Role.RadioButton,
-                                        onClick = { typeState.intValue = value },
-                                    )
-                                    .padding(top = DesignTokens.spacingXs, end = DesignTokens.spacingLg, bottom = DesignTokens.spacingXs),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                AppRadioButton(
-                                    selected = typeState.intValue == value,
-                                    onClick = null,
-                                )
-                                Text(label, color = AppTheme.colors.primaryText, fontSize = 15.sp)
-                            }
-                        }
-                    }
-                    Text(
-                        androidAppString("export_charset"),
-                        color = AppTheme.colors.primaryText,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(top = DesignTokens.spacingDefault, bottom = DesignTokens.spacingXs),
-                    )
-                    AppAutoCompleteField(
-                        value = charsetState.value,
-                        onValueChange = { charsetState.value = it },
-                        label = "charset",
-                        values = AppConst.charsets,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .toggleable(
-                                value = noChapterNameState.value,
-                                role = Role.Checkbox,
-                                onValueChange = { noChapterNameState.value = it },
-                            )
-                            .padding(vertical = DesignTokens.spacingDefault),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AppCheckbox(
-                            checked = noChapterNameState.value,
-                            onCheckedChange = null,
-                        )
-                        Text(
-                            androidAppString("export_no_chapter_name"),
-                            color = AppTheme.colors.primaryText,
-                            modifier = Modifier.padding(start = DesignTokens.spacingDefault),
-                        )
-                    }
-                }
-            }
-            okButton {
-                AppConfig.bookExportFileName = fileNameState.value
-                AppConfig.exportType = if (typeState.intValue == 1) 1 else 0
-                AppConfig.exportCharset =
-                    charsetState.value.takeIf { it.isNotBlank() } ?: "UTF-8"
-                AppConfig.exportNoChapterName = noChapterNameState.value
-            }
-            cancelButton()
-        }
+        AppNavigatorProviders.get().showOverlay(AppOverlay.Dialog("book_export_format"))
     }
 
-    // 对照 BookshelfManageActivity.configExportSection: 自定义导出章节配置对话框
+
+    // 自定义章节导出配置弹窗: 弹共享实现 (四端同一份)
     // (导出全部/自定义导出 + epub 文件名JS规则 + 分卷大小 + 章节范围, 复刻 dialog_select_section_export.xml)。
-    // 仅在选择导出文件夹且 enableCustomExport() 成立 (开关开启且导出类型为 epub) 时弹出
-    // (对照 exportDir 回调 value=="cache" 分支)。
-    override fun showExportSectionConfig(path: String, books: List<Book>) {
-        // 默认选中自定义导出 (对照 cbSelectExport.callOnClick())
-        val allState = mutableStateOf(false)
-        val customState = mutableStateOf(true)
-        val fileNameState = mutableStateOf(AppConfig.episodeExportFileName.orEmpty())
-        val sizeState = mutableStateOf("1")
-        val scopeState = mutableStateOf("")
-        // epub 文件名 JS 规则预览/校验提示 (对照 lyEtEpubFilename.helperText)
-        val fileNameHelper = mutableStateOf("")
-        // 章节范围错误 (对照 etInputScope.error)
-        val scopeError = mutableStateOf<String?>(null)
-        activity.alert(androidAppString("select_section_export")) {
-            customView {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = DesignTokens.spacingDefault)
-                ) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = DesignTokens.spacingXs),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Row(
-                            Modifier
-                                .weight(1f)
-                                .toggleable(
-                                    value = allState.value,
-                                    role = Role.Checkbox,
-                                    onValueChange = {
-                                        // 互斥: 选中导出全部时取消自定义导出并禁用自定义项 (对照 cbAllExport 回调)
-                                        allState.value = it
-                                        customState.value = !it
-                                        if (it) scopeError.value = null
-                                    },
-                                )
-                                .padding(vertical = DesignTokens.spacingDefault),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AppCheckbox(checked = allState.value, onCheckedChange = null)
-                            Text(
-                                androidAppString("export_all"),
-                                color = AppTheme.colors.primaryText,
-                                modifier = Modifier.padding(start = DesignTokens.spacingDefault),
-                            )
-                        }
-                        Row(
-                            Modifier
-                                .weight(1f)
-                                .toggleable(
-                                    value = customState.value,
-                                    role = Role.Checkbox,
-                                    onValueChange = {
-                                        customState.value = it
-                                        allState.value = !it
-                                    },
-                                )
-                                .padding(vertical = DesignTokens.spacingDefault),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AppCheckbox(checked = customState.value, onCheckedChange = null)
-                            Text(
-                                androidAppString("custom_export"),
-                                color = AppTheme.colors.primaryText,
-                                modifier = Modifier.padding(start = DesignTokens.spacingDefault),
-                            )
-                        }
-                    }
-                    // epub 文件名 JS 规则 (分卷, 对照 lyEtEpubFilename/etEpubFilename)
-                    Text(
-                        androidAppString("export_file_name"),
-                        color = AppTheme.colors.primaryText,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(top = DesignTokens.spacingDefault, bottom = DesignTokens.spacingXs),
-                    )
-                    AppTextField(
-                        value = fileNameState.value,
-                        onValueChange = { fileNameState.value = it },
-                        singleLine = true,
-                        enabled = customState.value,
-                        textStyle = TextStyle(textAlign = TextAlign.Start),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onFocusChanged { focused ->
-                                // 失焦时校验并持久化 (对照 etEpubFilename 焦点监听)
-                                if (!focused.isFocused &&
-                                    tryParesExportFileName(fileNameState.value)
-                                ) {
-                                    AppConfig.episodeExportFileName = fileNameState.value
-                                }
-                            },
-                        trailingIcon = {
-                            // 解析示例按钮 (对照 lyEtEpubFilename 的 endIcon 点击)
-                            IconButton(onClick = {
-                                fileNameHelper.value =
-                                    if (tryParesExportFileName(fileNameState.value)) {
-                                        books.firstOrNull()?.let { book ->
-                                            androidAppString("result_analyzed") + ": " +
-                                                book.getExportFileName(
-                                                    "epub",
-                                                    1,
-                                                    fileNameState.value
-                                                )
-                                        } ?: androidAppString("result_analyzed")
-                                    } else {
-                                        "Error"
-                                    }
-                            }) {
-                                Icon(
-                                    painter = rememberPainter("ic_play_24dp"),
-                                    contentDescription = "Execute script",
-                                    tint = AppTheme.colors.primaryText,
-                                )
-                            }
-                        },
-                    )
-                    Text(
-                        "Variable: name, author, epubIndex",
-                        color = AppTheme.colors.secondaryText,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                    if (fileNameHelper.value.isNotEmpty()) {
-                        Text(
-                            fileNameHelper.value,
-                            color = AppTheme.colors.secondaryText,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
-                    // 分卷大小 (对照 lyEtEpubSize/etEpubSize)
-                    AppTextField(
-                        value = sizeState.value,
-                        onValueChange = { new ->
-                            if (new.length <= 6 && new.all { it.isDigit() }) sizeState.value = new
-                        },
-                        singleLine = true,
-                        enabled = customState.value,
-                        label = androidAppString("file_contains_number"),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        textStyle = TextStyle(textAlign = TextAlign.Start),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    // 章节范围 (对照 lyEtInputScope/etInputScope, 占位提示 "1-5,8,10-18")
-                    AppTextField(
-                        value = scopeState.value,
-                        onValueChange = {
-                            scopeState.value = it
-                            scopeError.value = null
-                        },
-                        singleLine = true,
-                        enabled = customState.value,
-                        label = androidAppString("export_chapter_index"),
-                        placeholder = "1-5,8,10-18",
-                        isError = scopeError.value != null,
-                        textStyle = TextStyle(textAlign = TextAlign.Start),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    scopeError.value?.let {
-                        Text(
-                            it,
-                            color = Color(0xFFE53935),
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
-                }
-            }
-            // 校验保留型确认: 范围非法时对话框不关闭 (对照 getButton(POSITIVE) 手动 hide 语义)
-            positiveButtonRetain(androidAppString("ok")) {
-                if (allState.value) {
-                    activity.startExportBooks(path, books)
-                    true
-                } else {
-                    val scopeText = scopeState.value.trim()
-                    if (!verificationField(scopeText)) {
-                        scopeError.value = androidAppString("error_scope_input")
-                        false
-                    } else {
-                        val epubSize = sizeState.value.toIntOrNull() ?: 1
-                        activity.startExportBooksCustom(path, books, epubSize, scopeText)
-                        true
-                    }
-                }
-            }
-            cancelButton()
-        }
+    // 仅在 enableCustomExport() 成立 (开关开启且导出类型为 epub) 时弹出。
+    override fun showExportSectionConfig(books: List<Book>) {
+        pushExportSectionConfig(books)
+    }
+
+    // 对照原版 configExportSection 的自定义分支: 逐本按 epubScope/epubSize 启动导出
+    override fun exportCustomBooks(books: List<Book>, epubSize: Int, epubScope: String) {
+        val path = effectiveBookSaveDir() ?: return
+        activity.startExportBooksCustom(path, books, epubSize, epubScope)
     }
 
     // 对照 LocalConfig.deleteBookOriginal 读取
@@ -1498,79 +1259,54 @@ class AndroidPlatformCapabilities(
         LocalConfig.deleteBookOriginal = value
     }
 
-    // 对照 BookshelfManageActivity.exportAllUseBookSource / viewModel.saveAllUseBookSourceToFile
+    // 对照原版 BookshelfManageActivity.exportAllUseBookSource
     override fun exportAllUseBookSource() {
         Coroutine.async {
-            val path = "${App.instance.filesDir}/shareBookSource.json"
-            val sources = appDb.bookDao.getAllUseBookSource()
-            // 整份落盘: 导出步骤与书源恢复读的都是这个固定路径, 覆盖写被中断会拿到半截 JSON
-            check(writeTextAtomically(path, GSON.toJson(sources))) { "写入失败: $path" }
-            File(path)
-        }.onSuccess { file ->
-            activity.launchExportDir("bookSource.json", file, "application/json")
+            appDb.bookDao.getAllUseBookSource().toExportJsonText()
+        }.onSuccess { json ->
+            pushExportDispatch("bookSource.json", json, "application/json")
         }.onError {
             activity.toastOnUi(it.stackTraceStr)
         }
     }
 
-    // 对照 BookshelfManageActivity.exportAll: 已选过导出目录 → 直接导出;
-    // 未选过 → 拉起目录选择器 (写公共目录要 SAF 授权, 没有可用惯例目录)
+    // 导出书籍正文落"书籍保存位置" (与下载书籍/备份 zip 同一处, 书籍直接放根): 未设置先拉选择器,
+    // 选定后继续导出; 已设置但不可写 (目录被删/授权失效) 同样重新选一次, 取消则本次导出作罢;
+    // 本次新选定目录且开了自定义导出时先弹章节配置 (对照原版 exportDir 回调), 否则直接导出
     override fun exportAllBooks(books: List<Book>) {
-        val path = effectiveBookExportDir()
-        if (path.isNullOrEmpty()) {
-            selectExportFolder(books)
-        } else {
-            activity.startExportBooks(path, books)
-        }
-    }
-
-    // 对照 BookshelfManageActivity.exportBookshelf / viewModel.exportBookshelf
-    @OptIn(ExperimentalSerializationApi::class)
-    override fun exportBookshelf(books: List<Book>) {
         Coroutine.async {
-            if (books.isEmpty()) throw NoStackTraceException("书籍不能为空")
-            val path = "${App.instance.filesDir}/bookshelf.json"
-            // 对齐原 GSON 行为: prettyPrint + 2 空格缩进 + 不序列化 null 字段
-            // 字段清单/映射下沉 shared commonMain Book.toShelfJsonMap (13 字段, 与 iOS/desktop/鸿蒙一致)
-            val json = Json { prettyPrint = true; prettyPrintIndent = "  " }
-            val jsonArray = buildJsonArray {
-                books.forEach { book ->
-                    add(buildJsonObject {
-                        book.toShelfJsonMap().forEach { (key, value) ->
-                            // buildMap 保插入序, 字段顺序与原逐字段 put 完全一致; null 已被映射跳过
-                            when (value) {
-                                is String -> put(key, value)
-                                is Number -> put(key, value)
-                                is Boolean -> put(key, value)
-                                is JsonElement -> put(key, value)
-                                else -> Unit
-                            }
-                        }
-                    })
-                }
+            var freshlySelected = effectiveBookSaveDir() == null
+            if (freshlySelected && !ensureBookSaveDirSelected()) return@async
+            var path = effectiveBookSaveDir() ?: return@async
+            if (!isBookSaveDirWritable(path)) {
+                if (!reselectBookSaveDir()) return@async
+                path = effectiveBookSaveDir() ?: return@async
+                freshlySelected = true
             }
-            // 整份落盘: 导出步骤读的是这个固定路径, 覆盖写被中断会拿到半截 JSON
-            check(
-                writeTextAtomically(
-                    path,
-                    json.encodeToString(JsonArray.serializer(), jsonArray),
-                )
-            ) { "写入失败: $path" }
-            File(path)
-        }.onSuccess { file ->
-            activity.launchExportDir("bookshelf.json", file, "application/json")
+            if (freshlySelected && enableCustomExport()) {
+                showExportSectionConfig(books)
+            } else {
+                activity.startExportBooks(path, books)
+            }
         }.onError {
             activity.toastOnUi("导出书籍出错\n${it.localizedMessage}")
         }
     }
 
-    // 对照 BookshelfManageActivity.selectExportFolder (既有的"选择导出文件夹"入口):
-    // 读设备本地记忆的导出目录 ([effectiveBookExportDir]) 作选择器默认项
-    // (写出选择结果由选择器回调负责, 见 MainActivity 的 exportDir)
-    override fun selectExportFolder(books: List<Book>) {
-        val path = effectiveBookExportDir()
-        activity.pendingExportBooks = books
-        activity.launchExportFolderPicker(path)
+    /** 书籍保存位置可写性预检 (SAF 树引用用 DocumentFile 判定, 普通路径直通)。 */
+    private fun isBookSaveDirWritable(path: String): Boolean =
+        runCatching { FileDoc.fromUri(path.toUri(), true).checkWrite() }.getOrDefault(false)
+
+    // 对照 BookshelfManageActivity.exportBookshelf / viewModel.exportBookshelf
+    override fun exportBookshelf(books: List<Book>) {
+        Coroutine.async {
+            if (books.isEmpty()) throw NoStackTraceException("书籍不能为空")
+            bookshelfJson(books)
+        }.onSuccess { json ->
+            pushExportDispatch("bookshelf.json", json, "application/json")
+        }.onError {
+            activity.toastOnUi("导出书籍出错\n${it.localizedMessage}")
+        }
     }
 
     // ===== 书源管理平台能力: 对照 BookSourceActivity 同名方法 =====
@@ -1624,7 +1360,7 @@ class AndroidPlatformCapabilities(
         }
     }
 
-    // 对照 BookSourceActivity.menu_export_selection: saveToFile + EXPORT 文件选择器
+    // 对照原版 BookSourceActivity.menu_export_selection: 选中书源转 JSON 后交导出分发框
     override fun exportBookSourceSelection(
         selection: List<BookSourcePart>,
         allCount: Int,
@@ -1632,13 +1368,12 @@ class AndroidPlatformCapabilities(
         sort: BookSourceSort
     ) {
         if (selection.isEmpty()) return
-        bookSourceViewModel.saveToFile(
-            selection = selection,
-            allCount = allCount,
-            sortAscending = sortAscending,
-            sort = sort,
-        ) { file ->
-            activity.launchExportDir("bookSource.json", file, "application/json")
+        Coroutine.async {
+            selectedSourcesJson(selection, allCount, sortAscending, sort)
+        }.onSuccess { json ->
+            json?.let { pushExportDispatch("bookSource.json", it, "application/json") }
+        }.onError {
+            activity.toastOnUi(it.stackTraceStr)
         }
     }
 
@@ -1747,6 +1482,9 @@ class AndroidPlatformCapabilities(
     // 以下几项均为安卓独有能力, 其余端无消费方 (其他设置里相应条目自动隐藏)
     // Cronet: App.onCreate registerAndroidCronetProvider 注册了 CronetProvider
     override val cronetSupported: Boolean get() = true
+
+    // 预测式返回: 系统自 API 34 起给跟手进度, 页面级返回回调在开关打开时让位给根层接管
+    override val predictiveBackSupported: Boolean get() = true
 
     // 语言: AppContextWrapper.wrap 包 Context (attachBaseContext), 改完重启生效
     override val languageSwitchSupported: Boolean get() = true
@@ -1971,18 +1709,18 @@ class AndroidPlatformCapabilities(
 
     private fun saveLogInternal() {
         Coroutine.async {
-            val backupPath = AppConfig.backupPath ?: let {
-                App.instance.toastOnUi("未设置备份目录")
+            val savePath = effectiveBookSaveDir() ?: let {
+                App.instance.toastOnUi("未设置书籍保存位置")
                 return@async
             }
             if (!AppConfig.recordLog) {
                 App.instance.toastOnUi("未开启日志记录，请去其他设置里打开记录日志")
                 delay(3000)
             }
-            val doc = FileDoc.fromUri(backupPath.toUri(), true)
+            val doc = FileDoc.fromUri(savePath.toUri(), true)
             copyLogs(doc)
             copyHeapDump(doc)
-            App.instance.toastOnUi("已保存至备份目录")
+            App.instance.toastOnUi("已保存至书籍保存位置")
         }.onError {
             AppLog.put("保存日志出错\n${it.localizedMessage}", it, true)
         }
@@ -1990,8 +1728,8 @@ class AndroidPlatformCapabilities(
 
     private fun createHeapDumpInternal() {
         Coroutine.async {
-            val backupPath = AppConfig.backupPath ?: let {
-                App.instance.toastOnUi("未设置备份目录")
+            val savePath = effectiveBookSaveDir() ?: let {
+                App.instance.toastOnUi("未设置书籍保存位置")
                 return@async
             }
             if (!AppConfig.recordHeapDump) {
@@ -2001,11 +1739,11 @@ class AndroidPlatformCapabilities(
             App.instance.toastOnUi("开始创建堆转储")
             System.gc()
             CrashHandler.doHeapDump(true)
-            val doc = FileDoc.fromUri(backupPath.toUri(), true)
+            val doc = FileDoc.fromUri(savePath.toUri(), true)
             if (!copyHeapDump(doc)) {
                 App.instance.toastOnUi("未找到堆转储文件")
             } else {
-                App.instance.toastOnUi("已保存至备份目录")
+                App.instance.toastOnUi("已保存至书籍保存位置")
             }
         }.onError {
             AppLog.put("保存堆转储失败\n${it.localizedMessage}", it)
@@ -2015,7 +1753,7 @@ class AndroidPlatformCapabilities(
     /**
      * 把本地文件整份写进 [dirDoc] 下的 [fileName]: content:// 目录走 SAF 临时文档 + 改名就位
      * ([copyToDocumentAtomically]), file:// 目录走同目录唯一临时件 + 改名 ([copyToFileAtomically])。
-     * 备份目录是用户可见目录, 没有孤儿临时件的回收方, 两条通道都在各自的每条退出路径上清掉中间件。
+     * 书籍保存位置是用户可见目录, 没有孤儿临时件的回收方, 两条通道都在各自的每条退出路径上清掉中间件。
      * 写不成时抛异常 (调用方的 onError 如实报失败)。SAF 目录里目标名上已有同名旧文档时由
      * [copyToDocumentAtomically] 先把它挪成契约过渡件, 就位成功后删过渡件, 失败则改回目标名;
      * 就位成立时目标名上是完整的旧件或新件, 提供方不支持同目录就位时直写回落, 目标名上可能出现半截。
@@ -2027,23 +1765,27 @@ class AndroidPlatformCapabilities(
             return
         }
         check(copyToDocumentAtomically(App.instance, dirDoc.uri, fileName, input)) {
-            "写入备份目录失败: $fileName"
+            "写入书籍保存位置失败: $fileName"
         }
     }
 
+    /**
+     * 打包运行日志与崩溃日志 (外部缓存的日志目录) 加 logcat 现场成 logs.zip,
+     * 落书籍保存位置的日志目录 (与崩溃日志同处, 书籍直接放根)。
+     */
     private fun copyLogs(doc: FileDoc) {
         val cacheDir = App.instance.externalCache
-        val logFiles = File(cacheDir, "logs")
-        val crashFiles = File(cacheDir, "crash")
-        val logcatFile = File(cacheDir, "logcat.txt")
+        val logDir = File(cacheDir, LOG_DIR_NAME).apply { mkdirs() }
+        val logcatFile = File(logDir, "logcat.txt")
 
         dumpLogcat(logcatFile)
 
         val zipFile = File(cacheDir, "logs.zip")
-        ZipUtils.zipFiles(arrayListOf(logFiles, crashFiles, logcatFile), zipFile)
+        ZipUtils.zipFiles(arrayListOf(logDir), zipFile)
 
+        val logDoc = doc.createFolderIfNotExist(LOG_DIR_NAME)
         zipFile.inputStream().use { input ->
-            writeIntoDir(doc, "logs.zip", input)
+            writeIntoDir(logDoc, "logs.zip", input)
         }
         zipFile.delete()
     }

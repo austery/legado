@@ -59,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -89,6 +90,8 @@ import kotlin.math.roundToInt
  * | DecelerateInterpolator: 1-(1-t)^2 | [DECELERATE] = Easing { 1f-(1f-it)*(1f-it) } |
  * | colorProgress 每帧 +0.1 (帧数驱动, 时长随刷新率变) | tween(100) 固定时长, 刻意不复刻 |
  * | 颜色: current=ArgbEval(sec→pri), last=ArgbEval(pri→sec) | lerp 同参同序 |
+ * | 无逐字填充: 整行(含译文)同色 | 有字标签的行: 底色恒 secondaryColor, 已唱前缀盖 primaryColor,
+ *   译文不入填充; 切行后正文按满填充色的渐变淡出 |
  * | 缩放: current 1+0.05p, last 1.05-0.05p, 锚点(内容中心X,行中心Y) | 同 |
  * | 透明度: 上下 0.35h 边界线性 255→40, 与颜色 alpha 相乘 | 同 (calculateAlpha) |
  * | 点击: touchY=scrollYOffset+y-h/2, 二分 offset 区间, 回调 time | 同 (touchSlop 判定 tap/drag) |
@@ -123,6 +126,8 @@ fun LrcViewShared(
     // 单实例运行态 (对齐原版 LrcView 的字段模型): 不随数据换实例, 复位走显式 reset。
     // 以换实例代替复位会让所有持旧引用的 effect/手势断供 (行表空 → 点击/拖动静默失效)
     val lrc = remember { LrcRuntime() }
+    // 逐字填充的跳转目标追踪器: 与高亮调度同一口径 (跳转当帧按目标定位), 独立一份纪元记忆
+    val fillSeekTracker = remember { AudioPlayShared.SeekTargetTracker() }
 
     // 控件退出时取消动画 Job，避免泄漏
     DisposableEffect(lrc) {
@@ -195,9 +200,15 @@ fun LrcViewShared(
     // 3. 句前等待段 (前奏/空隙) 精准 delay 到首字开唱, 避免无效空转刷帧;
     // 4. 整句唱完后固定 100% 填满并挂起停帧, 避免等待下一行期间持续无效重绘;
     // 5. 仅在真正的唱词区间以 withFrameNanos 高刷驱动平滑变色;
-    // 6. seekEpoch 联动: 句内 seek 立即打断睡眠/停帧重定位。
+    // 6. 跳转信号联动: 句内 seek 立即打断睡眠/停帧, 并按信号里的目标位置重定位。
     LaunchedEffect(lines, isPlaying, playSpeed) {
-        snapshotFlow { lrc.currentIndex to AudioPlayShared.seekEpoch.value }.collectLatest { (index, _) ->
+        // 输入 = 当前行 (快照状态) + 跳转信号 (StateFlow): 任一变化都重启本轮填充
+        combine(
+            snapshotFlow { lrc.currentIndex },
+            AudioPlayShared.seekSignal,
+        ) { index, signal -> index to signal }.collectLatest { (index, signal) ->
+            // 跳转当帧的首次取样用目标位置, 之后回读位置真源
+            var pendingSeekMs = fillSeekTracker.targetOf(signal)
             val words = lines.getOrNull(index)?.words
             if (words.isNullOrEmpty()) return@collectLatest
             val firstWordTime = words.first().timeMs
@@ -205,7 +216,9 @@ fun LrcViewShared(
             val speed = playSpeed.coerceAtLeast(0.1f)
 
             while (isActive) {
-                val now = positionNowMs() + Lrc.OFFSET_MS
+                val truth = positionNowMs()
+                val now = (pendingSeekMs ?: truth) + Lrc.OFFSET_MS
+                pendingSeekMs = null
                 lrc.fillClockMs = now - Lrc.OFFSET_MS
 
                 if (!isPlaying) {
@@ -214,8 +227,12 @@ fun LrcViewShared(
                 }
 
                 if (now < firstWordTime) {
-                    // 句前等待段: 尚未开唱, 精准延时到首字开唱时刻
-                    val waitMs = ((firstWordTime - now) / speed).toLong()
+                    // 句前等待段: 尚未开唱, 精准延时到首字开唱时刻 (跳转未落地时短间隔重算)
+                    val waitMs = AudioPlayShared.lyricWakeUpMs(
+                        ((firstWordTime - now) / speed).toLong(),
+                        truth,
+                        signal.targetMs,
+                    )
                     if (waitMs > 0) {
                         delay(waitMs)
                         continue
@@ -417,6 +434,16 @@ fun LrcViewShared(
             }
             val lineCenterY = lineY + line.height / 2f
             val layout = line.layout
+            // 逐字行: 底色恒为 secondaryColor, 亮度全由已唱前缀承载 —— 译文不属于唱词,
+            // 跟随整行渐变就会在切行那一瞬整段亮一下
+            val hasWords = line.words.isNotEmpty()
+            val sungChars = when {
+                hasWords && isCurrent -> line.charProgressAt(fillClockMs + Lrc.OFFSET_MS)
+                // 上一行停在唱完时的满填充, 亮度交给 [sungColor] 随渐变色变暗 (与唱完那一帧连续)
+                hasWords && isLast -> line.bodyChars.toFloat()
+                else -> 0f
+            }
+            val sungColor = if (hasWords && !isCurrent) baseColor else primaryColor
             // 原版: withTranslation(contentCenterX - layout.width / 2f, layoutY)
             // —— Compose 文本块宽度自适应 (短文本 < 视口宽), 需按块宽居中
             val topLeft = Offset(
@@ -426,17 +453,16 @@ fun LrcViewShared(
             // 透明度 (复刻 calculateAlpha: 上下 0.35h 边界线性 1→40/255), 交给 drawText 内部 modulate
             val fade = calculateAlpha(lineCenterY, size.height)
 
-            // 逐字行: 未唱的部分留在 secondaryColor, 已唱的前缀盖 primaryColor;
-            // 整行 secondary→primary 的渐变只留给没有字标签的歌词, 否则会把填充对比冲掉
-            val karaoke = isCurrent && line.words.isNotEmpty()
-            val bodyColor = if (karaoke) secondaryColor else baseColor
-            val sungChars = if (karaoke) line.charProgressAt(fillClockMs + Lrc.OFFSET_MS) else 0f
+            // 整行 secondary→primary 的渐变只留给没有字标签的歌词 (有字标签的靠填充对比)
+            val bodyColor = if (hasWords) secondaryColor else baseColor
             // 只有当前/上一行会缩放, 其余行跳过 scale{} 的 save/concat/restore
             if (scaleFactor == 1f) {
-                drawLrcLine(line, topLeft, bodyColor, fade, sungChars, primaryColor)
+                drawLrcLine(layout, topLeft, bodyColor, fade, sungChars, sungColor, line.bodyChars)
             } else {
                 scale(scaleFactor, scaleFactor, pivot = Offset(contentCenterX, lineCenterY)) {
-                    drawLrcLine(line, topLeft, bodyColor, fade, sungChars, primaryColor)
+                    drawLrcLine(
+                        layout, topLeft, bodyColor, fade, sungChars, sungColor, line.bodyChars
+                    )
                 }
             }
         }
@@ -449,11 +475,12 @@ fun LrcViewShared(
  * 对齐原版 AudioPlayService.upPlayProgressForLrc 的节能策略:
  * 1. 响应式驱动: 状态变化 (换歌/切章/seek/换速/暂停/播放) 立即重算定位;
  * 2. 精确 delay: 播放时按下一句歌词时间差精准挂起休眠, 一首歌仅在切行时刻唤醒 N 次,
- *    杜绝每秒 60~120 次的死循环帧轮询;
+ *    杜绝每秒 60~120 次的死循环帧轮询; 跳转未落地期间按 [AudioPlayShared.SEEK_POLL_MS]
+ *    短间隔重算, 位置真源反映引擎真实位置后恢复按行精准休眠;
  * 3. 暂停休眠: 暂停/缓冲时完全挂起零开销, 拖动进度条或恢复播放时即时响应。
  *
  * 对外发布 (车载歌词) 是另一个消费者, 走 [io.legado.app.model.audio.LyricPublisher]:
- * 它需要息屏后台也推进, 共用 [AudioPlayShared.seekEpoch] 与 [Lrc.indexAt] 同一份判定。
+ * 它需要息屏后台也推进, 共用 [AudioPlayShared.seekSignal] 与 [Lrc.indexAt] 同一份判定。
  */
 @Composable
 fun rememberLrcIndex(
@@ -465,13 +492,20 @@ fun rememberLrcIndex(
     // 否则会先居中第一行, 下一帧再 snap 过去 —— 肉眼是闪一下
     val key = lrcData to AudioPlayShared.durChapterIndex
     var index by remember(key) { mutableIntStateOf(lrcData.indexNow()) }
+    // 跳转目标追踪器: 只认新纪元, 跳转当帧按目标定位
+    val seekTracker = remember { AudioPlayShared.SeekTargetTracker() }
     LaunchedEffect(key, isPlaying, playSpeed) {
-        if (lrcData == null || !lrcData.hasTimeline) return@LaunchedEffect
-        // 观察 seek 重算纪元 (进度跳转时立即打断 delay 并重新校准)
-        snapshotFlow { AudioPlayShared.seekEpoch.value }.collectLatest {
+        // 观察跳转信号 (StateFlow 直接收集): 进度跳转当帧立即打断 delay 并按目标位置重新校准
+        AudioPlayShared.seekSignal.collectLatest { signal ->
+            // 跳转当帧的首次取样用目标位置, 之后回读位置真源
+            var pendingSeekMs = seekTracker.targetOf(signal)
+            val lrc = lrcData ?: return@collectLatest
+            if (!lrc.hasTimeline) return@collectLatest
             while (isActive) {
-                val now = positionNowMs() + Lrc.OFFSET_MS
-                val targetIndex = lrcData.indexAt(now)
+                val truth = positionNowMs()
+                val now = (pendingSeekMs ?: truth) + Lrc.OFFSET_MS
+                pendingSeekMs = null
+                val targetIndex = lrc.indexAt(now)
                 if (index != targetIndex) {
                     index = targetIndex
                 }
@@ -479,9 +513,13 @@ fun rememberLrcIndex(
                     // 暂停/非播放中: 停在当前行, 挂起等待状态或 seek 唤醒
                     break
                 }
-                val nextTime = lrcData.timeAfter(targetIndex) ?: break
+                val nextTime = lrc.timeAfter(targetIndex) ?: break
                 val speed = playSpeed.coerceAtLeast(0.1f)
-                val remainWallMs = ((nextTime - now) / speed).toLong()
+                val remainWallMs = AudioPlayShared.lyricWakeUpMs(
+                    ((nextTime - now) / speed).toLong(),
+                    truth,
+                    signal.targetMs,
+                )
                 if (remainWallMs <= 0) {
                     // 临界时间微延时防紧密循环
                     delay(16)
@@ -518,16 +556,21 @@ private class MeasuredLrcLine(
     val height: Int,
     val offset: Float,
     val words: List<LrcWord>,
+    /** 正文的字符数 (译文是 `\n` 之后追加的)。 */
+    val bodyChars: Int,
 )
+
+/** 正文字符数: 译文是 `\n` 之后追加的, 不参与逐字填充。 */
+private fun LrcLine.bodyChars(): Int = text.indexOf('\n').let { if (it < 0) text.length else it }
 
 /**
  * 逐字采样 + 一个收尾采样: Enhanced LRC 只标每个字的起点, 末字没有终点, 用下一行的时间戳补上。
- * 终点是首语种正文的末尾 —— 译文是 `\n` 之后追加的, 不参与填充。
+ * 终点是 [bodyChars] (正文末尾), 译文不参与填充。
  * 末行无下一行时间戳时，根据本行字符节奏预估终点时间，确保播放完毕时末尾字符能被点亮。
  */
 private fun LrcLine.fillSamples(nextTimeMs: Int?): List<LrcWord> {
     if (words.isEmpty()) return emptyList()
-    val end = text.indexOf('\n').let { if (it < 0) text.length else it }
+    val end = bodyChars()
     val lastWord = words.last()
     if (lastWord.charIndex >= end) return words
     val closingTimeMs = if (nextTimeMs != null) {
@@ -559,25 +602,29 @@ private fun MeasuredLrcLine.charProgressAt(positionMs: Int): Float {
 }
 
 /**
- * 画一行歌词: [bodyColor] 打底, 再把前 [sungChars] 个字符 (含小数) 用 [sungColor] 盖一层。
- * [sungChars] 不为正时只打底, 与逐字歌词落地前逐像素一致。
+ * 画一行歌词: [bodyColor] 打底, 再把前 [sungChars] 个正文字符 (含小数) 用 [sungColor] 盖一层。
+ * [sungChars] 不为正时只打底; 填充范围止于 [bodyChars], 换行之后的译文不进高亮。
  */
 private fun DrawScope.drawLrcLine(
-    line: MeasuredLrcLine,
+    layout: TextLayoutResult,
     topLeft: Offset,
     bodyColor: Color,
     fade: Float,
     sungChars: Float,
     sungColor: Color,
+    bodyChars: Int,
 ) {
-    val layout = line.layout
     drawText(layout, bodyColor, topLeft, alpha = fade)
     if (sungChars <= 0f) return
-    val boundary = sungChars.toInt()
-    if (boundary >= layout.layoutInput.text.length) {
-        drawText(layout, sungColor, topLeft, alpha = fade)
+    if (sungChars >= bodyChars) {
+        // 整段唱满: 覆盖范围止于正文的最后一个可视行, 换行之后的译文留在打底色上
+        val lastBodyLine = layout.getLineForOffset(bodyChars - 1)
+        clipRect(top = topLeft.y, bottom = topLeft.y + layout.getLineBottom(lastBodyLine)) {
+            drawText(layout, sungColor, topLeft, alpha = fade)
+        }
         return
     }
+    val boundary = sungChars.toInt()
     val visualLine = layout.getLineForOffset(boundary)
     val box = layout.getBoundingBox(boundary)
     // 已唱满的可视行整段盖掉 (长行换行与双语的第二段都靠这个边界分开)
@@ -690,6 +737,7 @@ private fun measureLrcLines(
             layout.size.height + marginPx.roundToInt(),
             offset,
             line.fillSamples(src.getOrNull(i + 1)?.timeMs),
+            line.bodyChars(),
         ).also { offset += it.height }
     }
 }

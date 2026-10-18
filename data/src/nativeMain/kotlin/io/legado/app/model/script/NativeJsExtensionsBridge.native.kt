@@ -105,18 +105,20 @@ import kotlinx.atomicfu.locks.synchronized
  * - createSymmetricCrypto 返回的 SymmetricCrypto 对象 handle 也记录在 scope.handles 中。
  *
  * # 补齐的方法 (methodId)
- * - 1-99: JsExtensionsCommon 纯函数面 (base64Encode/base64Decode/strToBytes/bytesToStr/hex/encodeURI/htmlFormat/timeFormat/randomUUID/t2s/s2t)
- * - 23-28: 规则引擎核心补齐 (getSource/put/get/evalJS/getString/getStringList, 对齐 JVM @JsApi 分派表)
+ * - 1-99: JsExtensionsCommon 手写面 (base64Encode/base64Decode/strToBytes/bytesToStr/encodeURI/toURL;
+ *   13-17 编解码重载; 23-28 规则引擎核心 getSource/put/get/evalJS/getString/getStringList;
+ *   29-35 规则引擎节点/作用域面 getElement/getElements/setContent/setBaseUrl/setRedirectUrl/
+ *   splitSourceRule/close —— AnalyzeRuleCore 不在 KSP 生成表工厂映射内, 这些只能手写)
  * - 100-199: JsCryptoProviders 摘要/HMAC 面 (md5Encode/md5Encode16/digestHex/digestBase64Str/HMacHex/HMacBase64)
  * - 200-299: 工厂方法 (createSymmetricCrypto/createAsymmetricCrypto/createSign) 返回 handle (Float64)
  * - 1000-1099: SymmetricCrypto 对象方法 (encryptBase64/decryptStr/decrypt/setIv/encrypt/encryptHex)
  * - 1100-1199: AsymmetricCrypto 对象方法 (setPrivateKey/setPublicKey/decrypt/encrypt/decryptStr/encryptHex/encryptBase64)
  * - 1200-1299: Sign 对象方法 (setPrivateKey/setPublicKey/sign/signHex/verify)
- * - 13-29: 编解码补齐/重载 (strToBytes/bytesToStr/base64 系/hexDecodeToByteArray/encodeURI/timeFormatUTC/toNumChapter/toURL)
- * - 300-399: 网络族 (ajax/ajaxAll/connect/webView 系/getCookie/getWebViewUA; 309-311 java get/head/post)
- * - 400-499: UI/杂项 (refreshUi/log/logType/toast/longToast/androidId/openUrl/startBrowser 系/getVerificationCode/copy)
- * - 500-599: 字体族 (queryTTF/queryBase64TTF/replaceFont)
- * - 600-699: 文件/压缩族 (getFile/readFile/readTxtFile/deleteFile/解压全族/downloadFile/cacheFile/importScript)
+ * - 300-399: 网络族手写特例 (ajax/ajaxAll/connect/webView 系/getCookie; 309-311 java get/head/post)
+ * - 400-499: UI/杂项手写特例 (log/logType/openUrl/startBrowser 系/startBrowserAwait)
+ * - 500-599: 字体族手写特例
+ * - 600-699: 文件/压缩族手写特例 (getZip/getRar/get7zStringContent、decompressString 613、
+ *   downloadFile 616、cacheFile 617; getFile/readFile/readTxtFile/deleteFile/解压全族/importScript 已由生成表接管)
  * - 700-799: Connection.Response 对象方法 (java.get/head/post 返回值: body/statusCode/url/header/cookie 等;
  *   规整方法已由 KSP 生成表接管, 手写仅剩 704 url()/712 method() 特例)
  * - 1300-1399: QueryTTF 对象方法 (规整函数手写闭包与生成表并存: 生成注入点在 JS 工厂
@@ -124,7 +126,7 @@ import kotlinx.atomicfu.locks.synchronized
  *   不覆盖项, 仅手写); 1400-1499: StrResponse 对象方法 (规整已生成表接管,
  *   手写仅 1406 headers toString 降级); 1500-1599: JsURL 对象属性 (仅属性, 生成器无输出, 全手写);
  *   1600-1699: BaseSource 对象方法 (getKey/getTag/getSourceType/getLoginJs 已生成表接管; 手写仅
- *   1604 getHeaderMap 特例与 1605/1606/1608/1609 属性 getter 方法化 —— 属性不在生成范围, 手写保留);
+ *   1604 getHeaderMap 特例与 1605/1606/1608/1609/1623 属性 getter 方法化 —— 属性不在生成范围, 手写保留);
  *   1610-1611: RssJsApi (RSS 拦截 JS 专属 searchBook/addBook, 见 RssJsExtensions.native)
  * - 1700-2199: 复杂对象属性桥 (NativeJsPropertyBridge, book/source/chapter/java 属性 getter,
  *   分派表与 JS 工厂见 NativeJsPropertyBridge.native.kt; >= 1700 在 dispatch 开头短路转发)
@@ -315,6 +317,16 @@ object NativeJsExtensionsBridge {
                 ::registerObject
             )
         if (generated !== NativeDispatchResult.NONE) return nativeResultToJs(ctx, generated)
+        // 生成表段 (5000-5999) 未命中 = KSP 漏生成 / jsapi.nativeTargets 配置漂移 / 新增方法没重新生成。
+        // 必须显式失败: 若放任落进属性桥 (5000 >= PROPERTY_ID_BASE) 或手写 when, 表现为
+        // "方法存在但返回 undefined", 书源侧极难排查 (如 java.decompressBytes 静默失效)。
+        if (methodId in GENERATED_ID_BASE until GENERATED_ID_BASE + GENERATED_ID_SPAN) {
+            error(
+                "native dispatch: methodId=$methodId 属 KSP 生成表段 [$GENERATED_ID_BASE, " +
+                    "${GENERATED_ID_BASE + GENERATED_ID_SPAN}) 但未命中, 请检查 JsApiProcessor " +
+                    "jsapi.nativeTargets 配置与 NATIVE_EXCLUDED_METHODS 名单 (obj=${obj::class.simpleName})"
+            )
+        }
         // 复杂对象属性/方法段 (>= 1700, NativeJsPropertyBridge):
         // 1700-2199 属性 getter 无参数, 直接转发跳过 JS Array 解析 (hot path: 一次属性读取零堆分配);
         // 2200+ 属性写/变量方法/cookie/cache 需解析参数后转发 (setter 与调用路径, 非 hot path)
@@ -422,6 +434,64 @@ object NativeJsExtensionsBridge {
                     }
                     arr
                 }
+            }
+
+            obj is AnalyzeRuleCore && methodId == 29 -> {
+                // getElement(rule) → 单个节点 handle (0 = null, JS 层 __createElementObj 包装)
+                val node = obj.getElement(args.getString(0)) as? Node
+                if (node == null) qjs_NewFloat64(ctx, 0.0)
+                else qjs_NewFloat64(ctx, NativeJsPropertyBridge.registerScopedHandle(node).toDouble())
+            }
+
+            obj is AnalyzeRuleCore && methodId == 30 -> {
+                // getElements(rule) → 节点 handle 数组 (JS 层逐个包装, 空结果 → [])
+                val list = obj.getElements(args.getString(0))
+                NativeJsPropertyBridge.nodeListToJsHandleArray(
+                    ctx,
+                    list.mapNotNull { it as? Node }
+                )
+            }
+
+            obj is AnalyzeRuleCore && methodId == 31 -> {
+                // setContent(content[, baseUrl]) → this (JS 层 __createAnalyzeObj 包装, 支持链式)
+                obj.setContent(args.getOrNull(0), args.getOrNull(1) as? String)
+                qjs_NewFloat64(ctx, NativeJsPropertyBridge.registerScopedHandle(obj).toDouble())
+            }
+
+            obj is AnalyzeRuleCore && methodId == 32 -> {
+                // setBaseUrl(baseUrl) → this
+                obj.setBaseUrl(args.getOrNull(0) as? String)
+                qjs_NewFloat64(ctx, NativeJsPropertyBridge.registerScopedHandle(obj).toDouble())
+            }
+
+            obj is AnalyzeRuleCore && methodId == 33 -> {
+                // setRedirectUrl(url) → 重定向后的 URL 字符串
+                // JVM 端返回 java.net.URL 对象, native 无反射无法暴露其方法面,
+                // 书源只取字符串形态 (String(u)), 故直返字符串 (失败/无重定向 → null)
+                val url = obj.setRedirectUrl(args.getString(0))
+                stringToJsValue(ctx, url?.toString())
+            }
+
+            obj is AnalyzeRuleCore && methodId == 34 -> {
+                // splitSourceRule(rule[, allInOne]) → 规则对象数组
+                // SourceRule 成员为 internal 且是 inner class, native 无反射无法暴露字段,
+                // 书源只用其 rule 文本, 故返回 {rule} 对象数组 (JVM 端 .rule 取值同形态)
+                val allInOne = (args.getOrNull(1) as? Boolean) ?: false
+                val rules = obj.splitSourceRule(args.getString(0), allInOne)
+                val arr = JS_NewArray(ctx)
+                rules.forEachIndexed { i, r ->
+                    val o = JS_NewObject(ctx)
+                    val v = stringToJsValue(ctx, r.rule)
+                    JS_SetPropertyStr(ctx, o, "rule", v)
+                    JS_SetPropertyUint32(ctx, arr, i.toUInt(), o)
+                }
+                arr
+            }
+
+            obj is AnalyzeRuleCore && methodId == 35 -> {
+                // close() → undefined (释放 topScope, 与 JVM 端一致无返回值)
+                obj.close()
+                jsUndefined()
             }
 
             // ============ JsCryptoProviders 摘要/HMAC 面 (100-199) ============
@@ -728,6 +798,17 @@ object NativeJsExtensionsBridge {
                 } else obj.get7zStringContent(args.getString(0), args.getString(1))
                 stringToJsValue(ctx, text)
             }
+            obj is JsExtensionsCommon && methodId == 613 -> {
+                // decompressString(data, format[, charsetName]) — charsetName 缺省/空串时按内容自动检测编码
+                stringToJsValue(
+                    ctx,
+                    obj.decompressString(
+                        args.getOrNull(0),
+                        args.getString(1),
+                        args.getOrNull(2) as? String ?: ""
+                    )
+                )
+            }
             obj is JsExtensionsCommon && methodId == 617 -> {
                 // cacheFile(urlStr[, saveTime])
                 val saveTime = (args.getOrNull(1) as? Number)?.toInt()
@@ -788,18 +869,19 @@ object NativeJsExtensionsBridge {
             }
 
             // ============ BaseSource 对象方法 (1600-1699, getSource() 返回对象) ============
-            // getKey/getTag/getSourceType/getLoginJs 已由 KSP 生成表接管; 1604 特例: getHeaderMap
-            // 推断返回 HashMap 无法归类生成 (名单内, 手写 JSON);
-            // 1605/1606/1608/1609 为属性 getter 方法化 (阶段 3 E5 属性遍历接管)
+            // getKey/getTag/getSourceType/getLoginJs/login/showLoginDialog/showSourceVariableDialog
+            // 由 KSP 生成表接管; 1604 特例: getHeaderMap 推断返回 HashMap 无法归类生成 (名单内, 手写 JSON);
+            // 1605/1606/1608/1609/1623 为属性 getter 方法化 (阶段 3 E5 属性遍历接管)
             obj is BaseSource && methodId == 1604 -> {
-                // getHeaderMap() → JSON 对象 (返回类型非空, 无 null 分支)
-                stringToJsValue(ctx, GSON.toJson(obj.getHeaderMap()))
+                // getHeaderMap(hasLoginHeader) → JSON 对象 (返回类型非空, 无 null 分支)
+                stringToJsValue(ctx, GSON.toJson(obj.getHeaderMap(args.getOrNull(0) as? Boolean ?: false)))
             }
 
             obj is BaseSource && methodId == 1605 -> stringToJsValue(ctx, obj.loginUrl)
             obj is BaseSource && methodId == 1606 -> stringToJsValue(ctx, obj.header)
             obj is BaseSource && methodId == 1608 -> stringToJsValue(ctx, obj.concurrentRate)
             obj is BaseSource && methodId == 1609 -> stringToJsValue(ctx, obj.jsLib)
+            obj is BaseSource && methodId == 1623 -> stringToJsValue(ctx, obj.loginUi)
 
             // ============ RssJsApi 对象方法 (1610-1611, RSS 拦截 JS 专属) ============
             // RssJsExtensionsNative 包装 (BaseSource + RssJsApi) 经 __createRssJsObj 注入;
@@ -894,6 +976,19 @@ function __createJavaObj(handle) {
     obj.evalJS = function(jsStr) { return __nativeDispatch(handle, 26, [jsStr]); };
     obj.getString = function(rule, content, isUrl) { return __nativeDispatch(handle, 27, [rule, content, isUrl]); };
     obj.getStringList = function(rule, content, isUrl) { return __nativeDispatch(handle, 28, [rule, content, isUrl]); };
+    obj.getElement = function(rule) { var h = __nativeDispatch(handle, 29, [rule]); return h ? __createElementObj(h) : null; };
+    obj.getElements = function(rule) {
+        var hs = __nativeDispatch(handle, 30, [rule]);
+        if (!hs) return [];
+        var out = [];
+        for (var i = 0; i < hs.length; i++) out.push(__createElementObj(hs[i]));
+        return out;
+    };
+    obj.setContent = function(content, baseUrl) { return __createAnalyzeObj(__nativeDispatch(handle, 31, [content, baseUrl])); };
+    obj.setBaseUrl = function(baseUrl) { return __createAnalyzeObj(__nativeDispatch(handle, 32, [baseUrl])); };
+    obj.setRedirectUrl = function(url) { return __nativeDispatch(handle, 33, [url]); };
+    obj.splitSourceRule = function(rule, allInOne) { return __nativeDispatch(handle, 34, [rule, allInOne]); };
+    obj.close = function() { return __nativeDispatch(handle, 35, []); };
     // ============ 网络族 (300-399) ============
     obj.ajax = function(url) { return __nativeDispatch(handle, 301, [url]); };
     obj.ajaxAll = function(urlList) {
@@ -945,6 +1040,8 @@ function __createJavaObj(handle) {
     obj.getZipStringContent = function(url, path, charsetName) { return __nativeDispatch(handle, 610, [url, path, charsetName]); };
     obj.getRarStringContent = function(url, path, charsetName) { return __nativeDispatch(handle, 611, [url, path, charsetName]); };
     obj.get7zStringContent = function(url, path, charsetName) { return __nativeDispatch(handle, 612, [url, path, charsetName]); };
+    obj.decompressString = function(data, format, charsetName) { return __nativeDispatch(handle, 613, [data, format, charsetName]); };
+    // decompressBytes 不在此手写: KSP 生成表已接管 (5000+ 段, JS 面经 @@methods 注入)
     obj.downloadFile = function(a, b) { return __nativeDispatch(handle, 616, [a, b]); };
     obj.cacheFile = function(urlStr, saveTime) { return __nativeDispatch(handle, 617, [urlStr, saveTime]); };
     // @@methods:__createJavaObj@@
@@ -1003,7 +1100,7 @@ function __createQueryTTFObj(handle) {
         var cache = null;
         Object.defineProperty(obj, m[0], {
             get: function() {
-                if (cache === null) cache = JSON.parse(__nativeDispatch(handle, m[1], []) || "{}");
+                if (cache === null) cache = __wrapJsonMap(JSON.parse(__nativeDispatch(handle, m[1], []) || "{}"));
                 return cache;
             }
         });
@@ -1043,7 +1140,7 @@ function __createJsUrlObj(handle) {
     Object.defineProperty(obj, "pathname", { get: function() { return __nativeDispatch(handle, 1503, []); } });
     Object.defineProperty(obj, "searchParams", { get: function() {
         var s = __nativeDispatch(handle, 1504, []);
-        return (s === null || s === undefined) ? null : JSON.parse(s);
+        return (s === null || s === undefined) ? null : __wrapJsonMap(JSON.parse(s));
     } });
     // @@methods:__createJsUrlObj@@
     return obj;

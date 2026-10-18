@@ -4,6 +4,8 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.DirUsage
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.config.resolveImagePath
+import io.legado.app.help.crash.CRASH_LOG_FILE_PREFIX
+import io.legado.app.help.storage.BackupFileOps
 import io.legado.app.help.storage.DataStorageProviders
 import io.legado.app.help.toast.DesktopTrayNotifier
 import io.legado.app.help.writeBytesAtomically
@@ -15,6 +17,7 @@ import io.legado.app.ui.root.CrashLogProvider
 import io.legado.app.ui.root.ExternalRequestService
 import io.legado.app.ui.root.FileFilter
 import io.legado.app.ui.root.FilePickerService
+import io.legado.app.ui.root.PickedFile
 import io.legado.app.ui.root.KeyboardController
 import io.legado.app.ui.root.LaunchRequest
 import io.legado.app.ui.root.MediaService
@@ -28,6 +31,7 @@ import io.legado.app.ui.root.SoftInputPolicy
 import io.legado.app.ui.root.SystemBarsPolicy
 import io.legado.app.ui.root.WindowController
 import io.legado.app.ui.root.importImageSetFile
+import io.legado.app.ui.root.SavedRef
 import io.legado.app.utils.browseUrl
 import io.legado.desktop.help.DesktopCrashLogDirs
 import io.legado.desktop.help.DesktopKeepAwake
@@ -77,15 +81,29 @@ private class DesktopFilePickerService : FilePickerService {
     override fun pickFile(filter: FileFilter): String? =
         FileDialogs.pickOpenFile(extensions = filter.extensions)?.absolutePath
 
-    override fun pickFiles(filter: FileFilter): List<String> =
-        // Windows IFileDialog 原生多选; macOS/Linux AWT FileDialog 多选模式
-        FileDialogs.pickOpenFiles(extensions = filter.extensions).map { it.absolutePath }
+    override fun pickFiles(filter: FileFilter): List<PickedFile> =
+        FileDialogs.pickOpenFiles(extensions = filter.extensions)
+            ?.map { PickedFile(it.absolutePath, it.name) }
+            ?: emptyList()
 
-    // 调用方没给目录时起始目录用用户可见产物目录 (桌面/legado), 别落在应用数据目录
-    override fun saveFile(suggestedName: String, defaultDir: String?): String? =
+    override fun saveText(suggestedName: String, text: String): SavedRef? {
+        val dest = pickSaveFile(suggestedName) ?: return null
+        // 整份就位: 覆盖写被打断会在用户目录留下半截文件
+        check(writeBytesAtomically(dest, text.encodeToByteArray())) { "写入文件失败: $dest" }
+        return SavedRef(dest)
+    }
+
+    /** 同上, 内容按整份复制到选定位置。 */
+    override fun saveFromFile(srcPath: String, suggestedName: String): SavedRef? {
+        val dest = pickSaveFile(suggestedName) ?: return null
+        BackupFileOps.copyFile(srcPath, dest)
+        return SavedRef(dest)
+    }
+
+    private fun pickSaveFile(suggestedName: String): String? =
         FileDialogs.pickSaveFile(
             defaultName = suggestedName,
-            initialDir = (defaultDir ?: userExportDir())?.let(::File)?.takeIf { it.isDirectory },
+            initialDir = userExportDir()?.let(::File)?.takeIf { it.isDirectory },
         )?.absolutePath
 
     override fun saveImageBytes(suggestedName: String, bytes: ByteArray): Boolean? {
@@ -276,8 +294,8 @@ private class DesktopExternalRequestService : ExternalRequestService {
     override fun handleLaunchRequest(request: LaunchRequest): Boolean = false
 }
 
-// 桌面端崩溃日志提供者: 读 DesktopCrashHandler 落盘的两个目录 (缓存 + 用户导出),
-// 对照 app 端 CrashViewModel.initData 同样从外部缓存 + 备份路径两处收集
+// 桌面端崩溃日志提供者: 读 DesktopCrashHandler 落盘的两个目录 (缓存 + 书籍保存位置),
+// 对照 app 端 CrashViewModel.initData 同样从外部缓存 + 用户选定目录两处收集, 都按 crash- 前缀过滤
 private class DesktopCrashLogProvider : CrashLogProvider {
 
     private fun dirs(): List<File> = DesktopCrashLogDirs.readDirs()
@@ -287,13 +305,17 @@ private class DesktopCrashLogProvider : CrashLogProvider {
         dirs().map { File(it, name) }.firstOrNull { it.isFile }
 
     override suspend fun loadCrashLogs(): List<CrashLogProvider.CrashLogEntry> {
-        // 只列自己的崩溃目录: JVM 致命错误现场在启动时已被认领并搬进来
+        // 只列自己的日志目录: JVM 致命错误现场在启动时已被认领并搬进来
         // (见 DesktopCrashHandler.collectJvmFatalErrorLogs), 故这里不再跨目录扫描 ——
         // 工作目录/临时目录/用户主目录是多进程共享的, 在那里读会列出别的 JVM 的报告,
-        // 清空时更会删掉别人的文件
+        // 清空时更会删掉别人的文件。
+        // 只收 crash- 前缀: 目录里同时放着运行日志 (appLog-), 它不是崩溃现场
         return dirs()
             .filter { it.isDirectory }
-            .flatMap { it.listFiles { f -> f.isFile }?.toList().orEmpty() }
+            .flatMap {
+                it.listFiles { f -> f.isFile && f.name.startsWith(CRASH_LOG_FILE_PREFIX) }
+                    ?.toList().orEmpty()
+            }
             .sortedByDescending { it.name }
             .distinctBy { it.name }
             .map { CrashLogProvider.CrashLogEntry(it.name) }
@@ -302,8 +324,12 @@ private class DesktopCrashLogProvider : CrashLogProvider {
     override suspend fun readCrashLog(name: String): String? = findFile(name)?.readText()
 
     override suspend fun clearCrashLogs() {
+        // 只删崩溃现场: 目录里还有运行日志 (appLog-), 它们不该被"清空崩溃日志"连带删掉
         dirs().forEach { dir ->
-            if (dir.isDirectory) dir.listFiles()?.forEach { it.delete() }
+            if (dir.isDirectory) {
+                dir.listFiles { f -> f.isFile && f.name.startsWith(CRASH_LOG_FILE_PREFIX) }
+                    ?.forEach { it.delete() }
+            }
         }
     }
 

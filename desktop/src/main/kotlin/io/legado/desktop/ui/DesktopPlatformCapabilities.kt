@@ -1,6 +1,7 @@
 package io.legado.desktop.ui
 
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.SourceType
@@ -12,13 +13,12 @@ import io.legado.app.exception.InvalidBooksDirException
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.DirectLinkUploadRule
 import io.legado.app.help.RssToolbarActions
+import io.legado.app.help.book.bookLogDirOrNull
+import io.legado.app.help.book.bookshelfJson
 import io.legado.app.help.book.effectiveBookSaveDir
 import io.legado.app.help.book.isImage
-import io.legado.app.help.book.tryParesExportFileName
 import io.legado.app.help.config.LocalConfigKeys
 import io.legado.app.help.config.PreferenceProviders
-import io.legado.app.help.config.effectiveBookExportDir
-import io.legado.app.help.config.rememberBookExportDir
 import io.legado.app.help.coroutine.mainDispatcher
 import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.help.file.desktopStoredLocalRef
@@ -35,7 +35,7 @@ import io.legado.app.ui.book.info.WebFileImportShared
 import io.legado.app.ui.book.read.config.FontItem
 import io.legado.app.ui.book.source.BookSourceSort
 import io.legado.app.ui.book.source.manage.BookSourceViewModelShared
-import io.legado.app.ui.book.source.manage.getExportBookSources
+import io.legado.app.ui.book.source.manage.selectedSourcesJson
 import io.legado.app.ui.compose.platform.syncGetString
 import io.legado.app.ui.config.MODE_EDIT_CONFIG
 import io.legado.app.ui.config.MODE_EDIT_PREFS
@@ -46,22 +46,24 @@ import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.BookRef
 import io.legado.app.ui.root.DefaultDialogTransitionSpec
 import io.legado.app.ui.root.DialogTransitionSpec
+import io.legado.app.ui.root.PickedFile
 import io.legado.app.ui.root.SharedPlatformCapabilities
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.PlatformServiceProviders
 import io.legado.app.ui.root.RouteResultPayload
 import io.legado.app.ui.root.RouteTransitionSpec
 import io.legado.app.ui.root.ensureBookSaveDirSelected
+import io.legado.app.ui.root.reselectBookSaveDir
 import io.legado.app.ui.root.pushExportDispatch
 import io.legado.app.ui.root.TransitionEasing
 import io.legado.app.ui.root.toRouteRef
-import io.legado.app.utils.GSON
+import io.legado.app.ui.root.pushExportSectionConfig
 import io.legado.app.utils.browseUrl
 import io.legado.app.utils.FileUtilsBase
 import io.legado.app.utils.atomicWriteTempPath
 import io.legado.app.utils.compress.ZipUtils
 import io.legado.app.utils.openFileWithSystem
-import io.legado.app.utils.toJson
+import io.legado.app.utils.toExportJsonText
 import io.legado.desktop.constant.DesktopAppInfo
 import io.legado.desktop.help.DesktopCrashLogDirs
 import io.legado.desktop.help.applyDesktopLanguagePref
@@ -447,15 +449,19 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     // 崩溃日志: 与 app 端同走 shared OverlayContentHost 的 "crash_logs" key
     // (数据源 = DesktopPlatformServices.crashLogs, 写入方见 DesktopCrashHandler)
 
-    // 对照 app 端 saveLog: 打包 logs + crash + heapDump 成 logs.zip 落到用户可见目录
-    // (app 端落 SAF 备份目录, 桌面端落 userExportDir; 桌面无 logcat 可 dump)
+    // 对照 app 端 saveLog: 打包运行日志 + 崩溃日志 (缓存里的 log 目录) 与堆转储成 logs.zip,
+    // 落书籍保存位置下的 log 目录 (与崩溃日志同处, 书籍直接放根); 未设置保存位置则提示中止
     override fun saveLog() {
         scope.launch {
             runCatching { saveLogInternal() }
                 .onSuccess { Toasters.get().toast("已保存至 $it") }
-                .onFailure {
-                    AppLog.put("保存日志出错\n${it.localizedMessage}", it)
-                    Toasters.get().toast("保存日志出错\n${it.message}")
+                .onFailure { error ->
+                    if (error is InvalidBooksDirException) {
+                        Toasters.get().toast(error.message ?: "未设置书籍保存位置")
+                    } else {
+                        AppLog.put("保存日志出错\n${error.localizedMessage}", error)
+                        Toasters.get().toast("保存日志出错\n${error.message}")
+                    }
                 }
         }
     }
@@ -476,23 +482,24 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     /**
      * 打包日志到 logs.zip (对照 app 端 copyLogs + copyHeapDump, 桌面端无 logcat 环节)。
      *
-     * 源: `{cacheDir}/logs` (AppLog 落盘) + 崩溃日志目录 + `{cacheDir}/heapDump`;
-     * 目标: `{userExportDir}/logs.zip`。
+     * 源: `{cacheDir}/log` (运行日志与崩溃日志同目录, AppLog 与崩溃处理器写入) + `{cacheDir}/heapDump`;
+     * 目标: `书籍保存位置/log/logs.zip`。
      *
      * @return 目标 zip 绝对路径
      */
     private suspend fun saveLogInternal(): String = withContext(Dispatchers.IO) {
+        val logDir = bookLogDirOrNull()
+            ?: throw InvalidBooksDirException("未设置书籍保存位置")
         if (!AppLog.isRecordLogEnabled) {
             Toasters.get().toast("未开启日志记录, 请去其他设置里打开记录日志")
         }
         val cacheDir = File(AppFilesDirs.get().cacheDir)
         val sources = listOf(
-            File(cacheDir, "logs"),
             DesktopCrashLogDirs.cacheCrashDir,
             File(cacheDir, "heapDump"),
         ).filter { it.exists() }
         if (sources.isEmpty()) throw NoStackTraceException("没有可保存的日志文件")
-        val outDir = File(DataStorageProviders.get().userExportDir).apply { mkdirs() }
+        val outDir = File(logDir).apply { mkdirs() }
         val zipFile = File(outDir, "logs.zip")
         // 打包到同目录临时件再整份改名就位: 直接打包到目标会先把上一轮的 logs.zip 截断,
         // 打包被中断时用户手里既没有新件也没有旧件。临时件名走共享契约 ([atomicWriteTempPath]):
@@ -727,7 +734,7 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
                 Toasters.get().toast("导出所用书源失败\n${it.message}")
                 return@launch
             }
-            val json = GSON.toJson(sources)
+            val json = sources.toExportJsonText()
             withContext(Dispatchers.Main) {
                 pushExportDispatch("bookSource.json", json, "application/json")
             }
@@ -737,87 +744,56 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
     // 导出书架 JSON (字段清单与 app 端 exportBookshelf 一致)
     override fun exportBookshelf(books: List<Book>) {
         if (books.isEmpty()) {
-            Toasters.get().toast("书籍不能为空")
+            Toasters.get().toast("导出书籍出错\n书籍不能为空")
             return
         }
-        val json = GSON.toJson(books.map { it.toShelfJsonMap() })
+        val json = bookshelfJson(books)
         pushExportDispatch("bookshelf.json", json, "application/json")
     }
 
     // 导出书籍正文, 格式取导出配置 (0=txt 1=epub, 对照 app 端 AppConfig.exportType;
-    // 图片书自动走 cbz), 目录取用户选过的设备本地记忆, 未选过时拉起目录选择器
+    // 图片书自动走 cbz), 目录用"书籍保存位置" (与下载书籍/备份 zip 同一处, 书籍直接放根)。
+    // 未设置先拉选择器; 已设置但目录不存在且建不出 (被删/盘符失效) 同样重新选一次, 取消则本次导出作罢;
+    // 本次新选定目录且开了自定义导出时先弹章节配置 (对照原版 exportDir 回调), 否则直接导出
     override fun exportAllBooks(books: List<Book>) {
-        if (books.isEmpty()) return
-        val dir = effectiveBookExportDir()
-        if (dir == null) {
-            selectExportFolder(books)
+        if (books.isEmpty()) {
+            Toasters.get().toast(syncGetString("no_book"))
             return
         }
-        startExport(dir, books)
-    }
-
-    override fun selectExportFolder(books: List<Book>) {
         scope.launch {
-            val dir = FileDialogs.pickDirectory(
-                "选择导出目录",
-                initialDir = effectiveBookExportDir()?.let(::File),
-            ) ?: return@launch
-            // 记忆落设备本地配置空间 (rememberBookExportDir): 选定的是本机目录, 不能随备份
-            // 走到别的设备; 与安卓同一个键、同一套三分支
-            rememberBookExportDir(dir.absolutePath)
-            if (books.isNotEmpty()) {
-                // 对照 app 端 exportDir 回调: 开启自定义导出时先弹章节配置对话框。
-                // 本类同名成员是"自定义导出"开关当前值 (菜单勾选态), 走全限定名取上面那条带导出类型的判定
-                if (io.legado.app.utils.enableCustomExport()) {
-                    showExportSectionConfig(dir.absolutePath, books)
-                } else {
-                    startExport(dir.absolutePath, books)
-                }
+            var freshlySelected = effectiveBookSaveDir() == null
+            if (freshlySelected && !ensureBookSaveDirSelected()) return@launch
+            var dir = effectiveBookSaveDir() ?: return@launch
+            if (!File(dir).isDirectory && !File(dir).mkdirs()) {
+                if (!reselectBookSaveDir()) return@launch
+                dir = effectiveBookSaveDir() ?: return@launch
+                freshlySelected = true
+            }
+            if (freshlySelected && io.legado.app.utils.enableCustomExport()) {
+                showExportSectionConfig(books)
+            } else {
+                startExport(dir, books)
             }
         }
     }
 
     // 导出配置弹窗 (对照 app 端 showExportConfig / dialog_export_config.xml 全量字段):
     // 导出文件名 JS 规则 / 导出类型 txt|epub / 导出编码 / TXT 不导出章节名
-    // (cbz 按 app 端语义由图片书自动选择, 无需用户配置)
+    // (cbz 按 app 端语义由图片书自动选择, 无需用户配置); 弹共享实现 (与鸿蒙同一形制)
     override fun showExportConfig() {
-        DesktopDialogs.show(
-            DesktopDialogRequest.ExportConfig(
-                currentType = prefs.getInt(PreferKey.exportType, 0),
-                currentFileName = prefs.getString(PreferKey.bookExportFileName, ""),
-                currentCharset = prefs.getString(PreferKey.exportCharset, ""),
-                currentNoChapterName = prefs.getBoolean(PreferKey.exportNoChapterName, false),
-                onConfirm = { type, fileName, charset, noChapterName ->
-                    prefs.putInt(PreferKey.exportType, type)
-                    prefs.putString(PreferKey.bookExportFileName, fileName)
-                    prefs.putString(PreferKey.exportCharset, charset)
-                    prefs.putBoolean(PreferKey.exportNoChapterName, noChapterName)
-                },
-            )
-        )
+        AppNavigatorProviders.get().showOverlay(AppOverlay.Dialog("book_export_format"))
     }
 
-    // 自定义导出章节配置弹窗 (对照 app 端 configExportSection / dialog_select_section_export.xml):
-    // 导出所有 / 自定义导出 (章节范围 + epub 分卷大小 + epub 文件名 JS 规则)
-    override fun showExportSectionConfig(path: String, books: List<Book>) {
-        DesktopDialogs.show(
-            DesktopDialogRequest.ExportSectionConfig(
-                path = path,
-                books = books,
-                currentFileName = prefs.getString(PreferKey.episodeExportFileName, ""),
-                onConfirm = { all, scope, size, fileName ->
-                    // 分卷文件名 JS 规则仅在合法时持久化 (对照 etEpubFilename 失焦校验)
-                    if (tryParesExportFileName(fileName)) {
-                        prefs.putString(PreferKey.episodeExportFileName, fileName)
-                    }
-                    if (all) {
-                        startExport(path, books)
-                    } else {
-                        startCustomExport(path, books, scope, size)
-                    }
-                },
-            )
-        )
+    // 自定义章节导出配置弹窗: 弹共享实现 (四端同一份)
+    // (导出全部 / 自定义导出: 章节范围 + epub 分卷大小 + epub 文件名 JS 规则)
+    override fun showExportSectionConfig(books: List<Book>) {
+        pushExportSectionConfig(books)
+    }
+
+    // 对照原版 configExportSection 的自定义分支: 逐本按 epubScope/epubSize 导出
+    override fun exportCustomBooks(books: List<Book>, epubSize: Int, epubScope: String) {
+        val dir = effectiveBookSaveDir() ?: return
+        startCustomExport(dir, books, epubScope, epubSize)
     }
 
     private fun startCustomExport(path: String, books: List<Book>, range: String, size: Int) {
@@ -1131,7 +1107,7 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
      * shared 版返回 okio 列目录得到的路径串, 两者未逐字等价。
      */
     override suspend fun scanFontItems(): List<FontItem> = withContext(Dispatchers.IO) {
-        val fontRegex = Regex("(?i).*\\.[ot]tf")
+        val fontRegex = AppPattern.fontFileRegex
         val items = arrayListOf<FontItem>()
         // 先扫 pref 目录: distinctBy 保留先出现者, 与 app 端 mergeFontItems 优先级一致
         prefs.getString(PreferKey.fontFolder).takeIf { it.isNotBlank() }?.let {
@@ -1190,6 +1166,14 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         )
     }
 
+    /** 选文件导入: 选到的文件直接当条目走上架链 (不经列表勾选)。 */
+    override fun importPickedBookFiles(files: List<PickedFile>, onComplete: () -> Unit) {
+        addImportSelectionToBookshelf(
+            files.map { DesktopImportFile(File(it.ref)) },
+            onComplete,
+        )
+    }
+
     override fun updateImportBookFilter(key: String) = DesktopImportBook.updateFilter(key)
 
     override fun updateImportBookSort(sort: Int) = DesktopImportBook.updateSort(sort)
@@ -1245,38 +1229,5 @@ object DesktopPlatformCapabilities : SharedPlatformCapabilities {
         runCatching { File(URI(bookUrl)) }.getOrElse { File(bookUrl.removePrefix("file:")) }
     } else {
         File(bookUrl)
-    }
-
-    /** 选中书源转 JSON, 取数+排序+比例分流+危险 API 清理走 commonMain 编排。 */
-    private suspend fun selectedSourcesJson(
-        selection: List<BookSourcePart>,
-        allCount: Int,
-        sortAscending: Boolean,
-        sort: BookSourceSort
-    ): String? {
-        val sources = runCatching {
-            getExportBookSources(selection, allCount, sortAscending, sort)
-        }.getOrElse {
-            Toasters.get().toast("导出书源失败\n${it.message}")
-            return null
-        }
-        return GSON.toJson(sources)
-    }
-
-    /** 书架导出字段 (与 app 端 exportBookshelf 的 13 个字段一致)。 */
-    private fun Book.toShelfJsonMap(): Map<String, Any?> = buildMap {
-        put("bookUrl", bookUrl)
-        put("tocUrl", tocUrl)
-        put("origin", origin)
-        put("originName", originName)
-        put("name", name)
-        put("author", author)
-        kind?.let { put("kind", it) }
-        coverUrl?.let { put("coverUrl", it) }
-        customCoverUrl?.let { put("customCoverUrl", it) }
-        intro?.let { put("intro", it) }
-        customIntro?.let { put("customIntro", it) }
-        put("type", type)
-        wordCount?.let { put("wordCount", it) }
     }
 }

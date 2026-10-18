@@ -94,3 +94,28 @@ results remain on the host; the simulator's installed apps and data are disposab
 A shutdown error does not prevent deletion. A deletion error fails a successful run
 or is logged alongside the original test failure, including the UUID to inspect.
 Forced termination (for example SIGKILL) cannot execute Python cleanup.
+
+
+## Required upstream synchronization regressions
+
+C1 builds both iOS engine frameworks, compiles the original Compose iOS UI, and
+runs the data/core/UI JVM regression suites. It then runs `kotlin_native_ci.py`. It selects one new
+simulator, starts owned reading/search fixtures, and supplies their address plus
+its UUID through `C1_NATIVE_SIMULATOR` to the Gradle
+`data`, `core` and `engine-ios` simulator test tasks. Test execution cannot be
+up-to-date even when compiled artifacts come from cache. Every module must emit
+nonempty XML results without failures, errors or skips; the native JS concurrency
+suite must be present. No default or pre-existing simulator is selected.
+
+C1 then invokes `native_product_ci.py --include-process-tests`. The ordinary
+Swift suite finishes and releases its fixtures before interruption and offline
+shelf restart checks start. Process checks honor the selected Xcode and optional
+`--runtime-version`; each successful phase verifies XCTest execution counts.
+
+For the 2026-10-17 upstream synchronization, retain product schema 89/90/91 and
+migration lineage unchanged. The new shared JS evaluator must inherit the
+calling source script's coroutine context, including with and without a jsLib.
+Nested/shared cancellation restoration and independent DOM lifetime remain
+native regression requirements. Android's removed HandleFileHost is replaced
+by upstream's file-dialog and PlatformFileService write paths; do not restore
+its obsolete caller or its removed view model.

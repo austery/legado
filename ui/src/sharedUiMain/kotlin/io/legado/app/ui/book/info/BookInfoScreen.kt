@@ -278,6 +278,8 @@ val LocalBookInfoActions = compositionLocalOf<BookInfoUiActions> {
  *   - slot 内部自行从 state 读 coverTick/inBookshelf 等
  * @param introImageSlot 简介内整宽图 (Glide + CustomTarget<Bitmap>, L3)
  *   - 调用方只传 src 和点击回调, slot 内部自行处理加载与渲染
+ * @param onBlurCoverPaintedChange 模糊封面背景是否已绘制: 由本页面按 slot 的绘制事实上报,
+ *   路由层据此定页顶状态栏图标明暗
  */
 @Composable
 fun BookInfoScreen(
@@ -286,6 +288,11 @@ fun BookInfoScreen(
     blurCoverBgSlot: @Composable (Modifier, Boolean) -> Unit,
     coverSlot: @Composable (Book?, Modifier) -> Unit,
     introImageSlot: @Composable (String, () -> Unit) -> Unit,
+    /**
+     * 模糊封面背景是否已绘制。页面按它定状态栏图标明暗 (原版该分支页顶是深色封面背景,
+     * 图标必须用浅色), 故由路由层据本回调下发给窗口。
+     */
+    onBlurCoverPaintedChange: (Boolean) -> Unit,
 ) {
     // 注: 本层不读 tick —— 本函数是否重组由调用方对 [state] 参数的比较决定, 体内再读一次
     // tick 无法反向影响该比较 (旧实现的 `state.bookTick` 顶读是死代码, 已删);
@@ -293,7 +300,7 @@ fun BookInfoScreen(
 
     // 取色来自平台 slot 上报的已加载封面位图 (共用同一次加载, 不另发请求, 见 [LocalCoverLoaded]):
     // 换书或切横竖时先清空采样, 避免沿用上一份结论。
-    // E-Ink 与竖向 devFeat 分支下 slot 不加载封面, 回调不会触发, 采样自然为空
+    // E-Ink 与竖向分支下 slot 不加载封面, 回调不会触发, 采样自然为空
     val cover = state.book?.getDisplayCover()
     var coverRegions by remember(cover, state.isLandscape) { mutableStateOf<CoverRegions?>(null) }
     val onCoverLoaded: (ImageBitmap) -> Unit = remember(cover, state.isLandscape) {
@@ -309,6 +316,7 @@ fun BookInfoScreen(
         state.isEInkMode,
     ) { mutableStateOf(false) }
     val blurredCoverPainted = blurPainted.value
+    LaunchedEffect(blurredCoverPainted) { onBlurCoverPaintedChange(blurredCoverPainted) }
     // 取色产物只在模糊背景确实画出后才对外提供: 未画出时头部文字压的是页面底色, 封面取色不适用
     val palette = if (blurredCoverPainted) {
         deriveBookCoverPalette(coverRegions, AppTheme.colors.background, state.isLandscape)

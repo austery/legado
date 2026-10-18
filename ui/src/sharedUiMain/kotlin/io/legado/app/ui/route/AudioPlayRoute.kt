@@ -36,6 +36,7 @@ import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.showSourceLogin
 import io.legado.app.model.AudioPlayShared
+import io.legado.app.model.audioCoverFallback
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.book.audio.AudioPlayOverflowActions
 import io.legado.app.ui.book.audio.AudioPlayPlatformProviders
@@ -61,6 +62,8 @@ import io.legado.app.ui.root.LocalSharedCoverBinding
 import io.legado.app.ui.root.PlatformCapabilityProviders
 import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.OnRouteLifecycle
+import io.legado.app.ui.root.PageSystemBarAppearance
+import io.legado.app.ui.root.PageSystemBarAppearanceEffect
 import io.legado.app.ui.root.RouteResultPayload
 import io.legado.app.ui.root.RouteResults
 import io.legado.app.ui.root.ScreenModelStore
@@ -104,6 +107,12 @@ fun AudioPlayRoute(
     val state by screenModel.state.collectAsState()
     val platform = AudioPlayPlatformProviders.getOrNull()
     val scope = rememberCoroutineScope()
+
+    // 状态栏图标明暗 (对照原版 AudioPlayActivity 的 toolBarTheme = Theme.Dark): 本页恒为
+    // 浅色图标 —— 页顶是模糊封面背景叠压暗蒙层, 图标必须与背景保持对比
+    PageSystemBarAppearanceEffect(
+        appearance = { PageSystemBarAppearance(lightStatusBarIcons = false) },
+    )
 
     // 音频页键盘快捷键 (方向键/空格): 走共享 AppShortcutHandler 快捷键栈分发。
     // 对照 ReaderRoute 阅读页 / MangaReaderScreenContent 漫画页方向键模式 —— 快捷键栈在
@@ -273,13 +282,13 @@ fun AudioPlayRoute(
     }
 
     // 构造溢出菜单动作 (对照 app 端 AudioOverflowMenu)
-    val source = AudioPlayShared.bookSource
+    // 各项显隐取自页面状态; 依赖书源的动作在点击时取当前书源 (对照原版菜单展开/选中时求值)
     val overflowActions = AudioPlayOverflowActions(
-        hasLogin = source?.hasLogin() == true,
+        hasLogin = state.hasLogin,
         onLogin = {
             // 统一登录入口: URL 登录桌面端直开登录窗口 (2026-08-07);
             // 表单登录弹 Overlay, 带上书与当前章 (对照原版 menu_login 预置 IntentData.book/chapter)
-            source?.let {
+            AudioPlayShared.bookSource?.let {
                 showSourceLogin(
                     it.bookSourceUrl,
                     it,
@@ -295,7 +304,7 @@ fun AudioPlayRoute(
             }
         },
         onSetSourceVariable = {
-            source?.let {
+            AudioPlayShared.bookSource?.let {
                 PlatformCapabilityProviders.get().showBookSourceVariableDialog(it)
             }
         },
@@ -305,7 +314,7 @@ fun AudioPlayRoute(
             }
         },
         onEditBookSource = {
-            source?.bookSourceUrl?.let { url ->
+            AudioPlayShared.bookSource?.bookSourceUrl?.let { url ->
                 navigator.push(
                     AppRoute.BookSourceEdit(url),
                     resultKey = RouteResults.BOOK_SOURCE_EDIT,
@@ -334,9 +343,18 @@ fun AudioPlayRoute(
     // 大图 token 由本页自签 (见 [LocalSharedCoverBinding] 的说明)
     val coverBinding = rememberSharedCoverDestinationBinding(entry.id.value, entry.sharedToken)
 
+    // 状态里的封面地址由异步初始化写入, 为空时回落到本次进入携带的书籍快照封面:
+    // 共享封面端点以"封面非空"为建立条件, 端点晚建会把共享转场推迟到封面地址到达之后
+    val fallbackCover = book.audioCoverFallback()
+    val pageState = if (state.coverUrl.isNullOrBlank() && fallbackCover != null) {
+        state.copy(coverUrl = fallbackCover)
+    } else {
+        state
+    }
+
     CompositionLocalProvider(LocalSharedCoverBinding provides coverBinding) {
     platform.Content(
-        state = state,
+        state = pageState,
         onBack = onBack,
         onOpenChangeSource = {
             // 对照原版 menu_change_source → showDialogFragment(ChangeBookSourceDialog) 全高底部弹窗
@@ -386,15 +404,20 @@ fun AudioPlayRoute(
             }
         },
         onOpenCover = {
-            val cover = state.coverUrl
+            // 与显示同源: 采用兜底封面时来源取本次进入的书 (此时播放侧可能还残留上一本)
+            val cover = pageState.coverUrl
             if (!cover.isNullOrBlank()) {
-                val playBook = AudioPlayShared.book ?: book
+                val sourceBook = if (state.coverUrl.isNullOrBlank()) {
+                    book
+                } else {
+                    AudioPlayShared.book ?: book
+                }
                 navigator.showOverlay(
                     AppOverlay.Dialog(
                         key = "photo",
                         payload = cover,
-                        sourceOrigin = playBook.origin
-                            .takeIf { !playBook.isLocal && it.isNotBlank() },
+                        sourceOrigin = sourceBook.origin
+                            .takeIf { !sourceBook.isLocal && it.isNotBlank() },
                         // 本页圆形封面自签的大图 token: 查看器拿同一个值当自己的 key
                         photoToken = coverBinding.photoToken,
                     )
@@ -565,9 +588,8 @@ fun AudioPlayRoute(
                     }.onFailure {
                         AppLog.put("换源失败\n$it", it, true)
                     }
-                    AudioPlayShared.bookSource = source
                     AudioPlayShared.chapterList = toc
-                    AudioPlayShared.resetData(newBook)
+                    AudioPlayShared.resetData(newBook, source)
                     screenModel.dispatch(AudioPlayUiEvent.UpdateInShelf(!newBook.isNotShelf))
                 }
             },

@@ -40,6 +40,15 @@ interface PlatformCapabilities {
     }
 
     fun exitApplication()
+
+    /**
+     * 统一返回链没消费返回 (栈里也没有可出的页) 时的兜底。
+     *
+     * 只有 Android 有真实现 (对照原 MainActivity 的 back 回调: 先提示、2 秒内再按退回调用方);
+     * 其余端无此语义 (没上一页时返回本就无事可做), 默认空实现即正确行为。
+     */
+    fun onBackUnconsumed() {}
+
     fun openExternalUrl(url: String)
 
     /**
@@ -138,11 +147,12 @@ interface PlatformCapabilities {
     val rssDirectWindow: Boolean get() = false
 
     /**
-     * 该端是否存在"系统返回"通道: 返回键/返回手势 (Android/鸿蒙) 或桌面 ESC 统一返回链。
+     * 该端是否有可用于**页面内子状态返回**的返回通道: Android/鸿蒙的返回键与返回手势 (系统交给
+     * 应用), 桌面的 ESC 统一返回链。
      *
-     * false 的端 (iOS) 按键返回不进 AppBackHandler,
-     * 页面内的子状态必须自带可见退出口 (书架文件夹样式分组内顶栏返回箭头 /
-     * 视频页全屏退出钮)。
+     * false 的端 (iOS) 虽有应用层边缘返回手势 (只作用于页面栈, 覆盖不到根页与全屏播放器内部),
+     * 仍按"无系统返回通道"处理: 页面内的子状态必须自带可见退出口 (书架文件夹样式分组内顶栏返回
+     * 箭头 / 视频页全屏退出钮)。
      */
     val supportsSystemBack: Boolean get() = true
 
@@ -157,7 +167,7 @@ interface PlatformCapabilities {
 
     fun getClipboardText(): String? = null
 
-    // 导出分发: 上传文件到直链上传规则接口并解析直链 (对照 app 端 HandleFileViewModel.upload → DirectLinkUpload.upLoad)
+    // 导出分发: 上传文件到直链上传规则接口并解析直链 (对照原版 DirectLinkUpload.upLoad)
     // onResult 传 null 表失败 (失败提示由实现内 toast, 对照原版 errorLiveData → toastOnUi)
     fun upLoadFile(fileName: String, file: Any, contentType: String, onResult: (String?) -> Unit) =
         unsupported("上传文件")
@@ -221,6 +231,14 @@ interface PlatformCapabilities {
         unsupported("导入所选书籍")
     }
 
+    /**
+     * 直接导入用户在系统面板里选定的书文件 (多选, 不经列表勾选): 与 [addImportSelectionToBookshelf]
+     * 同一条导入链, 完成后回调 onComplete。调用方已按扩展名筛过并提示过不支持的文件。
+     */
+    fun importPickedBookFiles(files: List<PickedFile>, onComplete: () -> Unit = {}) {
+        unsupported("导入所选书籍")
+    }
+
     /** 更新搜索过滤关键字 (对照 onSearchTextChange / viewModel.updateCallBackFlow) */
     fun updateImportBookFilter(key: String) = unsupported("筛选导入书籍")
 
@@ -243,7 +261,7 @@ interface PlatformCapabilities {
     /** 显示崩溃日志 (对照 onShowCrashLogs / showDialogFragment<CrashLogsDialog>) */
     fun showCrashLogs() = unsupported("查看崩溃日志")
 
-    /** 保存日志到备份目录 (对照 onSaveLog / saveLog) */
+    /** 保存日志到书籍保存位置 (对照 onSaveLog / saveLog) */
     fun saveLog() = unsupported("保存日志")
 
     /** 创建堆转储 (对照 onCreateHeapDump / createHeapDump) */
@@ -435,6 +453,14 @@ interface PlatformCapabilities {
     val audioFocusSupported: Boolean get() = false
 
     /**
+     * 是否有"预测式返回跟手"能力 (决定其他设置里该开关的显隐)。
+     *
+     * 只有 Android 接了这条通道 (系统 API 34+ 给跟手进度, 按键/旧式返回走同一出口);
+     * 其余端没有该通道, 开关拨了无效。
+     */
+    val predictiveBackSupported: Boolean get() = false
+
+    /**
      * 是否有系统级文本操作菜单入口 (其他设置里"文字操作显示搜索"条目 gate)。
      *
      * 对应 Android 的 PROCESS_TEXT activity-alias, 其余端无此概念。
@@ -509,26 +535,26 @@ interface PlatformCapabilities {
     fun toggleExportWebDav() = unsupported("切换 WebDav 导出")
 
     /**
-     * 选择导出文件夹 (对照 selectExportFolderMenu / selectExportFolder)。
-     *
-     * 选定结果落本机配置空间 [io.legado.app.help.config.rememberBookExportDir]
-     * (原版把同一个选择结果存在 ACache "exportBookPath" —— 缓存会被清理动作抹掉,
-     * 且选定的是本机目录/授权引用, 不能随备份走到别的设备); 导出流程在未选过时拉起本入口,
-     * 取值见 [io.legado.app.help.config.effectiveBookExportDir]。
-     */
-    fun selectExportFolder(books: List<Book>) = unsupported("选择导出目录")
-
-    /** 弹出导出配置对话框 (对照 showExportConfig) */
-    fun showExportConfig() = unsupported("导出配置")
-
-    /**
      * 弹出自定义导出章节配置对话框 (对照 app 端 configExportSection / dialog_select_section_export.xml):
      * 导出全部 / 自定义导出 (章节范围 + epub 分卷大小 + epub 文件名 JS 规则)。
      *
-     * @param path 已选定的导出目录
+     * @param path 已选定的导出目录 (书籍保存位置)
      * @param books 待导出书籍 (自定义导出时逐本按 epubScope/epubSize 启动导出)
      */
-    fun showExportSectionConfig(path: String, books: List<Book>) = unsupported("自定义导出章节")
+    /** 弹出自定义导出章节配置对话框 (对照 configExportSection / dialog_select_section_export.xml) */
+    fun showExportSectionConfig(books: List<Book>) = unsupported("自定义导出章节")
+
+    /**
+     * 按章节范围分卷导出 (对照原版 configExportSection 的自定义分支: 逐本按 epubScope/epubSize 导出)。
+     *
+     * @param epubSize 每卷章节数
+     * @param epubScope 章节范围文本 (如 `1-5,8`, 与导出入口同一表示; 由各端自行解析)
+     */
+    fun exportCustomBooks(books: List<Book>, epubSize: Int, epubScope: String) =
+        unsupported("自定义章节导出")
+
+    /** 弹出导出配置对话框 (对照 showExportConfig) */
+    fun showExportConfig() = unsupported("导出配置")
 
     /** "导出替换"开关当前值 (对照 AppConfig.exportUseReplace) */
     fun exportUseReplace(): Boolean = false
@@ -600,6 +626,15 @@ interface PlatformCapabilities {
     // 对照 app 端 FontSelectDialog.loadFontFiles: 字体目录 + 本地字体合并去重排序
     /** 扫描字体文件列表 (对照 app 端 FontSelectDialog, 未实现端空列表) */
     suspend fun scanFontItems(): List<FontItem> = emptyList()
+
+    /**
+     * 把用户选定的字体文件复制进内置字体目录, 返回成功导入的文件名。
+     *
+     * 复制而不引用原位置: 字体可能来自应用容器外的目录、系统面板复制进沙盒的临时件或云盘上的
+     * 占位件, 复制进内置目录后扫描与加载都只认沙盒内文件, 不受目录授权与下载状态影响。
+     * 同名文件按覆盖语义替换。调用方已按扩展名筛过并提示过不支持的文件。
+     */
+    fun importPickedFontFiles(files: List<PickedFile>): List<String> = emptyList()
 
     // 书源管理平台能力 (各端按需 override, 未实现端统一给出明确提示)
     // 对照 app 端 BookSourceActivity 同名方法
@@ -806,8 +841,16 @@ private suspend fun awaitBookTreeUriSelection(): String? {
  *
  * @return true = 保存位置已可用 (原本已设置, 或本次已选定); false = 用户取消
  */
-suspend fun ensureBookSaveDirSelected(): Boolean {
-    if (effectiveBookSaveDir() != null) return true
+suspend fun ensureBookSaveDirSelected(): Boolean =
+    effectiveBookSaveDir() != null || reselectBookSaveDir()
+
+/**
+ * 重新拉起"书籍保存位置"选择器并覆盖已记住的目录 —— 已设置但不可用/不可写 (目录被删、授权失效)
+ * 时用, 与各端"去设置目录"出口同一入口 ([PlatformCapabilities.pickBookTreeUri]) 与偏好键。
+ *
+ * @return true = 本次已选定新目录 (已覆盖旧值); false = 用户取消 (既有目录不动)
+ */
+suspend fun reselectBookSaveDir(): Boolean {
     val uri = awaitBookTreeUriSelection()?.takeIf { it.isNotBlank() } ?: return false
     PreferenceProviders.get().putString(PreferKey.defaultBookTreeUri, uri)
     return true

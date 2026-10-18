@@ -9,6 +9,7 @@ import io.legado.app.help.file.pickDocumentContent
 import io.legado.app.help.file.pickDocuments
 import io.legado.app.help.file.pickDirectory as pickDirectoryPolicy
 import io.legado.app.help.file.saveImageToAlbum
+import io.legado.app.help.storage.BackupFileOps
 import io.legado.app.help.log.NativeCrashLogs
 import io.legado.app.help.openURL
 import io.legado.app.help.toast.Toasters
@@ -30,15 +31,17 @@ import io.legado.app.ui.root.navigateToRoute
 import io.legado.app.ui.root.MediaService
 import io.legado.app.ui.root.NotificationService
 import io.legado.app.ui.root.OrientationPolicy
+import io.legado.app.ui.root.PickedFile
 import io.legado.app.ui.root.PermissionService
 import io.legado.app.ui.root.PlatformCapabilities
 import io.legado.app.ui.root.PlatformServices
-import io.legado.app.ui.root.ReaderSystemBarAppearance
+import io.legado.app.ui.root.PageSystemBarAppearance
 import io.legado.app.ui.root.ShareService
 import io.legado.app.ui.root.SoftInputPolicy
 import io.legado.app.ui.root.SystemBarsPolicy
 import io.legado.app.ui.root.imageExtension
 import io.legado.app.ui.root.WindowController
+import io.legado.app.ui.root.SavedRef
 import io.legado.app.ui.video.VideoDirect
 import io.legado.app.utils.File
 import io.legado.app.utils.KS_JSON
@@ -152,14 +155,14 @@ object OhosPlatformServices : PlatformServices {
             OhosNativeBridge.setWindowSystemBarEnable(statusVisible, navigationVisible)
         }
 
-        override fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {
+        override fun setPageSystemBarAppearance(appearance: PageSystemBarAppearance?) {
             if (appearance == null) {
-                // 离开阅读页: 图标内容色交还系统默认 (系统栏底色由系统与窗口决定, 本端不接管)
+                // 无人声明: 图标内容色交还系统默认 (系统栏底色由系统与窗口决定, 本端不接管)
                 OhosNativeBridge.setWindowSystemBarProperties(DEFAULT_CONTENT_COLORS)
                 return
             }
-            // 阅读页: 状态栏图标明暗按外观值; 导航栏区域由页面内容铺满 (沉浸式全屏布局),
-            // 按导航栏底色亮度定 (外观未指定底色时回到主题导航栏色)
+            // 页面声明: 状态栏图标明暗按声明值; 导航栏区域由页面内容铺满 (沉浸式全屏布局),
+            // 按导航栏底色亮度定 (声明未带上底色时回到主题导航栏色)
             val navigationBarColor = appearance.navigationBarColor
                 ?: SharedThemeStoreProvider().navigationBarColor.toArgb()
             OhosNativeBridge.setWindowSystemBarProperties(
@@ -227,9 +230,9 @@ object OhosPlatformServices : PlatformServices {
         override fun handleLaunchRequest(request: LaunchRequest): Boolean = false
     }
 
-    // 崩溃日志: 只列本应用自己落盘的异常现场 (logs/crash/ 下的 crash-*.log, 未捕获异常钩子与
-    // 系统崩溃事件, 两条都带调用栈)。系统事件的故障日志文件也写进同目录；
-    // 运行日志 (logs/appLog-*.txt, recordLog 开启时落盘) 不再混入
+    // 崩溃日志: 只列本应用自己落盘的异常现场 (log/ 下的 crash-*.log, 未捕获异常钩子与
+    // 系统崩溃事件, 两条都带调用栈)。系统事件的故障日志文件也写进同目录;
+    // 运行日志 (log/appLog-*.txt, recordLog 开启时落盘) 与崩溃日志同目录, 靠文件名前缀区分, 不混入
     override val crashLogs: CrashLogProvider = object : CrashLogProvider {
         override suspend fun loadCrashLogs(): List<CrashLogProvider.CrashLogEntry> =
             NativeCrashLogs.listLogs().map { CrashLogProvider.CrashLogEntry(it) }
@@ -381,39 +384,55 @@ private data class MediaCommand(
  * 鸿蒙文件选择: 接 [io.legado.app.help.file] 的 napi 桥实现 (对照 iOS IosFilePickerService)。
  *
  * DocumentViewPicker 返回的是 `file://docs/...` URI, 不能直接喂给 [File] (POSIX 路径);
- * 故 [pickFile]/[pickFiles] 选中后立刻经 [pickDocumentContent] 读出字节落盘到 cacheDir,
+ * 故 [pickFile] 选中后立刻经 [pickDocumentContent] 读出字节落盘到 cacheDir,
  * 返回沙盒内真实路径, 下游 BackupFileOps.readText 等按普通文件消费。
  */
 private object OhosFilePickerService : FilePickerService {
 
     override fun pickFile(filter: FileFilter): String? =
-        pickDocuments(filter.toUtis(), allowsMultiple = false)
+        pickDocuments(filter.extensions, allowsMultiple = false)
             ?.firstOrNull()
             ?.let(::materialize)
 
-    override fun pickFiles(filter: FileFilter): List<String> =
-        pickDocuments(filter.toUtis(), allowsMultiple = true)
-            .orEmpty()
-            .mapNotNull(::materialize)
+    /**
+     * 多选文件 (书籍/字体导入): 面板按后缀过滤, 回传的 URI 逐个物化成应用缓存里的真实路径
+     * (下游导入链只认 POSIX 路径), 文件名取 URI 末段 (按 URI 规则百分号解码)。
+     */
+    override fun pickFiles(filter: FileFilter): List<PickedFile> =
+        pickDocuments(filter.extensions, allowsMultiple = true)
+            ?.mapNotNull { uri ->
+                materialize(uri)?.let { path -> PickedFile(path, path.substringAfterLast('/')) }
+            }
+            ?: emptyList()
 
     /**
-     * 单文件导出取目标路径: 弹目录选择器 ([pickDirectory], 对照原版导出形制 —— 先选目录,
-     * 再把文件写进该目录, 见 HandleFileContract.EXPORT + FileUtils.exportFile), 返回该目录下的
-     * 目标文件路径, 由调用方写盘。
+     * 弹目录选择器 ([pickDirectory], 对照原版导出形制 —— 先选目录, 再把文件写进该目录),
+     * 写入文本后返回目标文件路径。
      *
      * 写入用的是选择器当场给的临时授权 (授权持久化与 URI→路径转换在 [pickDirectory] 内完成),
-     * 后续访问才需激活。
+     * 后续访问才需激活。目录按 [DirUsage.Export] 登记: 为导出一个 json 选的目录只放行导出写入,
+     * 不放行书籍文件访问 (与书籍保存位置分开)。
      *
      * @return 用户取消选目录返回 null (调用方静默)
      */
-    override fun saveFile(suggestedName: String, defaultDir: String?): String? {
-        val dir = defaultDir ?: pickDirectory(DirUsage.Export) ?: return null
-        return "$dir/$suggestedName"
+    override fun saveText(suggestedName: String, text: String): SavedRef? {
+        val dir = pickDirectory(DirUsage.Export) ?: return null
+        val path = "$dir/$suggestedName"
+        BackupFileOps.writeText(path, text)
+        return SavedRef(path)
+    }
+
+    /** 同上, 内容按整份复制到选定目录。 */
+    override fun saveFromFile(srcPath: String, suggestedName: String): SavedRef? {
+        val dir = pickDirectory(DirUsage.Export) ?: return null
+        val path = "$dir/$suggestedName"
+        BackupFileOps.copyFile(srcPath, path)
+        return SavedRef(path)
     }
 
     /**
      * 图片查看器长按保存落系统相册 (用户指定要求, 与原版 PhotoDialog 的目录记忆不同)。
-     * 漫画图片保存不受本项影响, 始终走 [saveImageRememberingDir] 的目录记忆。
+     * 漫画图片保存走同一个 [io.legado.app.ui.root.FilePickerService.saveImageToUser], 同样落相册。
      */
     override val imageViewerSavesToAlbum: Boolean = true
 
@@ -446,6 +465,8 @@ private object OhosFilePickerService : FilePickerService {
      * 否则重启后写入被拒 (对照 [OhosAuthorizedFileBookAccessor] 的书籍落盘同款处理);
      * 落盘走"同目录临时件 + 改名就位" (与备份 zip 写进用户选定目录同一机制:
      * BackupFileOps.copyFile → copyFileAtomically), 覆盖同名图时目标始终完整。
+     *
+     * 本端 [imageViewerSavesToAlbum] 为真, 图片保存 (含漫画页) 不走本分支。
      */
     override val supportsDirWrite: Boolean = true
 
@@ -459,7 +480,7 @@ private object OhosFilePickerService : FilePickerService {
     /**
      * 目录可写性预检。
      *
-     * 用户选定的备份目录在沙盒外, "已记住的备份路径"须先激活持久化授权才可写 —— 否则
+     * 用户选定的书籍保存位置在沙盒外, "已记住的目录"须先激活持久化授权才可写 —— 否则
      * 重启后这里会为真可写的目录报出 false, 把用户拉回重选目录 (对照
      * [io.legado.app.ui.route.BackupConfigRoute] 不可写即重选的分支)。
      * 激活按 [usage] 匹配: 该目录须在该用途下已授权。
@@ -518,7 +539,9 @@ private object OhosFilePickerService : FilePickerService {
     /** URI → 沙盒缓存文件路径; 读取失败返回 null (与取消同样降级)。 */
     private fun materialize(uri: String): String? = runCatching {
         val bytes = pickDocumentContent(uri) ?: return null
+        // URI 末段按 URI 规则百分号解码 (RFC 3986): 带空格/中文的文件名不解码会以编码形式入库
         val name = uri.substringAfterLast('/').substringBefore('?')
+            .percentDecode()
             .ifBlank { "picked_${systemCurrentTimeMillis()}" }
         val dir = AppFilesDirs.get().cacheDir + "/filePicker"
         File(dir).mkdirs()
@@ -526,24 +549,6 @@ private object OhosFilePickerService : FilePickerService {
         target.writeBytes(bytes)
         target.path
     }.getOrNull()
-}
-
-// FileFilter 扩展名 → UTI (桥接层按 iOS UTI 风格取值, ArkTS FilePickerBridgeHandler 再映射到 MIME)
-private fun FileFilter.toUtis(): List<String> = when {
-    extensions.isEmpty() -> listOf("public.data")
-    else -> extensions.mapNotNull { ext ->
-        when (ext.lowercase()) {
-            "txt", "log", "md" -> "public.plain-text"
-            "json" -> "public.json"
-            "xml" -> "public.xml"
-            "png" -> "public.png"
-            "jpg", "jpeg" -> "public.jpeg"
-            "gif" -> "public.gif"
-            "bmp" -> "public.bmp"
-            "webp" -> "public.image"
-            else -> null
-        }
-    }.distinct().ifEmpty { listOf("public.data") }
 }
 
 /** 系统栏图标内容色: 深色图标 (浅色底色) / 浅色图标 (深色底色) */

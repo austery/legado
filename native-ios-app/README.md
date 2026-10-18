@@ -118,20 +118,24 @@ workers are disabled because the suites exercise process-wide runtime state.
 Only this invocation's simulator is shut down and deleted afterward, including
 when a build or test fails. Logs and `.xcresult` evidence remain on the host.
 
-The ordinary gate currently covers 29 tests: reading journeys (7), incremental
-search (5), restoration (3), save coordination (8), and resume engine behavior (6).
+The ordinary gate covers reading journeys, incremental search, restoration, save
+coordination, resume engine behavior and reader boundary regressions.
 The runner discovers ordinary test methods from the test sources and checks the
 XCTest result summary: execution counts that differ from the tests discovered in
 the current source, failures, skipped tests and zero-test runs fail the gate.
 This does not detect tests deleted from the source. Available logs, the source
 commit, selected runtime/simulator, scope manifest, summary and `.xcresult` are
-uploaded even on failure; build intermediates are not.
+retained locally. Hosted CI prints allowlisted evidence to Actions logs; manually
+selected local CI uploads artifacts, excluding build intermediates.
 
 `ProcessInterruptionTests` and `ShelfProcessRestartTests` require external,
-multi-process orchestration and are explicitly excluded and recorded in the
-scope manifest. They are not counted as passing or silently skipped coverage.
-Changes to storage publication, migration, or lifecycle guarantees still require
-their focused validation; this gate alone does not certify those paths.
+multi-process orchestration. CI passes `--include-process-tests` to run them
+sequentially after the ordinary fixtures close, using the same built test host
+and separate invocation-owned simulators. All four interruption boundaries and
+the two-process offline shelf journey must pass. Successful subprocess exits
+also require exactly one passed XCTest with no skips. A standalone invocation
+without this flag records those suites as not run. These synthetic checks do
+not establish physical-device or power-loss acceptance.
 
 ### What counts as sufficient regression evidence
 

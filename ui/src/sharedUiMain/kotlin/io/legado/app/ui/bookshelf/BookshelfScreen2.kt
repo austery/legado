@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.help.config.resolveImagePath
 import io.legado.app.ui.compose.platform.AppBackHandler
 import io.legado.app.ui.compose.theme.AppTheme
 import io.legado.app.ui.compose.theme.LocalEInk
@@ -131,7 +132,8 @@ internal fun BookshelfScreen2(
 
     Column(modifier.fillMaxSize()) {
         BookshelfTopBarContainer(actions) {
-            // 无系统返回通道的端 (iOS) 没有按键返回可走, 分组内必须给出可见退出口;
+            // 无系统返回通道的端 (iOS) 的返回手势只作用于页面栈 (主界面是栈底, 退不出分组),
+            // 分组内必须给出可见退出口;
             // 有返回通道的端 (Android/鸿蒙系统返回键, 桌面 ESC) 保持原版顶栏形态
             if (!capabilities.supportsSystemBack && groupId != BookGroup.IdRoot) {
                 IconButton(onClick = { groupId = BookGroup.IdRoot }) {
@@ -172,8 +174,10 @@ internal fun BookshelfScreen2(
 /**
  * 分组封面 (对照 style2 各 GroupViewHolder 的 `ivCover.load(group.cover)`)。
  *
- * 加载与渲染管线与书籍封面同源 ([SharedCoverContent]); 数据差异: 封面取 [BookGroup.cover],
- * 默认封面选图 seed = 组名, 无书源来源 (origin 恒 null), 无共享元素转场端点。
+ * 加载与渲染管线与书籍封面同源 ([SharedCoverContent]); 数据差异: 封面取 [BookGroup.cover]
+ * (图集内部相对引用, 经 [resolveImagePath] 解析为展示路径 —— 只有安卓的封面加载器会解析相对
+ * 引用, 故与书籍封面 ([Book.getDisplayCover]) 同口径在此处解析), 默认封面选图 seed = 组名,
+ * 无书源来源 (origin 恒 null), 无共享元素转场端点。
  *
  * 原版分组封面 `ivCover.load(item.cover, inBookshelf = true)` 不传 name/author,
  * `CoverImageView` 的 name/author 为 null, 故默认封面上无竖排书名/作者可画。
@@ -191,7 +195,7 @@ fun SharedGroupCover(
 ) {
     SharedCoverContent(
         source = CoverSource(
-            coverUrl = group.cover,
+            coverUrl = resolveImagePath(group.cover),
             origin = null,
             cacheKey = null,
             defaultCoverSeed = group.groupName,

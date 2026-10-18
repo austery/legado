@@ -97,12 +97,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runtime-version", help="Require this exact iOS version; fail if unavailable")
+    parser.add_argument("--include-process-tests", action="store_true")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     expected = expected_tests()
     (output / "scope.json").write_text(json.dumps({"expectedTests": expected,
-        "externalSuitesNotRun": sorted(EXTERNAL_SUITES)}, indent=2))
+        "externalSuitesRunSeparately": sorted(EXTERNAL_SUITES) if args.include_process_tests else [],
+        "externalSuitesNotRun": [] if args.include_process_tests else sorted(EXTERNAL_SUITES)}, indent=2))
     (output / "commit.txt").write_text(subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True))
     runtimes = cast(dict[str, list[Runtime]], json.loads(simctl("list", "runtimes", "--json")))
@@ -134,7 +136,8 @@ def main() -> None:
             test_runs = list((derived / "Build/Products").glob("*.xctestrun"))
             if len(test_runs) != 1:
                 raise RuntimeError(f"Expected one generated test run, found {len(test_runs)}")
-            config = configure_test_run(test_runs[0], fixture_url)
+            generated_config = test_runs[0]
+            config = configure_test_run(generated_config, fixture_url)
             result = output / "NativeReader.xcresult"
             simctl("boot", simulator)
             run(["xcrun", "simctl", "bootstatus", simulator, "-b"], output / "boot.log", 180)
@@ -150,6 +153,16 @@ def main() -> None:
             print(f"Native product: {expected} tests passed, no failures or skips", flush=True)
         finally:
             delete_owned_simulator(simulator)
+
+    # Ordinary fixture listeners and their simulator are closed before process tests.
+    if args.include_process_tests:
+        for name, options in (("interruption", []), ("shelf-restart", ["--shelf-restart"])):
+            command = [sys.executable, str(ROOT / "scripts/path-c/process_interruption_regression.py"),
+                       "--xctestrun", str(generated_config), "--output", str(output / name), *options]
+            if args.runtime_version:
+                command.extend(["--runtime-version", args.runtime_version])
+            run(command, output / f"{name}.log", 1800)
+            print(f"Native process regression passed: {name}", flush=True)
 
 
 if __name__ == "__main__":

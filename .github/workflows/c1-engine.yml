@@ -53,7 +53,7 @@ jobs:
     name: C1 engine and native product tests
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJSON(inputs.execution != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -166,13 +166,16 @@ jobs:
           sed -n '1,25p' gradle/libs.versions.toml
       - name: Build native libraries
         run: bash scripts/build-ios-native.sh ios_simulator_arm64 ios_arm64 2>&1 | tee ci-results/native-build.log
-      - name: Build engine and compile original UI regression
+      - name: Build engine and run shared regressions
         run: |
           ./gradlew --no-daemon --no-watch-fs --build-cache --max-workers=2 \
             '-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
             :engine-ios:linkDebugFrameworkIosSimulatorArm64 \
             :engine-ios:linkDebugFrameworkIosArm64 \
-            :ui:compileKotlinIosSimulatorArm64 2>&1 | tee ci-results/engine-build.log
+            :ui:compileKotlinIosSimulatorArm64 \
+            :data:jvmTest :core:jvmTest :ui:jvmTest 2>&1 | tee ci-results/engine-build.log
+      - name: Run Kotlin Native regression suites
+        run: python3 scripts/path-c/kotlin_native_ci.py --output ci-results/kotlin-native ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
       - name: Build Swift harness
         run: |
           xcodegen generate --spec engine-ios/harness/project.yml
@@ -184,7 +187,7 @@ jobs:
       - name: Run network, restart cache and fresh network regressions
         run: python3 scripts/path-c/ci_harness.py --output ci-results ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
       - name: Run native Swift product regressions
-        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
+        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product --include-process-tests ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
       - name: Stop hosted resource sampler
         if: always() && inputs.execution != 'local'
         run: |

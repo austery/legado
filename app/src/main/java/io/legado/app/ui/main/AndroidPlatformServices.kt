@@ -20,9 +20,10 @@ import io.legado.app.App
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.DirUsage
+import io.legado.app.constant.LOG_DIR_NAME
 import io.legado.app.constant.PreferKey
-import io.legado.app.help.config.AppConfig
 import io.legado.app.help.crash.CRASH_LOG_FILE_PREFIX
+import io.legado.app.help.book.effectiveBookSaveDir
 import io.legado.app.help.config.resolveImagePath
 import io.legado.app.help.file.AndroidDirAuthorizations
 import io.legado.app.model.bakeCoverImageFile
@@ -36,6 +37,7 @@ import io.legado.app.ui.root.CrashLogProvider
 import io.legado.app.ui.root.ExternalRequestService
 import io.legado.app.ui.root.FileFilter
 import io.legado.app.ui.root.FilePickerService
+import io.legado.app.ui.root.PickedFile
 import io.legado.app.ui.root.KeyboardController
 import io.legado.app.ui.root.LaunchRequest
 import io.legado.app.ui.root.MediaService
@@ -44,7 +46,7 @@ import io.legado.app.ui.root.OrientationPolicy
 import io.legado.app.ui.root.PermissionService
 import io.legado.app.ui.root.PlatformCapabilities
 import io.legado.app.ui.root.PlatformServices
-import io.legado.app.ui.root.ReaderSystemBarAppearance
+import io.legado.app.ui.root.PageSystemBarAppearance
 import io.legado.app.ui.root.ShareService
 import io.legado.app.ui.root.SoftInputPolicy
 import io.legado.app.ui.root.SystemBarsPolicy
@@ -52,11 +54,13 @@ import io.legado.app.ui.root.VideoPlayTarget
 import io.legado.app.ui.root.WindowController
 import io.legado.app.ui.root.importImageSetFile
 import io.legado.app.ui.root.navigateToRoute
+import io.legado.app.ui.root.SavedRef
 import io.legado.app.ui.video.VideoDirect
 import io.legado.app.utils.ActivityResultLauncherAwait
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.checkWrite
+import io.legado.app.utils.copyToDocumentAtomically
 import io.legado.app.utils.delete
 import io.legado.app.utils.displayName
 import io.legado.app.utils.find
@@ -96,7 +100,8 @@ class AndroidPlatformServices(
         get() = capabilitiesImpl
 
     override val files: FilePickerService = AndroidFilePickerService(
-        activity, openDocumentPicker, openDocumentsPicker, createDocumentPicker, openDocumentTreePicker,
+        activity, openDocumentPicker, openDocumentsPicker, createDocumentPicker,
+        openDocumentTreePicker,
     )
 
     override val sharing: ShareService = AndroidShareService(activity)
@@ -136,16 +141,56 @@ private class AndroidFilePickerService(
             ?.let(::materializeUri)
     }
 
-    override fun pickFiles(filter: FileFilter): List<String> = runBlocking {
-        withContext(Dispatchers.Main) { openDocumentsPicker.launch(filter.toMimeTypes()) }
-            .map { it.toString() }
-            .filter { filter.matchesUri(it) }
-            .mapNotNull(::materializeUri)
+    /**
+     * 多选文件 (书籍/字体导入): 回传 SAF 文档地址与文件名, 不物化副本 ——
+     * 书文件直接以文档地址入库 (常驻读权限在此显式落下), 字体由调用方读字节落内置目录。
+     */
+    override fun pickFiles(filter: FileFilter): List<PickedFile> = runBlocking {
+        val uris = withContext(Dispatchers.Main) { openDocumentsPicker.launch(filter.toMimeTypes()) }
+        uris.mapNotNull { uri ->
+            // ACTION_OPEN_DOCUMENT 默认只给到进程结束的读权限, 不落常驻权限时重启后书文件读不开;
+            // 提供方拒绝时记日志 (该文件当次仍可导入, 只是重启后需重选)
+            runCatching {
+                App.instance.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }.onFailure {
+                AppLog.put("文件选择器未取得常驻读权限: $uri\n${it.localizedMessage}", it)
+            }
+            PickedFile(uri.toString(), fileNameOf(uri) ?: uri.toString())
+        }
     }
 
-    override fun saveFile(suggestedName: String, defaultDir: String?): String? = runBlocking {
-        // CreateDocument 由系统决定保存位置, defaultDir 不支持指定
-        withContext(Dispatchers.Main) { createDocumentPicker.launch(suggestedName) }?.toString()
+    /**
+     * 弹 SAF 单文件另存为并写入文本。引用是 `content://` 文档地址 —— 只能经文档写入通道写,
+     * 拿它当文件路径写会失败。
+     */
+    override fun saveText(suggestedName: String, text: String): SavedRef? =
+        runBlocking {
+            // CreateDocument 由系统决定保存位置, defaultDir 不支持指定
+            val uri = withContext(Dispatchers.Main) { createDocumentPicker.launch(suggestedName) }
+                ?: return@runBlocking null
+            // 目标所在目录允许整份就位时先写临时文档再改名, 否则直写
+            check(
+                writeDocumentBytesAtomically(
+                    App.instance, uri, suggestedName, text.encodeToByteArray()
+                )
+            ) { "写入文件失败: $suggestedName" }
+            SavedRef(uri.toString())
+        }
+
+    /** 同上, 内容按流复制 (大体积内容不整份读入内存)。 */
+    override fun saveFromFile(
+        srcPath: String,
+        suggestedName: String
+    ): SavedRef? = runBlocking {
+        val uri = withContext(Dispatchers.Main) { createDocumentPicker.launch(suggestedName) }
+            ?: return@runBlocking null
+        val written = File(srcPath).inputStream().use {
+            copyToDocumentAtomically(App.instance, uri, suggestedName, it)
+        }
+        check(written) { "写入文件失败: $suggestedName" }
+        SavedRef(uri.toString())
     }
 
     // 图集导入 + 按真实屏幕尺寸烘焙清晰产物 (启动图与主题背景图共用)。
@@ -264,6 +309,34 @@ private class AndroidFilePickerService(
         }
     }
 
+    /** 提供方给的显示名 (查不到返回 null)。 */
+    private fun displayNameOf(uri: Uri): String? = runCatching {
+        App.instance.contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex >= 0 && cursor.moveToFirst()) {
+                cursor.getString(nameIndex)
+            } else {
+                null
+            }
+        }
+    }.getOrNull()
+
+    /**
+     * 文件名字: 优先提供方显示名, 查不到时退回 URI 末段 (文档地址形如
+     * `.../document/primary:Download/书.txt`, 两种形态都按物化侧同一套清洗); 都取不到返回 null。
+     */
+    private fun fileNameOf(uri: Uri): String? =
+        displayNameOf(uri)?.substringAfterLast(':')?.substringAfterLast('/')
+            ?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast(':')?.substringAfterLast('/')
+                ?.takeIf { it.isNotBlank() }
+
     /**
      * SAF 返回的 content:// URI 不能直接交给 java.io.File。
      * 原版 BgTextConfigViewModel.setBgFromUri 直接从 URI 读流；这里把选择结果
@@ -275,32 +348,10 @@ private class AndroidFilePickerService(
         return when (uri.scheme?.lowercase()) {
             "content" -> runCatching {
                 val resolver = App.instance.contentResolver
-                val displayName = resolver.query(
-                    uri,
-                    arrayOf(OpenableColumns.DISPLAY_NAME),
-                    null,
-                    null,
-                    null,
-                )?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIndex >= 0 && cursor.moveToFirst()) {
-                        cursor.getString(nameIndex)
-                    } else {
-                        null
-                    }
-                }
-                val sourceName = displayName
-                    ?.substringAfterLast(':')
-                    ?.substringAfterLast('/')
-                    ?.takeIf { it.isNotBlank() }
-                    ?: uri.lastPathSegment
-                        ?.substringAfterLast(':')
-                        ?.substringAfterLast('/')
-                        ?.takeIf { it.isNotBlank() }
-                    ?: "picked_${System.currentTimeMillis()}"
+                val sourceName = fileNameOf(uri) ?: "picked_${System.currentTimeMillis()}"
                 val safeName = sourceName.map { c ->
                     if (c.isLetterOrDigit() || c == '.' || c == '_' || c == '-') c else '_'
-                }.joinToString("").ifBlank { "picked_${System.currentTimeMillis()}" }
+                }.joinToString("")
                 val targetDir = File(App.instance.cacheDir, "file_picker").apply { mkdirs() }
                 val target = File(targetDir, "${System.currentTimeMillis()}_$safeName")
                 resolver.openInputStream(uri)?.use { input ->
@@ -445,8 +496,11 @@ private class AndroidWindowController(
     private var savedLightStatusBars: Boolean? = null
     private var savedLightNavigationBars: Boolean? = null
 
-    /** 当前窗口是否处于阅读页系统栏外观 (见 [setReaderSystemBarAppearance])。 */
-    private var readerAppearanceApplied = false
+    /** 当前窗口是否处于页面声明的系统栏外观 (见 [setPageSystemBarAppearance])。 */
+    private var pageAppearanceApplied = false
+
+    /** 当前生效的页面声明 (配置变化后重新盖回时取它)。 */
+    private var pageAppearance: PageSystemBarAppearance? = null
 
     override fun setLightIconOverlay(enabled: Boolean) {
         val controller =
@@ -458,29 +512,58 @@ private class AndroidWindowController(
             }
             controller.isAppearanceLightStatusBars = false
             controller.isAppearanceLightNavigationBars = false
+            return
+        }
+        // 退出覆盖层: 页面声明仍生效时按它恢复 (期间的声明变化也要跟上), 否则回到进覆盖层前的值
+        val page = pageAppearance
+        val savedStatus = savedLightStatusBars
+        val savedNavigation = savedLightNavigationBars
+        savedLightStatusBars = null
+        savedLightNavigationBars = null
+        if (page != null) {
+            applyPageSystemBarAppearance(page)
         } else {
-            savedLightStatusBars?.let { controller.isAppearanceLightStatusBars = it }
-            savedLightNavigationBars?.let { controller.isAppearanceLightNavigationBars = it }
-            savedLightStatusBars = null
-            savedLightNavigationBars = null
+            savedStatus?.let { controller.isAppearanceLightStatusBars = it }
+            savedNavigation?.let { controller.isAppearanceLightNavigationBars = it }
         }
     }
 
-    override fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {
+    override fun setPageSystemBarAppearance(appearance: PageSystemBarAppearance?) {
+        pageAppearance = appearance
         if (appearance == null) {
-            // 离开阅读页可见期: 回到非阅读页规则
+            // 当前无人声明: 回到非页面声明的规则
             // (主题状态栏色 / 壁纸贴边像素亮度 + 主题导航栏色)。
-            // 本就不在阅读页外观状态时不重算 —— 非阅读页每次路由变化都会走这条,
+            // 本就不在页面外观状态时不重算 —— 非声明页每次路由变化都会走这条,
             // 而重算含壁纸贴边像素采样
-            if (!readerAppearanceApplied) return
-            readerAppearanceApplied = false
+            if (!pageAppearanceApplied) return
+            pageAppearanceApplied = false
             activity.setupSystemBar()
             return
         }
-        readerAppearanceApplied = true
+        applyPageSystemBarAppearance(appearance)
+    }
+
+    override fun reapplyPageSystemBarAppearance() {
+        pageAppearance?.let { applyPageSystemBarAppearance(it) }
+        // 覆盖层持有图标期间 apply 会跳过图标下发, 而 setupSystemBar 已把它重设成主题值:
+        // 这里把覆盖层要的浅色补回去 (覆盖层也在被重建的窗口上)
+        if (savedLightStatusBars != null) {
+            val controller =
+                WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+            controller.isAppearanceLightStatusBars = false
+            controller.isAppearanceLightNavigationBars = false
+        }
+    }
+
+    private fun applyPageSystemBarAppearance(appearance: PageSystemBarAppearance) {
+        pageAppearanceApplied = true
+        // 深色覆盖层 (全屏看图) 持有期间不下发: 页顶与系统栏区都被覆盖层盖住, 图标该跟覆盖层的
+        // 底色走, 页面重发会把覆盖层刚改白的图标盖回去 (旋转/多窗口后尤为明显); 声明存在
+        // pageAppearance 里, 覆盖层退出时按那时最新的声明恢复 (见 setLightIconOverlay)
+        if (savedLightStatusBars != null) return
         activity.setLightStatusBar(appearance.lightStatusBarIcons)
-        // 对照原版 ReadBookActivity.upNavigationBarColor: 菜单布局不可见时按阅读背景色
-        // (setNavigationBarColorAuto 一并按该色亮度定导航栏图标明暗), 可见时走主题规则
+        // 对照原版 ReadBookActivity.upNavigationBarColor: 声明了底色的页面按该色
+        // (setNavigationBarColorAuto 一并按该色亮度定导航栏图标明暗), 未声明走主题规则
         appearance.navigationBarColor?.let { activity.setNavigationBarColorAuto(it) }
             ?: activity.upNavigationBarColor()
     }
@@ -740,7 +823,7 @@ private fun videoTargetOfUri(uri: Uri, mimeIsVideo: Boolean): VideoPlayTarget.Di
 /**
  * 崩溃日志提供者 Android 实现 (对照 app 端 CrashLogsDialog.CrashViewModel)。
  *
- * - loadCrashLogs: 从 externalCacheDir/crash 和备份路径收集崩溃日志文件
+ * - loadCrashLogs: 从 externalCacheDir/crash 和书籍保存位置收集崩溃日志文件
  * - readCrashLog: 读取单个崩溃日志文件内容
  * - clearCrashLogs: 删除所有崩溃日志文件
  * - shareCrashLog: 通过 Intent 分享文件
@@ -752,18 +835,18 @@ private class AndroidCrashLogProvider(
     override suspend fun loadCrashLogs(): List<CrashLogProvider.CrashLogEntry> =
         withContext(Dispatchers.IO) {
             val list = arrayListOf<FileDoc>()
-            // 外部缓存目录 crash 子目录 (对照 CrashViewModel.initData)。
-            // 只收 crash- 前缀: 该目录还放着"上次异常退出"标记文件, 它不是崩溃现场, 不该进列表
-            activity.externalCacheDir?.getFile("crash")
+            // 外部缓存目录的日志目录 (对照 CrashViewModel.initData)。
+            // 只收 crash- 前缀: 该目录同时放着运行日志与"上次异常退出"标记文件, 都不是崩溃现场
+            activity.externalCacheDir?.getFile(LOG_DIR_NAME)
                 ?.listFiles { it.isFile && it.name.startsWith(CRASH_LOG_FILE_PREFIX) }
                 ?.forEach {
                     list.add(FileDoc.fromFile(it))
                 }
-            // 备份路径下的 crash 目录 (对照 CrashViewModel.initData backupPath 分支)
-            val backupPath = AppConfig.backupPath
-            if (!backupPath.isNullOrEmpty()) {
-                val uri = backupPath.toUri()
-                FileDoc.fromUri(uri, true).find("crash")?.list { !it.isDir }?.let {
+            // 书籍保存位置下的日志目录 (对照 CrashViewModel.initData backupPath 分支)
+            val savePath = effectiveBookSaveDir()
+            if (!savePath.isNullOrEmpty()) {
+                val uri = savePath.toUri()
+                FileDoc.fromUri(uri, true).find(LOG_DIR_NAME)?.list { !it.isDir }?.let {
                     list.addAll(it.filter { doc -> doc.name.startsWith(CRASH_LOG_FILE_PREFIX) })
                 }
             }
@@ -777,18 +860,18 @@ private class AndroidCrashLogProvider(
     }
 
     override suspend fun clearCrashLogs() = withContext(Dispatchers.IO) {
-        // 只删崩溃现场文件, 目录本身留着: 该目录还放着"上次异常退出"标记文件, 整目录删掉会把
+        // 只删崩溃现场文件, 目录本身留着: 该目录还放着运行日志与"上次异常退出"标记文件, 整目录删掉会把
         // 标记一起清掉, 下次启动就不再提示 (而用户清空日志并不等于否认刚才崩过)
-        activity.externalCacheDir?.getFile("crash")?.listFiles { it.isFile }?.forEach { file ->
+        activity.externalCacheDir?.getFile(LOG_DIR_NAME)?.listFiles { it.isFile }?.forEach { file ->
             if (file.name.startsWith(CRASH_LOG_FILE_PREFIX)) {
                 FileUtils.delete(file, false)
             }
         }
-        // 删备份路径下的 crash 目录里的崩溃现场 (SAF 侧只写崩溃日志, 无标记文件)
-        val backupPath = AppConfig.backupPath
-        if (!backupPath.isNullOrEmpty()) {
-            val uri = backupPath.toUri()
-            FileDoc.fromUri(uri, true).find("crash")?.list { !it.isDir }
+        // 删书籍保存位置下的日志目录里的崩溃现场 (SAF 侧只写崩溃日志, 无运行日志/标记文件)
+        val savePath = effectiveBookSaveDir()
+        if (!savePath.isNullOrEmpty()) {
+            val uri = savePath.toUri()
+            FileDoc.fromUri(uri, true).find(LOG_DIR_NAME)?.list { !it.isDir }
                 ?.filter { it.name.startsWith(CRASH_LOG_FILE_PREFIX) }
                 ?.forEach { it.delete() }
         }
@@ -801,17 +884,17 @@ private class AndroidCrashLogProvider(
         } ?: activity.share(fileDoc.uri, title = "share")
     }
 
-    /** 按 name 查找崩溃日志 FileDoc (先查缓存目录, 再查备份路径) */
+    /** 按 name 查找崩溃日志 FileDoc (先查缓存目录, 再查书籍保存位置) */
     private suspend fun findCrashFile(name: String): FileDoc? = withContext(Dispatchers.IO) {
         // 查缓存目录
-        activity.externalCacheDir?.getFile("crash")?.listFiles { it.isFile }
+        activity.externalCacheDir?.getFile(LOG_DIR_NAME)?.listFiles { it.isFile }
             ?.firstOrNull { it.name == name }
             ?.let { return@withContext FileDoc.fromFile(it) }
-        // 查备份路径
-        val backupPath = AppConfig.backupPath
-        if (!backupPath.isNullOrEmpty()) {
-            val uri = backupPath.toUri()
-            FileDoc.fromUri(uri, true).find("crash")?.list { !it.isDir }
+        // 查书籍保存位置
+        val savePath = effectiveBookSaveDir()
+        if (!savePath.isNullOrEmpty()) {
+            val uri = savePath.toUri()
+            FileDoc.fromUri(uri, true).find(LOG_DIR_NAME)?.list { !it.isDir }
                 ?.firstOrNull { it.name == name }
                 ?.let { return@withContext it }
         }

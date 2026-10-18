@@ -51,6 +51,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -153,17 +154,24 @@ val LocalSheetExpandFraction = compositionLocalOf { 0f }
 val LocalSheetTopOverlap = compositionLocalOf { 0.dp }
 
 /**
- * 动画进行中屏蔽本节点子树的指针输入: Initial 阶段消费全部事件。
+ * 动画进行中屏蔽本节点子树的指针输入: Initial 阶段消费"按下/拖动/抬起"这类会触发动作的事件。
  *
  * 对话框/弹层滑入滑出与缩放淡出 (进度 < 1) 期间, 内容里的点击手势收不到未消费的 down
  * (down 被消费 awaitFirstDown 不成立, up 被消费即判手势取消), 动画途中的点击落在
  * 正在离场的旧按钮上不会触发。
+ *
+ * 悬停与滚轮不吃: 内嵌平台视图 (AndroidView / UIKitView) 的输入通道一旦看到"事件已被
+ * Compose 消费"就停止向该视图派发, 而复位只发生在"全部抬手"——悬停与滚轮永不产生抬手,
+ * 被吃一次即永久锁死 (表现为鼠标滚轮必须先点一下网页才能用)。这两类事件不触发动作,
+ * 放行不影响本拦截的目的。
  */
 internal fun Modifier.blockInputWhile(active: Boolean): Modifier = pointerInput(active) {
     if (!active) return@pointerInput
     awaitPointerEventScope {
         while (true) {
-            awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+            awaitPointerEvent(PointerEventPass.Initial).changes.forEach { change ->
+                if (change.pressed || change.changedToUpIgnoreConsumed()) change.consume()
+            }
         }
     }
 }
@@ -593,9 +601,6 @@ fun AppBottomSheetDialog(
     val dialogSpec = remember { PlatformCapabilityProviders.get().dialogTransitionSpec }
     Dialog(onDismissRequest = { dismissing = true }, properties = properties) {
         WithWindowTextMenu {
-            // 底层压暗走窗口/对话框层 (与居中对话框同一套): Android 补 0.6, skiko 三端用对话框
-            // 自带的 0.6 蒙层; E-Ink 分支在上方不补 (对齐原版 E-Ink 清 dim)
-            PlatformDialogDim()
             val progress = remember { Animatable(0f) }
             // 拖拽位移 (px): 双向 —— 负 = 上推 (面板高度放大, 见 heightPx), 正 = 下拉
             // (面板整体下移, translationY 相加; 触发关闭时退出动画从当前位置继续下滑,
@@ -659,8 +664,18 @@ fun AppBottomSheetDialog(
                 val distance = expandDistance()
                 if (distance <= 0f) 0f else (-dragOffset / distance).coerceIn(0f, 1f)
             }
-            // 面板顶已进入装饰带的量 = 正文下移量 (面板铺到窗口顶时等于整条装饰带高)
-            val topOverlapPx = (topBandPx - (fullAnchorPx - sheetHeightPx)).coerceAtLeast(0)
+            // 拖拽态面板高 (px): 与传给骨架的高度同源同式。面板顶下移量与正文下移量必须
+            // 同源相消, 换成上一帧实测高就与同帧的位移高差一帧 —— 每帧正文相对面板多偏
+            // 一段等于该帧手指位移的距离 (全屏态轻微下拉时正文抖动)
+            val dragHeightPx = if (dragOffset != 0f) {
+                (defaultAnchorPx - dragOffset.coerceAtMost(0f)).roundToInt()
+            } else {
+                null
+            }
+            // 面板顶已进入装饰带的量 = 正文下移量 (面板铺到窗口顶时等于整条装饰带高):
+            // 静止态取实测高, 拖拽态取同帧位移高
+            val topOverlapPx =
+                (topBandPx - (fullAnchorPx - (dragHeightPx ?: sheetHeightPx))).coerceAtLeast(0)
             // 回弹/吸附动画: 从当前位移续播到目标锚点 (新拖拽开始时由 drag 路径取消 bounceJob)
             val animateDragTo: (Float) -> Unit = { target ->
                 bounceJob?.cancel()
@@ -778,8 +793,15 @@ fun AppBottomSheetDialog(
                         bounceJob?.cancel()
                         bounceJob = null
                         // 只向正方向累积, 无需再夹展开下限 (展开态起步时先缩回到 0 再下移)
+                        val previousOffset = dragOffset
                         dragOffset += available.y * DragResistance
-                        return Offset.Zero
+                        // 如实上报本次吃掉的手指位移 (与上推路径同一换算): 不上报就等于没人消费,
+                        // 剩余位移会落到内部列表的越界回弹上 (面板位移与列表橡胶带叠加成双份)
+                        return Offset(
+                            0f,
+                            ((dragOffset - previousOffset) / DragResistance)
+                                .coerceAtMost(available.y),
+                        )
                     }
 
                     override suspend fun onPreFling(available: Velocity): Velocity {
@@ -875,9 +897,7 @@ fun AppBottomSheetDialog(
                 // 拖拽中面板高度改由状态驱动: 上推变高 (dragOffset 负), 下拉保持默认
                 // 锚点高并整体下移 (dragOffset 正); 回到默认锚点 (dragOffset == 0) 恢复
                 // wrap 布局, 高度连续无跳变
-                heightPx = if (dragOffset != 0f) {
-                    (defaultAnchorPx - dragOffset.coerceAtMost(0f)).roundToInt()
-                } else null,
+                heightPx = dragHeightPx,
                 modifier = Modifier
                     .onSizeChanged {
                         sheetHeightPx = it.height
@@ -978,6 +998,11 @@ fun AppBottomSheetDialog(
                     LocalSheetDismissRequest provides requestDismiss,
                 ) { content() }
             }
+            // 底层压暗走窗口/对话框层 (与居中对话框同一套): Android 补 0.6, skiko 三端用对话框
+            // 自带的 0.6 蒙层; E-Ink 分支在上方不补 (对齐原版 E-Ink 清 dim)。
+            // 必须排在骨架之后: 骨架里的贴边窗口样式先清掉主题自带暗化, 再由这里统一补 0.6,
+            // 顺序颠倒会把补上的 0.6 又清成 0
+            PlatformDialogDim()
         }
     }
 }
@@ -1039,7 +1064,8 @@ private fun BottomSheetScaffold(
     content: @Composable () -> Unit,
 ) {
     // 贴边窗口: 系统栏透明 + 清掉主题自带暗化 (面板底色才能铺到窗口顶; 暗度改由
-    // [PlatformDialogDim] 统一补 0.6)
+    // [PlatformDialogDim] 统一补 0.6 —— 那一次调用必须排在本骨架之后, 否则清在补后,
+    // 补上的 0.6 会被清成 0)
     PlatformSheetWindowStyle()
     // 系统栏图标明暗: 面板顶进入状态栏区域后状态栏那一条由面板底色接管, 按底色亮度定;
     // 导航栏那一条面板恒铺满 (面板贴底, 避让加在底色之内), 恒按底色亮度定

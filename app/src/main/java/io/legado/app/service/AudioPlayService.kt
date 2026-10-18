@@ -197,6 +197,10 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
         super.onCreate()
         isRun = true
         instance = this
+        // 媒体会话与耳机监听随宿主建立: 会话可在宿主存活期内重启(起播失败后重新起播),
+        // 建在会话开始处会重复创建
+        initMediaSession()
+        noisyReceiver.register(this)
         session.ensureRunning()
     }
 
@@ -232,6 +236,16 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
     override fun onDestroy() {
         super.onDestroy()
         session.endSession()
+        // 运行态随宿主销毁清理: 会话终结而宿主仍存活时它必须保持, 否则复用实例上的
+        // 暂停/恢复/进度/媒体键与对外播控态全部失效
+        isRun = false
+        instance = null
+        // 引擎与媒体会话随宿主销毁释放: 会话内部终结(起播链路失败)只停服务, 不动它们 ——
+        // 平台取消这次停止而复用同一实例时, 后续命令必须还能落在活着的引擎上
+        noisyReceiver.unregister(this)
+        exoPlayer.release()
+        mediaSessionCompat?.release()
+        notificationHost.cancelOnDestroy()
     }
 
     /** 暂停: 先放掉唤醒锁与音频焦点, 再交会话落状态。 */
@@ -292,8 +306,6 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
     }
 
     override fun onSessionStart() {
-        initMediaSession()
-        noisyReceiver.register(this)
         armLrcWatch()
         upMediaSessionPlaybackState(PlaybackStateCompat.STATE_PLAYING)
         loadCover(AudioPlay.durCoverUrl)
@@ -303,17 +315,17 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
         playbackLock.release()
         lrcWatchJob?.cancel()
         lrcWatchJob = null
-        isRun = false
-        instance = null
         audioFocus.abandon()
-        noisyReceiver.unregister(this)
-        // 先上报最终播放态再释放: 位置与 MediaSession 都还在, 置 STOPPED 才落得下去
-        // (引擎位置已由 AudioPlaySession.endSession 先存); 释放后写的是已释放对象, 等于没写
+        // 先上报最终播放态再收尾: 位置与媒体会话都还在, 置 STOPPED 才落得下去
+        // (引擎位置已由 AudioPlaySession.endSession 先存)
         upMediaSessionPlaybackState(PlaybackStateCompat.STATE_STOPPED)
-        exoPlayer.release()
-        mediaSessionCompat?.release()
-        notificationHost.cancelOnDestroy()
-        // 会话内部终结 (起播链路失败) 也要停服务; 本就从 onDestroy 进来时 stopSelf 是空操作
+        stopSelf()
+    }
+
+    /** 起播失败: 释放这次起播拿到的唤醒锁与音频焦点并停掉服务; 会话级资源随宿主销毁收尾。 */
+    override fun onHostStopRequest() {
+        playbackLock.release()
+        audioFocus.abandon()
         stopSelf()
     }
 
@@ -376,15 +388,17 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
                 .setActions(MEDIA_SESSION_ACTIONS)
                 .setState(state, exoPlayer.currentPosition, 1f)
                 .setBufferedPosition(exoPlayer.bufferedPosition)
-                .addCustomAction(
-                    APP_ACTION_STOP,
-                    androidAppString("stop"),
-                    R.drawable.ic_stop_black_24dp
-                )
+                // 媒体卡片 (Android 13+) 的按钮顺序 = 自定义动作的添加顺序 (先添加的排最左):
+                // 定时在左、停止在右, 与通知栏动作顺序 (见 createNotification) 同一口径
                 .addCustomAction(
                     APP_ACTION_TIMER,
                     androidAppString("set_timer"),
                     R.drawable.ic_time_add_24dp
+                )
+                .addCustomAction(
+                    APP_ACTION_STOP,
+                    androidAppString("stop"),
+                    R.drawable.ic_stop_black_24dp
                 )
                 .build()
         )
