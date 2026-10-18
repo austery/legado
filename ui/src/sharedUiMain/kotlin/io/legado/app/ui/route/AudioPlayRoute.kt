@@ -192,7 +192,18 @@ fun AudioPlayRoute(
     LaunchedEffect(Unit) {
         navigator.resultsFor(entry.id).collect { result ->
             when (result.key) {
-                RouteResults.BOOK_INFO -> when (result.payload) {
+                RouteResults.BOOK_INFO -> when (val payload = result.payload) {
+                    is RouteResultPayload.ChangeSource -> {
+                        if (!payload.book.isAudio) {
+                            AudioPlayShared.stop()
+                            navigator.replace(payload.book.toReadRoute())
+                        } else {
+                            AudioPlayShared.restoreSource(payload.book, payload.source, payload.toc)
+                            screenModel.dispatch(AudioPlayUiEvent.UpdateBook(payload.book))
+                            screenModel.dispatch(AudioPlayUiEvent.UpdateInShelf(!payload.book.isNotShelf))
+                        }
+                    }
+
                     is RouteResultPayload.Deleted -> {
                         // 详情里删了这本书: 停止播放并退出音频页 (对齐视频页的删除透传)
                         AudioPlayShared.stop()
@@ -396,7 +407,7 @@ fun AudioPlayRoute(
         // 点顶栏标题进书籍详情 (对照 app 端 AudioPlayActivity 的顶栏标题点击)
         onOpenBookInfo = {
             navigator.push(
-                AppRoute.BookInfo(book.toRouteRef()),
+                AppRoute.BookInfo((AudioPlayShared.book ?: book).toRouteRef()),
                 resultKey = RouteResults.BOOK_INFO,
             )
         },

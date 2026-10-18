@@ -8,6 +8,34 @@ import kotlin.test.assertNotNull
 
 class NativeUrlCanonicalTest {
     @Test
+    fun downloadProgressUsesTheRequestUrlForRegistrationAndRemoval() {
+        val raw = "https://example.com/中文 image%20one.jpg?q=%2F"
+        val encoded = "https://example.com/%E4%B8%AD%E6%96%87%20image%20one.jpg?q=%2F"
+        val updates = mutableListOf<Pair<Long, Long?>>()
+        val listener: (Long, Long?) -> Unit = { read, total -> updates.add(read to total) }
+        val dispose = DownloadProgressRegistry.addListener(raw, listener)
+        try {
+            DownloadProgressRegistry.notify(KmpRequestBuilder().url(raw).build().url.toString(), 7, 10)
+            assertEquals(listOf<Pair<Long, Long?>>(7L to 10L), updates)
+            DownloadProgressRegistry.removeListener(encoded, listener)
+            DownloadProgressRegistry.notify(raw, 8, 10)
+            assertEquals(1, updates.size)
+        } finally {
+            dispose()
+        }
+        val disposeEncoded = DownloadProgressRegistry.addListener(encoded, listener)
+        try {
+            DownloadProgressRegistry.notify(raw, 9, null)
+            assertEquals(9L to null, updates.last())
+            disposeEncoded()
+            DownloadProgressRegistry.notify(encoded, 10, 10)
+            assertEquals(2, updates.size)
+        } finally {
+            disposeEncoded()
+        }
+    }
+
+    @Test
     fun requestBuildersCanonicalizeMalformedEscapesAndUnicodeExactlyOnce() {
         val cases = listOf(
             "https://example.com/a b?q=中%zz#f g" to

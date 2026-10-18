@@ -202,6 +202,13 @@ class AppNavigator(
             .receiveAsFlow()
     }
 
+    private val pendingResults = mutableMapOf<RouteEntryId, RouteResultPayload>()
+
+    /** Preserve a completed edit for toolbar, gesture and platform back navigation. */
+    fun setPendingResult(entryId: RouteEntryId, payload: RouteResultPayload) {
+        if (backStack.value.any { it.id == entryId }) pendingResults[entryId] = payload
+    }
+
     fun registerRefreshHandler(entryId: RouteEntryId, handler: () -> Unit) {
         refreshHandlers[entryId] = handler
     }
@@ -223,6 +230,7 @@ class AppNavigator(
         val entryId = routeBackStack.replace(route)
         targetedResults.remove(replacedEntryId)?.close()
         refreshHandlers.remove(replacedEntryId)
+        pendingResults.remove(replacedEntryId)
         targetedResults[entryId] = Channel(Channel.UNLIMITED)
         return entryId
     }
@@ -242,12 +250,14 @@ class AppNavigator(
         val removed = routeBackStack.peek()
         val popped = routeBackStack.pop()
         if (popped) {
+            val pending = removed?.let { pendingResults.remove(it.id) }
+            val delivered = if (payload == RouteResultPayload.None) pending ?: payload else payload
             removed?.let { removedEntry ->
                 targetedResults.remove(removedEntry.id)?.close()
                 refreshHandlers.remove(removedEntry.id)
             }
             removed?.resultKey?.let { resultKey ->
-                val result = RouteResult(resultKey, payload)
+                val result = RouteResult(resultKey, delivered)
                 removed.resultTargetEntryId?.let { targetEntryId ->
                     targetedResults
                         .getOrPut(targetEntryId) { Channel(Channel.UNLIMITED) }

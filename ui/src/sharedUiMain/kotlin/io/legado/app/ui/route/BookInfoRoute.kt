@@ -865,15 +865,20 @@ fun BookInfoRoute(
             book = state.book ?: book,
             onSourceChanged = { source, newBook, toc ->
                 showChangeSourceDialog = false
-                // bookSource 由 LaunchedEffect(book.origin) 按路由书籍加载, 换源后不会自动更新
-                bookSource = source
-                scope.launch(IoDispatcher) {
-                    runCatching {
+                scope.launch {
+                    try {
                         val oldBook = screenModel.state.value.book ?: book
-                        oldBook.changeSourceTo(newBook, toc, screenModel.state.value.inBookshelf)
-                    }.onFailure {
-                        AppLog.put("换源失败\n${it.message}", it, true)
+                        withContext(IoDispatcher) {
+                            oldBook.changeSourceTo(newBook, toc, screenModel.state.value.inBookshelf)
+                        }
+                    } catch (error: kotlinx.coroutines.CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        AppLog.put("Source change failed\n${error.message}", error, true)
+                        return@launch
                     }
+                    bookSource = source
+                    navigator.setPendingResult(entry.id, RouteResultPayload.ChangeSource(source, newBook, toc))
                     screenModel.dispatch(
                         BookInfoUiEvent.ShowBook(newBook, screenModel.lastedTitleOf(newBook))
                     )

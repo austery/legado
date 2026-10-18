@@ -11,6 +11,40 @@ import org.junit.Test
 class AppNavigatorTest {
 
     @Test
+    fun `completed source change survives child navigation and platform back`() = runBlocking {
+        val navigator = AppNavigator()
+        val caller = navigator.currentEntry.id
+        val details = navigator.push(AppRoute.About, RouteResults.BOOK_INFO)
+        val replacement = RouteResultPayload.ChangeSource(
+            io.legado.app.data.entities.BookSource(bookSourceUrl = "source-b"),
+            io.legado.app.data.entities.Book(bookUrl = "book-b", origin = "source-b"),
+            listOf(io.legado.app.data.entities.BookChapter(bookUrl = "book-b", url = "chapter-b")),
+        )
+        navigator.setPendingResult(details, replacement)
+        navigator.push(AppRoute.Search())
+        navigator.pop()
+        navigator.showOverlay(AppOverlay.Dialog(key = "info"))
+        navigator.pop()
+        assertEquals(details, navigator.currentEntry.id)
+        navigator.pop()
+        assertEquals(replacement, withTimeout(1000) { navigator.resultsFor(caller).first() }.payload)
+    }
+
+    @Test
+    fun `explicit deletion wins over a pending edit`() = runBlocking {
+        val navigator = AppNavigator()
+        val caller = navigator.currentEntry.id
+        val details = navigator.push(AppRoute.About, RouteResults.BOOK_INFO)
+        navigator.setPendingResult(details, RouteResultPayload.Ok)
+        navigator.pop(RouteResultPayload.Deleted)
+        assertEquals(RouteResultPayload.Deleted, withTimeout(1000) { navigator.resultsFor(caller).first() }.payload)
+        navigator.setPendingResult(details, RouteResultPayload.Ok)
+        navigator.push(AppRoute.About, RouteResults.BOOK_INFO)
+        navigator.pop()
+        assertEquals(RouteResultPayload.None, withTimeout(1000) { navigator.resultsFor(caller).first() }.payload)
+    }
+
+    @Test
     fun `push records caller as result target`() {
         val navigator = AppNavigator()
         val callerId = navigator.currentEntry.id
