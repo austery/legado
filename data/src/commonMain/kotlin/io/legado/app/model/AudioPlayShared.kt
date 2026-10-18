@@ -106,7 +106,17 @@ object AudioPlayShared {
         set(value) {
             field = if (value.isNaN()) SPEED_DEFAULT else value.coerceIn(SPEED_MIN, SPEED_MAX)
         }
+    // Delayed detail results may only replace the playback identity they observed.
+    var sourceRevision: Long = 0
+        private set
+
+    fun isCurrentSourceReturn(revision: Long?): Boolean = revision == sourceRevision
+
     var book: Book? = null
+        set(value) {
+            if (field?.bookUrl != value?.bookUrl || field?.origin != value?.origin) sourceRevision++
+            field = value
+        }
     var chapterSize = 0
     var simulatedChapterSize = 0
     var chapterList: List<BookChapter>? = null
@@ -279,10 +289,17 @@ object AudioPlayShared {
     /**
      * @param source 书籍对应书源, 由调用方从书籍装载流程取得
      */
-    suspend fun restoreSource(book: Book, source: BookSource, chapters: List<BookChapter>) {
+    suspend fun restoreSource(
+        book: Book,
+        source: BookSource,
+        chapters: List<BookChapter>,
+        expectedRevision: Long? = sourceRevision,
+    ): Boolean {
+        if (!isCurrentSourceReturn(expectedRevision)) return false
         require(chapters.all { it.bookUrl == book.bookUrl }) { "Source catalog belongs to another book" }
         chapterList = chapters
         resetData(book, source)
+        return true
     }
 
     suspend fun resetData(book: Book, source: BookSource?) {

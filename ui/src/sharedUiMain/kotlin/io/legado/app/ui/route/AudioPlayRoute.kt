@@ -194,11 +194,18 @@ fun AudioPlayRoute(
             when (result.key) {
                 RouteResults.BOOK_INFO -> when (val payload = result.payload) {
                     is RouteResultPayload.ChangeSource -> {
+                        if (!AudioPlayShared.isCurrentSourceReturn(payload.audioSourceRevision)) {
+                            AudioPlayShared.book?.let { current ->
+                                screenModel.dispatch(AudioPlayUiEvent.UpdateBook(current))
+                                screenModel.dispatch(AudioPlayUiEvent.UpdateInShelf(!current.isNotShelf))
+                            }
+                            return@collect
+                        }
                         if (!payload.book.isAudio) {
                             AudioPlayShared.stop()
                             navigator.replace(payload.book.toReadRoute())
                         } else {
-                            AudioPlayShared.restoreSource(payload.book, payload.source, payload.toc)
+                            AudioPlayShared.restoreSource(payload.book, payload.source, payload.toc, payload.audioSourceRevision)
                             screenModel.dispatch(AudioPlayUiEvent.UpdateBook(payload.book))
                             screenModel.dispatch(AudioPlayUiEvent.UpdateInShelf(!payload.book.isNotShelf))
                         }

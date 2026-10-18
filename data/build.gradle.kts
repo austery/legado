@@ -670,7 +670,30 @@ val audioSourceReturnTest by tasks.registering(Test::class) {
     forkEvery = 1
     failOnNoDiscoveredTests = true
 }
+val verifyAudioSourceReturnTest by tasks.registering {
+    dependsOn(audioSourceReturnTest)
+    val candidates = files(audioSourceReturnTest.map { it.candidateClassFiles })
+    val report = layout.buildDirectory.file(
+        "test-results/audioSourceReturnTest/TEST-io.legado.app.model.audio.AudioSourceReturnTest.xml"
+    )
+    inputs.files(candidates)
+    inputs.file(report).optional()
+    doLast {
+        check(candidates.files.any { it.name == "AudioSourceReturnTest.class" }) {
+            "Missing required AudioSourceReturnTest class"
+        }
+        check(report.get().asFile.isFile) { "Missing required audio return test report" }
+        val document = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+            .newDocumentBuilder().parse(report.get().asFile)
+        check(document.getElementsByTagName("testcase").length > 0) {
+            "No audio return regressions executed"
+        }
+        check(listOf("failure", "error", "skipped").all { document.getElementsByTagName(it).length == 0 }) {
+            "Audio return regressions failed or were skipped"
+        }
+    }
+}
 tasks.named<Test>("jvmTest") {
     exclude("**/AudioSourceReturnTest.class")
-    dependsOn(audioSourceReturnTest)
+    dependsOn(verifyAudioSourceReturnTest)
 }

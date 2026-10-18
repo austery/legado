@@ -865,6 +865,7 @@ fun BookInfoRoute(
             book = state.book ?: book,
             onSourceChanged = { source, newBook, toc ->
                 showChangeSourceDialog = false
+                val audioRevision = io.legado.app.model.AudioPlayShared.sourceRevision
                 scope.launch {
                     try {
                         val oldBook = screenModel.state.value.book ?: book
@@ -878,7 +879,7 @@ fun BookInfoRoute(
                         return@launch
                     }
                     bookSource = source
-                    navigator.setPendingResult(entry.id, RouteResultPayload.ChangeSource(source, newBook, toc))
+                    navigator.setPendingResult(entry.id, RouteResultPayload.ChangeSource(source, newBook, toc, audioRevision))
                     screenModel.dispatch(
                         BookInfoUiEvent.ShowBook(newBook, screenModel.lastedTitleOf(newBook))
                     )
