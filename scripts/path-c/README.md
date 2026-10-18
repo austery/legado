@@ -105,7 +105,18 @@ its UUID through `C1_NATIVE_SIMULATOR` to the Gradle
 `data`, `core` and `engine-ios` simulator test tasks. Test execution cannot be
 up-to-date even when compiled artifacts come from cache. Every module must emit
 nonempty XML results without failures, errors or skips; the native JS concurrency
-suite must be present. No default or pre-existing simulator is selected.
+suite, analyzer rule bridge suite, crypto bridge suite and native URL suite must
+be present. No default or pre-existing simulator is selected.
+
+The upstream `desktop/src/test/kotlin/io/legado/app/utils/UriCanonicalTest.kt`
+is staged unchanged into `:data:jvmTest` by `stageUpstreamUriTests`. This avoids
+pulling the full desktop application into C1 while executing the upstream test
+source itself. `verify_url_tests.py` rejects an absent, empty, failed or skipped
+URI report. Native tests additionally exercise string/value request builders,
+Ktor/Foundation parsing, preserved escapes and repeated construction. Crypto
+regressions execute JavaScript through `AnalyzeRuleCore` and the real Native
+bridge, including signed/unsigned cipher arrays, native-returned bytes, hex,
+Base64, Unicode and error recovery.
 
 The cloud job runs the network/cache harness and ordinary Swift suite via
 `native_product_ci.py`, without process tests. A parallel local job checks out the
