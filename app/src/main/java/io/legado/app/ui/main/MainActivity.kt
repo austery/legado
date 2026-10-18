@@ -52,12 +52,10 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.LocalReadConfigProviders
 import io.legado.app.help.config.ReadConfigProviders
-import io.legado.app.help.config.rememberBookExportDir
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.i18n.androidAppString
 import io.legado.app.help.image.registerReaderImageResolver
 import io.legado.app.help.storage.Backup
-import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.model.ActiveReadBookRegistry
 import io.legado.app.model.fileBook.FileBook
 import io.legado.app.help.extension.AndroidMangaExtensionHost
@@ -78,8 +76,6 @@ import io.legado.app.ui.association.LegadoDeepLink
 import io.legado.app.ui.association.LegadoDeepLinkHandler
 import io.legado.app.ui.book.audio.AudioPlayPlatformProviders
 import io.legado.app.ui.book.audio.SharedAudioPlayPlatformProvider
-import io.legado.app.ui.book.changecover.AndroidCoverStorageService
-import io.legado.app.ui.book.changecover.CoverStorageServiceProviders
 import io.legado.app.ui.book.info.BookInfoBlurCoverBg
 import io.legado.app.ui.book.info.BookInfoIntroImage
 import io.legado.app.ui.book.info.LocalBlurCoverBgSlot
@@ -102,9 +98,7 @@ import io.legado.app.ui.book.video.VideoPlayPlatformProviders
 import io.legado.app.ui.browser.AndroidWebView
 import io.legado.app.ui.browser.LocalWebViewSlot
 import io.legado.app.ui.compose.dialogs.alert
-import io.legado.app.ui.compose.dialogs.ComposeAlertDialogHost
 import io.legado.app.ui.file.HandleFileContract
-import io.legado.app.ui.file.HandleFileHost
 import io.legado.app.ui.file.registerHandleFile
 import io.legado.app.ui.reader.ReaderDictWord
 import io.legado.app.ui.reader.ReaderImageActionMenu
@@ -126,12 +120,9 @@ import io.legado.app.ui.root.shareTextTarget
 import io.legado.app.ui.widget.dialog.encodePhotoOverlayPayload
 import io.legado.app.utils.ACache
 import io.legado.app.utils.FileUtils
-import io.legado.app.utils.enableCustomExport
-import io.legado.app.utils.isContentScheme
 import io.legado.app.utils.keepScreenOn
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.registerForActivityResult
-import io.legado.app.utils.showExportSuccess
 import io.legado.app.utils.startService
 import io.legado.app.utils.sysScreenOffTime
 import io.legado.app.utils.toastOnUi
@@ -150,9 +141,6 @@ import kotlin.coroutines.resume
 class MainActivity : BaseComposeActivity(imageBg = false) {
 
     val viewModel by viewModels<MainViewModel>()
-
-    private var exitTime: Long = 0
-    private val EXIT_INTERVAL = 2000L
 
     /** 视频画中画 provider: PiP 模式切换回调由此转发到共享层渲染状态。 */
     private var videoPlayProvider: AndroidVideoPlayPlatformProvider? = null
@@ -245,62 +233,6 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
         mode = HandleFileContract.DIR_SYS
     }
 
-    /** 书架管理导出: 待导出书籍暂存 (由 [AndroidPlatformCapabilities.selectExportFolder] 写入,
-     *  [exportDir] 回调 value=="cache" 时消费, 启动 ExportBookService)。 */
-    var pendingExportBooks: List<Book>? = null
-
-    /** 书架管理导出: HandleFileContract (对照 BookshelfManageActivity.exportDir)。 */
-    private val exportDir by lazy {
-        registerHandleFile { result ->
-            val uri = result.uri ?: return@registerHandleFile
-            if (result.value == "cache") {
-                // 文件夹选择: 保存路径 + 启动 ExportBookService
-                // 记忆落设备本地配置空间 (rememberBookExportDir), 不落随备份走的默认偏好:
-                // 选定的是本机 SAF 授权引用, 跟着备份到别的设备必然失效。
-                // 读取方见 effectiveBookExportDir (三分支与备份路径同一形制)
-                val dirPath = if (uri.isContentScheme()) uri.toString() else uri.path
-                    ?: return@registerHandleFile
-                rememberBookExportDir(dirPath)
-                // 导出目录只存放导出成品, 登记用途后其下文件不作为本地书来源
-                AndroidDirAuthorizations.remember(uri.toString(), DirUsage.Export)
-                val books = pendingExportBooks
-                pendingExportBooks = null
-                if (books != null && books.isNotEmpty()) {
-                    // 对照 BookshelfManageActivity.exportDir 回调: 开启自定义导出时先弹章节配置对话框
-                    if (enableCustomExport()) {
-                        PlatformCapabilityProviders.get()
-                            .showExportSectionConfig(dirPath, books)
-                    } else {
-                        startExportBooks(dirPath, books)
-                    }
-                }
-            } else {
-                // 文件导出: 显示成功
-                showExportSuccess(uri)
-            }
-        }
-    }
-
-    /** 暴露给 [AndroidPlatformCapabilities] 启动导出文件选择器 (EXPORT 模式, 对照 exportDir.launch EXPORT)。 */
-    fun launchExportDir(name: String, file: java.io.File, type: String) {
-        exportDir.launch {
-            mode = HandleFileContract.EXPORT
-            fileData = HandleFileContract.FileData(name, file, type)
-        }
-    }
-
-    /** 暴露给 [AndroidPlatformCapabilities] 启动导出文件夹选择器 (对照 selectExportFolder, value="cache")。 */
-    fun launchExportFolderPicker(currentPath: String?) {
-        val default = arrayListOf<SelectItem<Int>>()
-        if (!currentPath.isNullOrEmpty()) {
-            default.add(SelectItem(currentPath, -1))
-        }
-        exportDir.launch {
-            otherActions = default
-            value = "cache"
-        }
-    }
-
     /** 启动 ExportBookService 批量导出 (对照 BookshelfManageActivity.startExport)。 */
     internal fun startExportBooks(path: String, books: List<Book>) {
         if (books.isEmpty()) {
@@ -358,7 +290,7 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
     private val createDocumentPicker =
         registerForActivityResult(ActivityResultContracts.CreateDocument("*/*"))
 
-    // 选目录: SAF OpenDocumentTree (备份路径用), 与 selectDocTree 同语义
+    // 选目录: SAF OpenDocumentTree (书籍保存位置用), 与 selectDocTree 同语义
     private val openDocumentTreePicker =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree())
 
@@ -604,10 +536,10 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
                     capabilities = capabilities,
                 )
             }
-            // 书源 JS 弹窗/深链导入/查词/文件选择/alert DSL 等全局对话框宿主区:
+            // 书源 JS 弹窗/深链导入/查词等全局对话框宿主区:
             // 统一包 AppTheme —— 这些宿主挂在 LegadoApp 主题作用域外, 而宿主正文
-            // (AppAlertDialogContent/HandleFileDialogContent 等) 直接读 AppTheme.colors,
-            // 不包则弹窗即抛 AppColors not provided 崩溃 (对照原版 ComposeDialog 基类自带主题)
+            // (AppAlertDialogContent 等) 直接读 AppTheme.colors, 不包则弹窗即抛
+            // AppColors not provided 崩溃
             AppTheme {
                 // 书源 JS 弹窗事件桥宿主 (对照 desktop Main.kt / iOS MainViewController):
                 // 订阅 FlowBus(SOURCE_UI_REQUEST) 弹共享登录/源变量/验证码对话框
@@ -642,10 +574,6 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
                 ReaderImageActionMenu.Host()
                 // 查词对话框 (选中词 → 词典查询, 本地/在线词典规则; 四端同一份, 见 shared ReaderDictWord)
                 ReaderDictWord.Host()
-                // 文件选择/导出对话框宿主 (原 HandleFileDialog/FilePickerDialog Fragment 的声明式形态)
-                HandleFileHost()
-                // alert/selector DSL 请求宿主 (原 ComposeDialog 窗口的声明式形态)
-                ComposeAlertDialogHost()
             }
         }
     }
@@ -659,8 +587,6 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
         )
         PlatformCapabilityProviders.register(capabilities)
         PlatformServiceProviders.register(services)
-        // 封面选图持久化 (对齐原版 externalFiles/covers/<md5>.<ext>)
-        CoverStorageServiceProviders.register(AndroidCoverStorageService())
         readerPlatform = AndroidReaderPlatformProvider(this)
         ReaderPlatformProviders.register(readerPlatform)
         AudioPlayPlatformProviders.register(SharedAudioPlayPlatformProvider)
@@ -702,21 +628,13 @@ class MainActivity : BaseComposeActivity(imageBg = false) {
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
 
-        // 返回键: navigator.pop 优先 (导航栈有内容时返回上一页), 失败后走双击退出
+        // 返回键: navigator.pop 优先 (导航栈有内容时返回上一页), 失败后走双击退出兜底
+        // (兜底实现与"预测式返回开关打开时根层接管返回链"共用同一份, 见 PlatformCapabilities.onBackUnconsumed)
         onBackPressedDispatcher.addCallback(this) {
             if (AppNavigatorProviders.get().pop()) {
                 return@addCallback
             }
-            if (System.currentTimeMillis() - exitTime > EXIT_INTERVAL) {
-                toastOnUi(androidAppString("double_click_exit"))
-                exitTime = System.currentTimeMillis()
-            } else {
-                if (BaseReadAloudService.pause) {
-                    finish()
-                } else {
-                    moveTaskToBack(true)
-                }
-            }
+            PlatformCapabilityProviders.get().onBackUnconsumed()
         }
         // 冷启动经 DeepLink/文件关联 intent-filter 命中: 解析启动 Intent
         handleExternalIntent(intent)

@@ -6,6 +6,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.DirUsage
 import io.legado.app.constant.NotificationId
 import io.legado.app.help.file.AppFilesDirs
+import io.legado.app.help.file.exportToUser
 import io.legado.app.help.file.pickDocuments
 import io.legado.app.help.file.pickDirectory as pickDirectoryDocument
 import io.legado.app.help.log.NativeCrashLogs
@@ -25,6 +26,7 @@ import io.legado.app.ui.root.FilePickerService
 import io.legado.app.ui.root.KeyboardController
 import io.legado.app.ui.root.LaunchRequest
 import io.legado.app.ui.root.LaunchRequestBus
+import io.legado.app.ui.root.PickedFile
 import io.legado.app.ui.root.navigateToRoute
 import io.legado.app.ui.root.MediaService
 import io.legado.app.ui.root.NotificationService
@@ -32,11 +34,12 @@ import io.legado.app.ui.root.OrientationPolicy
 import io.legado.app.ui.root.PermissionService
 import io.legado.app.ui.root.PlatformCapabilities
 import io.legado.app.ui.root.PlatformServices
-import io.legado.app.ui.root.ReaderSystemBarAppearance
+import io.legado.app.ui.root.PageSystemBarAppearance
 import io.legado.app.ui.root.ShareService
 import io.legado.app.ui.root.SoftInputPolicy
 import io.legado.app.ui.root.SystemBarsPolicy
 import io.legado.app.ui.root.WindowController
+import io.legado.app.ui.root.SavedRef
 import io.legado.app.utils.IosSecurityScopedStorage
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.runBlocking
@@ -98,9 +101,9 @@ object IosPlatformServices : PlatformServices {
     override val notifications: NotificationService = IosNotificationService
     override val externalRequests: ExternalRequestService = IosExternalRequestService
 
-    // 崩溃日志: 只列本应用自己落盘的异常现场 (logs/crash/ 下的 crash-*.log, 未捕获异常钩子与
+    // 崩溃日志: 只列本应用自己落盘的异常现场 (log/ 下的 crash-*.log, 未捕获异常钩子与
     // ObjC 异常, 两条都带函数名)。原生崩溃不在此列 —— 它由系统报告承载 (关于页「崩溃日志」入口直达系统取件页);
-    // 运行日志 (logs/appLog-*.txt, recordLog 开启时落盘) 不再混入
+    // 运行日志 (log/appLog-*.txt, recordLog 开启时落盘) 与崩溃日志同目录, 靠文件名前缀区分, 不混入
     // 落盘/读取实现与鸿蒙端共用 nativeMain
     override val crashLogs: CrashLogProvider = object : CrashLogProvider {
         override suspend fun loadCrashLogs(): List<CrashLogProvider.CrashLogEntry> =
@@ -123,26 +126,37 @@ private object IosFilePickerService : FilePickerService {
     override fun pickFile(filter: FileFilter): String? =
         runBlocking { pickDocuments(filter.toUtis()) }?.firstOrNull()?.path
 
-    override fun pickFiles(filter: FileFilter): List<String> =
+    /**
+     * 多选文件 (书籍/字体导入)。
+     *
+     * 面板用 Import 模式: 系统把选中文件复制进沙盒临时目录后回传路径, 不需要目录授权 ——
+     * 书放在提供方根目录 (选不到目录) 或云盘这类位置也能导。
+     */
+    override fun pickFiles(filter: FileFilter): List<PickedFile> =
         runBlocking { pickDocuments(filter.toUtis(), allowsMultiple = true) }
-            .orEmpty().mapNotNull { it.path }
+            ?.mapNotNull { url ->
+                url.path?.let { path -> PickedFile(path, path.substringAfterLast('/')) }
+            }
+            ?: emptyList()
 
     /**
-     * iOS 无"先选路径后写入"的系统面板 (UIDocumentPicker 导出需先有文件),
-     * 故返回沙盒 Documents 下的可写路径; Info.plist 开启文件共享后用户可在"文件" app 中取用。
+     * iOS 没有"先选路径后写入"的系统面板: 先把内容写进沙盒临时件, 再弹系统"文件"面板让用户挑
+     * 目标位置 (系统把临时件拷贝过去), 返回目标地址。
      */
-    override fun saveFile(suggestedName: String, defaultDir: String?): String? {
-        val dir = defaultDir ?: (AppFilesDirs.get().filesDir + "/export")
-        return runCatching {
-            File(dir).mkdirs()
-            "$dir/$suggestedName"
-        }.getOrNull()
+    override fun saveText(suggestedName: String, text: String): SavedRef? =
+        runBlocking { exportToUser(suggestedName) { it.writeText(text) }?.let(::SavedRef) }
+
+    /** 同上, 内容按整份复制到临时件。 */
+    override fun saveFromFile(srcPath: String, suggestedName: String): SavedRef? = runBlocking {
+        exportToUser(suggestedName) { tmp -> File(srcPath).copyTo(tmp, overwrite = true) }?.let(::SavedRef)
     }
 
     override fun saveImageBytes(suggestedName: String, bytes: ByteArray): Boolean? {
-        val path = saveFile(suggestedName) ?: return null
+        // 图片落沙盒导出目录: Info.plist 开启文件共享后用户可在"文件" app 中取用
+        val dir = AppFilesDirs.get().filesDir + "/export"
+        File(dir).mkdirs()
         // 落盘整份归位: 覆盖写被打断会在用户可见的导出目录留下半张图
-        return writeBytesAtomically(path, bytes)
+        return writeBytesAtomically("$dir/$suggestedName", bytes)
     }
 
     /**
@@ -165,9 +179,10 @@ private object IosFilePickerService : FilePickerService {
 }
 
 // FileFilter 扩展名 → UTI (UIDocumentPicker 只认 UTI); 未知类型放行全部
-private fun FileFilter.toUtis(): List<String> = when {
-    extensions.isEmpty() -> listOf("public.item")
-    else -> extensions.mapNotNull { ext ->
+private fun FileFilter.toUtis(): List<String> {
+    if (extensions.isEmpty()) return listOf("public.item")
+    val wanted = extensions.distinct()
+    val mapped = wanted.mapNotNull { ext ->
         when (ext.lowercase()) {
             "txt" -> "public.plain-text"
             "json" -> "public.json"
@@ -177,7 +192,10 @@ private fun FileFilter.toUtis(): List<String> = when {
             "bmp" -> "public.bmp"
             else -> null
         }
-    }.distinct().ifEmpty { listOf("public.item") }
+    }.distinct()
+    // 未覆盖的扩展名不能丢: 面板按类型过滤, 漏掉的类型会整类置灰选不中 (cbz/rar/7z/字体等),
+    // 有漏项时并入总类, 由应用侧按扩展名复核并提示
+    return if (mapped.size < wanted.size) (mapped + "public.item").distinct() else mapped
 }
 
 // UIActivityViewController 系统分享面板 (对照 app 端 Intent.ACTION_SEND)
@@ -373,9 +391,9 @@ private object IosWindowController : WindowController {
         }
     }
 
-    override fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {
-        // 阅读页按样式开关定图标明暗; 离开阅读页可见期交还默认档 (跟随界面风格)。
-        // 导航栏底色在 iOS 上不存在可设通道 (状态栏/导航条区域恒为内容透出)。
+    override fun setPageSystemBarAppearance(appearance: PageSystemBarAppearance?) {
+        // 页面按内容定的图标明暗; 无人声明时交还默认档 (跟随界面风格)。
+        // 导航栏底色在 iOS 上不存在可设通道 (状态栏/导航栏区域恒为内容透出)。
         postStatusBarStyle(
             when {
                 appearance == null -> IosStatusBarStyleDefault

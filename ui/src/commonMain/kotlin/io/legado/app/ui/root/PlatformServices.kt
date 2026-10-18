@@ -2,6 +2,7 @@ package io.legado.app.ui.root
 
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.AppPattern
 import io.legado.app.constant.DirUsage
 import io.legado.app.constant.fileNameFormat
 import io.legado.app.help.FileUtilsCommon
@@ -48,19 +49,65 @@ object PlatformServiceProviders {
     fun getOrNull(): PlatformServices? = impl
 }
 
+/**
+ * 用户选定目标的保存引用 (安卓为 `content://` 文档地址, iOS 为系统面板回传的目标地址,
+ * 桌面与鸿蒙为路径)。
+ *
+ * 包成独立类型而不直接回 `String`: 引用形态是路径样字符串, 但**只能用于展示与复制**,
+ * 写盘由平台实现内部完成 —— 直接回 String 时后来人很容易再写成
+ * `saveText(...)?.let { writeText(it, ...) }` 而复现"把平台引用当文件路径写"的缺陷。
+ *
+ * 用 data class 而非 value class: 本项目 KMP 配置下 `@JvmInline` 在 iOS/鸿蒙端解析不了
+ * (同 [io.legado.app.ui.root.AppNavigator] 同类包装的处理)。
+ */
+data class SavedRef(val value: String)
+
+/**
+ * 用户选定的一个文件 (多选入口回传)。
+ *
+ * [ref] 的形态随端: 安卓是 SAF 文档地址 (`content://`, 交本端导入链使用), 桌面是绝对路径,
+ * iOS 是系统复制进沙盒的临时路径, 鸿蒙是应用缓存里的物化路径 —— 各端导入链原样消费自己的形态。
+ * [name] 是文件名 (扩展名判定与提示用): 安卓取提供方显示名, 其余端取回传路径的文件名。
+ */
+data class PickedFile(val ref: String, val name: String)
+
 /** 文件选择器：单选/多选/保存。 */
 interface FilePickerService {
     fun pickFile(filter: FileFilter): String?
-    fun pickFiles(filter: FileFilter): List<String>
 
     /**
-     * 取一个可写目标路径 (调用方自行写盘)。各端按平台形制决定怎么取得:
-     * 安卓 SAF 单文件另存为 / 桌面保存对话框 / iOS 沙盒可见目录 / 鸿蒙选目录
-     * (原版导出形制是选目录后把文件写进该目录, 见 HandleFileContract.EXPORT + FileUtils.exportFile)。
+     * 弹系统面板多选文件 (书籍与字体导入用)。
      *
-     * @return 用户取消选择返回 null (调用方静默)
+     * 与 [pickFile] 的差别: 不做扩展名静默过滤 —— 面板过滤只是收敛可选范围, 各端提供方报的
+     * 类型并不可靠, 选中不支持的类型由调用方明确提示, 不静默丢弃。
+     *
+     * 阻塞 IO + 弹平台选择器 (实现内部等主线程回调), 必须在 IO 线程调用。
+     *
+     * @return 选定文件列表; 用户取消返回空列表
      */
-    fun saveFile(suggestedName: String, defaultDir: String? = null): String?
+    fun pickFiles(filter: FileFilter): List<PickedFile>
+
+    /**
+     * 弹本端"保存到文件"入口, 由平台把 [text] 写进用户选定的目标, 返回保存后的引用。
+     *
+     * 写盘归平台: 各端的"保存目标"不是同一种东西 —— 安卓 SAF 单文件另存为给的是文档地址
+     * (`content://`, 只能经文档写入通道写), 桌面/iOS/鸿蒙给的是普通文件路径。调用方拿到的引用
+     * 只用于展示与复制, 不自己写盘 (见 [SavedRef])。
+     *
+     * 各端形制: 安卓 CreateDocument + 文档写入 / 桌面保存对话框 + 文件写 /
+     * iOS 系统"文件"面板 / 鸿蒙选目录 + 文件写。
+     *
+     * 阻塞 IO + 可能弹平台选择器 (实现内部等主线程回调), 必须在 IO 线程调用。
+     *
+     * @return 保存后的引用; 用户取消返回 null (调用方静默)
+     * @throws 写入失败 (含临时件准备失败) 抛出, 调用方如实报失败
+     */
+    fun saveText(suggestedName: String, text: String): SavedRef?
+
+    /**
+     * 同 [saveText], 内容来源是本地文件 [srcPath] (整份复制, 流式不整份读入内存)。
+     */
+    fun saveFromFile(srcPath: String, suggestedName: String): SavedRef?
 
     /**
      * 保存图片字节到本端的图片落点 (书签分享卡片导出; 图片查看器长按保存在
@@ -79,7 +126,7 @@ interface FilePickerService {
      * [saveImageRememberingDir] 的目录记忆 (对照原版 PhotoDialog.initEvent 读图片目录键后直写)。
      *
      * 鸿蒙落系统相册是用户指定要求 (与原版 PhotoDialog 的目录记忆不同, 不是对齐原版的改动)。
-     * 漫画图片保存不受本项影响: 那条路径始终用目录记忆 (对照原版 ReadMangaActivity.saveImage)。
+     * 漫画页保存图片走同一个 [saveImageToUser], 本项对两处一并生效。
      */
     val imageViewerSavesToAlbum: Boolean get() = false
 
@@ -129,6 +176,20 @@ interface FilePickerService {
         prefs.remove(AppConst.imagePathKey)
         return false
     }
+
+    /**
+     * 保存图片字节到本端的"图片保存"落点 —— 图像查看器长按保存与漫画页"保存图片"共用一份口径:
+     * 落系统相册的端 ([imageViewerSavesToAlbum]) 走 [saveImageBytes], 其余端走
+     * [saveImageRememberingDir] 的目录记忆 (对照原版 `PhotoDialog` 与 `ReadMangaActivity.saveImage`
+     * 读同一个图片目录键后直写)。
+     *
+     * 阻塞 IO + 可能弹平台选择器, 必须在 IO 线程调用。
+     *
+     * @return true=已写入, false=写入失败, null=用户取消选择位置 (调用方静默)
+     */
+    fun saveImageToUser(fileName: String, bytes: ByteArray): Boolean? =
+        if (imageViewerSavesToAlbum) saveImageBytes(fileName, bytes)
+        else saveImageRememberingDir(fileName, bytes)
 
     /**
      * 选目录 (对照 app 端 HandleFileContract.DIR_SYS / OpenDocumentTree)。
@@ -347,13 +408,20 @@ interface WindowController {
     fun setLightIconOverlay(enabled: Boolean) {}
 
     /**
-     * 阅读页系统栏外观 (对照原版 `BaseReadBookActivity.upSystemUiVisibility` 的图标明暗分支
-     * 与 `ReadBookActivity.upNavigationBarColor`)。[appearance] 为 null 表示离开阅读页可见期,
-     * 按本端非阅读页规则恢复 (主题状态栏/导航栏色, 有壁纸时按贴边像素亮度)。
+     * 页面系统栏外观 (见 [PageSystemBarAppearance])。[appearance] 为 null 表示当前无人声明,
+     * 按本端非页面声明的规则恢复 (主题状态栏/导航栏色, 有壁纸时按贴边像素定图标明暗)。
      *
      * 无系统栏的端 (desktop) 走默认空实现。
      */
-    fun setReaderSystemBarAppearance(appearance: ReaderSystemBarAppearance?) {}
+    fun setPageSystemBarAppearance(appearance: PageSystemBarAppearance?) {}
+
+    /**
+     * 把当前页面声明重新盖到窗口事实之上。
+     *
+     * 窗口建立与配置变化 (旋转/多窗口/主题切换) 会把系统栏外观整个重设一遍、盖掉页面声明,
+     * 宿主在那之后调本方法补回 (实现重下发自己记下的那份声明)。
+     */
+    fun reapplyPageSystemBarAppearance() {}
 }
 
 /** 软输入法控制（hide/resize）。
@@ -390,14 +458,14 @@ interface ExternalRequestService {
  * 崩溃日志提供者：读取崩溃日志文件列表、读文件内容、清空、分享。
  *
  * 对照 app 端 CrashLogsDialog.CrashViewModel 的逻辑:
- * - initData: 从 externalCacheDir/crash 和备份路径收集崩溃日志文件
+ * - initData: 从 externalCacheDir/log 和书籍保存位置收集崩溃日志文件
  * - readFile: 读取单个崩溃日志文件内容
  * - clearCrashLog: 删除所有崩溃日志文件
  * - 分享: 通过 ShareService 分享文件
  *
  * 各端 actual 实现:
- * - androidMain: 外部缓存目录 + SAF 备份路径
- * - desktopMain: 用户目录/logs/crash
+ * - androidMain: 外部缓存目录 + SAF 书籍保存位置
+ * - desktopMain: 缓存目录 + 书籍保存位置
  * - iOS/鸿蒙: 暂返回空列表 (后续按需实现)
  */
 interface CrashLogProvider {
@@ -432,6 +500,17 @@ data class FileFilter(
             mimeTypes = listOf("text/plain", "application/json"),
             extensions = listOf("txt", "json"),
         )
+
+        /**
+         * 本地书导入 (书文件与压缩包)。
+         *
+         * 不给 [FileFilter.mimeTypes]: 安卓 SAF 面板按 MIME 过滤时, 提供方常把书文件报成
+         * `application/octet-stream` 而整类置灰, 过滤交给面板的后缀/类型映射与调用方的扩展名复核。
+         */
+        val Books = FileFilter(extensions = AppPattern.bookImportFileExtensions)
+
+        /** 字体文件导入 (ttf / otf)。 */
+        val Fonts = FileFilter(extensions = AppPattern.fontFileExtensions)
     }
 }
 

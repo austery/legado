@@ -267,3 +267,18 @@ val syncIosVersion = tasks.register("syncIosVersion") {
         logger.lifecycle("iOS version synced: versionName=$versionName, versionCode=$versionCode")
     }
 }
+
+// CI owns this simulator; never let the test task select an existing user device.
+val c1NativeSimulator = providers.environmentVariable("C1_NATIVE_SIMULATOR")
+subprojects {
+    tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest>().configureEach {
+        if (c1NativeSimulator.isPresent) {
+            device.set(c1NativeSimulator)
+            val fixtureUrl = providers.environmentVariable("SPEC004_FIXTURE_BASE").get()
+            environment("SPEC004_FIXTURE_BASE", fixtureUrl)
+            environment("SIMCTL_CHILD_SPEC004_FIXTURE_BASE", fixtureUrl)
+            // Device execution must produce fresh evidence even with warm build caches.
+            outputs.upToDateWhen { false }
+        }
+    }
+}

@@ -18,6 +18,7 @@ import io.legado.app.help.source.getShareScope
 import io.legado.app.model.script.JsBindings
 import io.legado.app.model.script.JsEngines
 import io.legado.app.model.script.buildScriptBindings
+import io.legado.app.model.script.evalUserScript
 import io.legado.app.utils.FlowBus
 import io.legado.app.utils.KS_JSON
 import io.legado.app.utils.KS_JSON_STRICT
@@ -316,25 +317,8 @@ interface BaseSource : JsExtensionsCommon {
             bindings.apply(bindingsConfig)
             bindings.dangerousApi = enableDangerousApi == true
         }
-        val sharedScope = getShareScope(coroutineContext)
-        // - sharedScope == null: 创建独立 scope, bindings 注入 globalThis
-        // - sharedScope 路径: SharedJsScope 缓存的 topScope (ThreadLocal 线程独占),
-        //   bindings 注入该 topScope 的 globalThis 后再执行, evalInSubScope 内部清理,
-        //   保证 jsLib 自由函数能命中 cache/book 等 binding。
-        return if (sharedScope == null) {
-            val scope = JsEngines.get().getRuntimeScope(bindings)
-            val wrappedJs = JsEngines.get().wrapJsForEval(jsStr)
-            try {
-                JsEngines.get().eval(wrappedJs, scope, coroutineContext)
-            } finally {
-                // 无 jsLib 时创建的独立 scope 必须显式 close,
-                // 否则 native JSRuntime/JSContext 只能等 GC + PhantomReference 异步释放
-                scope.close()
-            }
-        } else {
-            val compiled = JsEngines.get().compileForSubScope(jsStr)
-            JsEngines.get().evalInSubScope(compiled, sharedScope, bindings, coroutineContext)
-        }
+        // Preserve the caller's cancellation context across nested source scripts.
+        return evalUserScript(jsStr, getShareScope(coroutineContext), bindings, coroutineContext)
     }
 
     fun hasLogin(): Boolean = !(loginUrl.isNullOrBlank() && loginUi.isNullOrBlank())

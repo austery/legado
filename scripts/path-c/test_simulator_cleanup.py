@@ -101,7 +101,8 @@ class SimulatorCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             config = Path(folder) / "generated.xctestrun"
             config.write_bytes(plistlib.dumps({}))
-            with patch("sys.argv", ["interruption", "--xctestrun", str(config), "--output", str(Path(folder) / "evidence")]), \
+            with patch.dict(interruption.os.environ, {"DEVELOPER_DIR": "/test/selected-xcode/Contents/Developer"}), \
+                    patch("sys.argv", ["interruption", "--xctestrun", str(config), "--output", str(Path(folder) / "evidence")]), \
                     patch.object(interruption, "validate_template"), \
                     patch.object(interruption, "FixtureServer") as server, \
                     patch.object(interruption, "simctl", side_effect=[json.dumps({"runtimes": [RUNTIME]}), DEVICE, RuntimeError("boot failed")]), \
@@ -109,7 +110,7 @@ class SimulatorCleanupTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "boot failed"):
                     interruption.main()
                 self.assertEqual(run.call_args.args[0], ["xcrun", "simctl", "delete", DEVICE])
-                self.assertEqual(run.call_args.kwargs["env"]["DEVELOPER_DIR"], "/Applications/Xcode.app/Contents/Developer")
+                self.assertEqual(run.call_args.kwargs["env"]["DEVELOPER_DIR"], "/test/selected-xcode/Contents/Developer")
                 server.return_value.server_close.assert_called_once()
 
 

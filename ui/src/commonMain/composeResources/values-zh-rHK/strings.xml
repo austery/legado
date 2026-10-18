@@ -4,7 +4,6 @@
     <string name="app_name_a">閲讀·A</string>
     <string name="receiving_shared_label">閲讀·搜尋</string>
     <string name="tip_perm_request_storage">閲讀需要訪問存儲卡權限，請前往「設定」—「應用程式權限」—開啟所需要的權限</string>
-    <string name="backup_path">備份路徑</string>
     <string name="dialog_title">提示</string>
     <string name="dialog_cancel">取消</string>
     <string name="dialog_setting">去設定</string>
@@ -68,6 +67,7 @@
     <string name="pt_auto_refresh">自動刷新</string>
     <string name="ps_auto_refresh">打開程式時自動更新書輯</string>
     <string name="backup_restore">備份與還原</string>
+    <string name="auto_backup_no_book_save_dir">未設定書籍儲存位置，自動備份不會執行</string>
     <string name="web_dav_set">WebDav 設定</string>
     <string name="web_dav_set_import_old">WebDav 設定/還原舊版本數據</string>
     <string name="backup">備份</string>
@@ -306,6 +306,7 @@
     <string name="indent_3">三字符縮進</string>
     <string name="indent_4">四字符縮進</string>
     <string name="select_folder">選擇文件夾</string>
+    <string name="select_font_file">選擇字體檔案</string>
     <string name="select_file">選擇文件</string>
     <string name="chapter_list_empty">目錄列表為空</string>
     <string name="text_letter_spacing">字距</string>
@@ -433,7 +434,6 @@
     <string name="auto_page_speed">自動翻頁速度</string>
     <string name="sort_by_url">地址排序</string>
     <string name="text_font_weight_converter">文章字體轉換</string>
-    <string name="select_backup_path">請選擇備份路徑</string>
     <string name="other">其它</string>
     <string name="backup_summary">本地和WebDav壹起備份</string>
     <string name="restore_summary">優先從WebDav恢復,長按從本地恢復</string>
@@ -515,7 +515,6 @@
     <string name="background_image">背景圖片</string>
     <string name="bg_image_import_failed">背景圖片導入失敗</string>
     <string name="background_image_blurring">背景圖片虛化</string>
-    <string name="export_folder">導出資料夾</string>
     <string name="export_charset">導出編碼</string>
     <string name="export_to_web_dav">導出到WebDav</string>
     <string name="debug">調試</string>
@@ -700,6 +699,8 @@
     <string name="webdav_device_name">裝置名稱</string>
     <string name="web_service_wake_lock">WebService 喚醒鎖</string>
     <string name="web_service_wake_lock_summary">開啟 Web 服務的時候啟用喚醒鎖，有些手機開啟喚醒鎖會被殺背景</string>
+    <string name="predictive_back_title">預測式返回手勢</string>
+    <string name="predictive_back_summary">從屏幕邊緣滑動返回時頁面跟著手指移動（Android 14 及以上），放手後按位移與速度決定是否返回；關閉後改為按下即判定。</string>
     <string name="read_aloud_wake_lock">朗讀服務喚醒鎖</string>
     <string name="read_aloud_wake_lock_summary">開啟朗讀的時候啟用喚醒鎖，有些手機開啟喚醒鎖會被殺背景</string>
     <string name="audio_play_wake_lock">音訊服務喚醒鎖</string>
@@ -951,8 +952,8 @@
     <string name="bookshelf_list_intro_lines">簡介行數</string>
     <string name="bookshelf_cover_height">列表模式封面高度</string>
     <string name="bookshelf_cover_height_summary">當前高度：%s</string>
-    <string name="click_book_open_read">直接播放影片書</string>
-    <string name="click_book_open_read_summary">在搜索/發現中點擊影片書直接播放，跳過詳情頁</string>
+    <string name="click_book_open_read">點擊書籍按類型直達</string>
+    <string name="click_book_open_read_summary">在首頁、搜尋、發現裡點擊書籍時跳過詳情直接進對應介面（影片→播放頁、RSS→閱讀頁，搜尋與發現裡的音訊書→音訊頁）；長按仍進詳情。</string>
     <string name="book_info_horizontal_layout">寬屏書籍詳情佈局</string>
     <string name="book_info_horizontal_layout_summary">在詳情頁中左側放置封面，右側放置書籍信息</string>
     <string name="bookshelf_show_group_count">在分組上顯示書籍數量</string>

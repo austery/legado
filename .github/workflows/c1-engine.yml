@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       execution:
-        description: Runner to use for this C1 validation
+        description: Runner for build/shared tests; process tests always use local
         type: choice
         default: cloud
         options: [local, cloud]
@@ -30,30 +30,28 @@ jobs:
   regression:
     name: C1 engine regression
     if: ${{ always() }}
-    needs: engine
+    needs: [engine, native-process]
     runs-on: ubuntu-latest
     permissions: {}
     timeout-minutes: 5
     steps:
-      - name: Require successful engine and native product tests
+      - name: Require both regression jobs to succeed
         env:
           ENGINE_RESULT: ${{ needs.engine.result }}
+          PROCESS_RESULT: ${{ needs.native-process.result }}
         shell: bash
         run: |
-          if [[ "$ENGINE_RESULT" != "success" ]]; then
-            echo "::error::C1 tests did not succeed (result: $ENGINE_RESULT)."
-            if [[ "$ENGINE_RESULT" == "skipped" ]]; then
-              echo "::error::Fork PRs require a maintainer to review and transfer the changes to a repository-owned branch, then pass C1 on its PR before merging."
-            fi
+          if [[ "$ENGINE_RESULT" != "success" || "$PROCESS_RESULT" != "success" ]]; then
+            echo "::error::C1 requires both jobs (engine: $ENGINE_RESULT; native process: $PROCESS_RESULT)."
             exit 1
           fi
-          echo "Engine and native product regressions passed."
+          echo "All C1 regression suites passed."
 
   engine:
-    name: C1 engine and native product tests
+    name: C1 builds and regular regressions
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJSON(inputs.execution != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -71,10 +69,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Preflight hosted ARM64 environment
         if: inputs.execution != 'local'
         env:
           C1_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          C1_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bash scripts/path-c/cloud_preflight.sh
       - name: Define reusable toolchain cache keys
         if: inputs.execution != 'local'
@@ -166,13 +166,16 @@ jobs:
           sed -n '1,25p' gradle/libs.versions.toml
       - name: Build native libraries
         run: bash scripts/build-ios-native.sh ios_simulator_arm64 ios_arm64 2>&1 | tee ci-results/native-build.log
-      - name: Build engine and compile original UI regression
+      - name: Build engine and run shared regressions
         run: |
           ./gradlew --no-daemon --no-watch-fs --build-cache --max-workers=2 \
             '-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
             :engine-ios:linkDebugFrameworkIosSimulatorArm64 \
             :engine-ios:linkDebugFrameworkIosArm64 \
-            :ui:compileKotlinIosSimulatorArm64 2>&1 | tee ci-results/engine-build.log
+            :ui:compileKotlinIosSimulatorArm64 \
+            :data:jvmTest :core:jvmTest :ui:jvmTest 2>&1 | tee ci-results/engine-build.log
+      - name: Run Kotlin Native regression suites
+        run: python3 scripts/path-c/kotlin_native_ci.py --output ci-results/kotlin-native ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
       - name: Build Swift harness
         run: |
           xcodegen generate --spec engine-ios/harness/project.yml
@@ -236,4 +239,70 @@ jobs:
           path: |
             ci-results/
             !ci-results/native-product/DerivedData/
+          retention-days: 7
+
+  native-process:
+    name: C1 local interruption and offline restart
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, legado-macos-local]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      C1_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Configure local toolchain caches
+        run: |
+          echo "GRADLE_USER_HOME=$RUNNER_TOOL_CACHE/legado/gradle" >> "$GITHUB_ENV"
+          echo "KONAN_DATA_DIR=$RUNNER_TOOL_CACHE/legado/konan" >> "$GITHUB_ENV"
+          android_sdk="$(cd "$RUNNER_TEMP/../../android-sdk" && pwd)"
+          echo "ANDROID_HOME=$android_sdk" >> "$GITHUB_ENV"
+          mkdir -p ci-results
+          git rev-parse HEAD > ci-results/commit.txt
+          test "$(git rev-parse HEAD)" = "$C1_EXPECTED_SHA"
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-disabled: true
+      - name: Download XcodeGen locally
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download 2.46.0 --repo yonaskolb/XcodeGen --pattern xcodegen.zip --dir "$RUNNER_TEMP/c1-process-xcodegen"
+          unzip -q "$RUNNER_TEMP/c1-process-xcodegen/xcodegen.zip" -d "$RUNNER_TEMP/c1-process-xcodegen"
+          echo "$RUNNER_TEMP/c1-process-xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Build simulator native libraries
+        run: bash scripts/build-ios-native.sh ios_simulator_arm64 2>&1 | tee ci-results/native-build.log
+      - name: Build simulator engine
+        run: |
+          ./gradlew --no-daemon --no-watch-fs --build-cache --max-workers=2 \
+            '-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
+            :engine-ios:linkDebugFrameworkIosSimulatorArm64 2>&1 | tee ci-results/engine-build.log
+      - name: Run interruption and offline shelf restart regressions
+        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-process --process-tests-only --runtime-version 27.0
+      - name: Upload local process evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: c1-process-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-results/commit.txt
+            ci-results/*-build.log
+            ci-results/native-process/
+            !ci-results/native-process/DerivedData/
           retention-days: 7

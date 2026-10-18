@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, nullcontext
 import json
 from pathlib import Path
 import plistlib
@@ -97,12 +97,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runtime-version", help="Require this exact iOS version; fail if unavailable")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--include-process-tests", action="store_true")
+    modes.add_argument("--process-tests-only", action="store_true",
+                       help="Build a fresh test host and run only interruption/offline restart suites")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    expected = expected_tests()
+    include_process = args.include_process_tests or args.process_tests_only
+    expected = 0 if args.process_tests_only else expected_tests()
     (output / "scope.json").write_text(json.dumps({"expectedTests": expected,
-        "externalSuitesNotRun": sorted(EXTERNAL_SUITES)}, indent=2))
+        "externalSuitesRunSeparately": sorted(EXTERNAL_SUITES) if include_process else [],
+        "externalSuitesNotRun": [] if include_process else sorted(EXTERNAL_SUITES)}, indent=2))
     (output / "commit.txt").write_text(subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True))
     runtimes = cast(dict[str, list[Runtime]], json.loads(simctl("list", "runtimes", "--json")))
@@ -119,7 +125,7 @@ def main() -> None:
                if item["identifier"].startswith("com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-M4")]
     if not tablets:
         raise RuntimeError("No iPad Pro 11-inch M4 simulator device type")
-    with fixtures() as fixture_url:
+    with (nullcontext("") if args.process_tests_only else fixtures()) as fixture_url:
         simulator = simctl("create", "Native Product CI", tablets[0], runtime["identifier"])
         try:
             (output / "simulator.txt").write_text(f"{simulator}\n{runtime['identifier']}\n")
@@ -134,22 +140,34 @@ def main() -> None:
             test_runs = list((derived / "Build/Products").glob("*.xctestrun"))
             if len(test_runs) != 1:
                 raise RuntimeError(f"Expected one generated test run, found {len(test_runs)}")
-            config = configure_test_run(test_runs[0], fixture_url)
-            result = output / "NativeReader.xcresult"
-            simctl("boot", simulator)
-            run(["xcrun", "simctl", "bootstatus", simulator, "-b"], output / "boot.log", 180)
-            run(["xcodebuild", "test-without-building", "-xctestrun", str(config),
-                 "-destination", f"platform=iOS Simulator,id={simulator}",
-                 "-parallel-testing-enabled", "NO", "-resultBundlePath", str(result),
-                 *[f"-skip-testing:NativeReaderTests/{suite}" for suite in sorted(EXTERNAL_SUITES)]],
-                output / "tests.log", 1200)
-            summary_text = subprocess.check_output(["xcrun", "xcresulttool", "get", "test-results", "summary",
-                                                    "--path", str(result)], text=True, timeout=60)
-            (output / "summary.json").write_text(summary_text)
-            validate_summary(cast(dict[str, object], json.loads(summary_text)), expected)
-            print(f"Native product: {expected} tests passed, no failures or skips", flush=True)
+            generated_config = test_runs[0]
+            if not args.process_tests_only:
+                config = configure_test_run(generated_config, fixture_url)
+                result = output / "NativeReader.xcresult"
+                simctl("boot", simulator)
+                run(["xcrun", "simctl", "bootstatus", simulator, "-b"], output / "boot.log", 180)
+                run(["xcodebuild", "test-without-building", "-xctestrun", str(config),
+                     "-destination", f"platform=iOS Simulator,id={simulator}",
+                     "-parallel-testing-enabled", "NO", "-resultBundlePath", str(result),
+                     *[f"-skip-testing:NativeReaderTests/{suite}" for suite in sorted(EXTERNAL_SUITES)]],
+                    output / "tests.log", 1200)
+                summary_text = subprocess.check_output(["xcrun", "xcresulttool", "get", "test-results", "summary",
+                                                        "--path", str(result)], text=True, timeout=60)
+                (output / "summary.json").write_text(summary_text)
+                validate_summary(cast(dict[str, object], json.loads(summary_text)), expected)
+                print(f"Native product: {expected} tests passed, no failures or skips", flush=True)
         finally:
             delete_owned_simulator(simulator)
+
+    # Ordinary fixture listeners and their simulator are closed before process tests.
+    if include_process:
+        for name, options in (("interruption", []), ("shelf-restart", ["--shelf-restart"])):
+            command = [sys.executable, str(ROOT / "scripts/path-c/process_interruption_regression.py"),
+                       "--xctestrun", str(generated_config), "--output", str(output / name), *options]
+            if args.runtime_version:
+                command.extend(["--runtime-version", args.runtime_version])
+            run(command, output / f"{name}.log", 1800)
+            print(f"Native process regression passed: {name}", flush=True)
 
 
 if __name__ == "__main__":

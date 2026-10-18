@@ -38,6 +38,8 @@ import legado.ui.generated.resources.language_value
 import legado.ui.generated.resources.media_button_on_exit_summary
 import legado.ui.generated.resources.media_button_on_exit_title
 import legado.ui.generated.resources.pre_download
+import legado.ui.generated.resources.predictive_back_summary
+import legado.ui.generated.resources.predictive_back_title
 import legado.ui.generated.resources.pref_cronet_summary
 import legado.ui.generated.resources.ps_auto_refresh
 import legado.ui.generated.resources.pt_auto_refresh
@@ -101,6 +103,8 @@ fun OtherConfigScreen(
     showWakeLock: Boolean = false,
     /** Cronet 开关是否显示 (仅 Android 注册了 CronetProvider) */
     showCronet: Boolean = false,
+    /** 预测式返回开关是否显示 (仅 Android 接了跟手通道) */
+    showPredictiveBack: Boolean = false,
     /** 语言条目是否显示 (Android/desktop 能切, iOS/鸿蒙未接入) */
     showLanguage: Boolean = false,
     /** 媒体按键两项是否显示 (仅 Android 有 MediaButtonReceiver) */
@@ -131,6 +135,8 @@ fun OtherConfigScreen(
     val titleHomePage = stringResource(Res.string.default_home_page)
     val titleAutoRefresh = stringResource(Res.string.pt_auto_refresh)
     val summaryAutoRefresh = stringResource(Res.string.ps_auto_refresh)
+    val titlePredictiveBack = stringResource(Res.string.predictive_back_title)
+    val summaryPredictiveBack = stringResource(Res.string.predictive_back_summary)
     val titleDevFeat = stringResource(Res.string.click_book_open_read)
     val summaryDevFeat = stringResource(Res.string.click_book_open_read_summary)
     val titleLocalPassword = stringResource(Res.string.set_local_password)
@@ -208,6 +214,15 @@ fun OtherConfigScreen(
                 summary = summaryAutoRefresh,
                 defaultValue = false,
             )
+            // 预测式返回: 只有 Android 有跟手通道; 开关即时生效 (下一页返回就按新规则走)
+            if (showPredictiveBack) {
+                switchPreference(
+                    prefKey = PreferKey.predictiveBack,
+                    title = titlePredictiveBack,
+                    summary = summaryPredictiveBack,
+                    defaultValue = true,
+                )
+            }
             // 关闭主窗口时缩小到托盘: 只有桌面端有系统托盘 (其余端无窗口关闭语义)。
             // 键不存在 = 用户未选择过 (开关显示为关), 首次关闭时弹询问框; 拨过开关即定案
             if (showCloseToTray) {

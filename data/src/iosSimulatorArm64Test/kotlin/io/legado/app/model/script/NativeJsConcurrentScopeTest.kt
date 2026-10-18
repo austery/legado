@@ -1,6 +1,7 @@
 package io.legado.app.model.script
 
 import com.fleeksoft.ksoup.Ksoup
+import io.legado.app.data.entities.BookSource
 import io.legado.app.help.image.IosImageOps
 import io.legado.app.help.source.SourceNetworkProvider
 import kotlinx.coroutines.CancellationException
@@ -81,6 +82,45 @@ class NativeJsConcurrentScopeTest {
     @Test
     fun sharedScopeRestoresOuterCancellationAfterThrowingNestedScript() = verifySharedCancellation(true)
 
+    @Test
+    fun sourceScriptInheritsCallerCancellationWithoutLibrary() = verifySourceCancellation(null)
+
+    @Test
+    fun sourceScriptInheritsCallerCancellationWithLibrary() = verifySourceCancellation("var fixtureLibrary = true;")
+
+    private fun verifySourceCancellation(library: String?) {
+        registerNativeJsEngines(IosImageOps)
+        val engine: JsEngine = NativeJsEngine
+        val job = Job()
+        val source = BookSource(bookSourceUrl = "https://source-cancellation.invalid").apply { jsLib = library }
+        val host = object : SourceNetworkProvider {
+            override fun getCookie(tag: String): String {
+                if (tag == "outer") {
+                    val provider = this
+                    return source.evalJS("cookie.getCookie('inner');") { this["cookie"] = provider }.toString()
+                }
+                val inherited = engine.currentContextNonNull().coroutineContext === job
+                job.cancel()
+                val cancelled = try {
+                    engine.currentContextNonNull().ensureActive()
+                    false
+                } catch (_: CancellationException) {
+                    true
+                }
+                return "$inherited/$cancelled"
+            }
+            override fun replaceCookie(tag: String, cookie: String): Unit = error("No writes")
+            override fun removeCookie(tag: String): Unit = error("No writes")
+        }
+        val scope = engine.getRuntimeScope(JsBindings().apply { this["cookie"] = host })
+        try {
+            assertEquals("true/true", engine.eval("cookie.getCookie('outer');", scope, job))
+        } finally {
+            scope.close()
+            job.cancel()
+        }
+    }
+
     private fun verifySharedCancellation(throwInner: Boolean) {
         registerNativeJsEngines(IosImageOps)
         val engine: JsEngine = NativeJsEngine
@@ -91,8 +131,8 @@ class NativeJsConcurrentScopeTest {
             "var sharedFixture = 'ready';", false, null) ?: error("Missing fixture scope")
         host.scope = scope
         try {
-            val compiled = engine.compileForSubScope("cookie.getCookie('nested');")
-            val result = engine.evalInSubScope(compiled, scope,
+            val script = "cookie.getCookie('nested');"
+            val result = engine.evalInSubScope(script, scope,
                 JsBindings().apply { this["cookie"] = host }, outerJob)
             assertEquals("cancelled", result,
                 "A nested call must not remove the outer script's cancellation context")
@@ -114,8 +154,7 @@ class NativeJsConcurrentScopeTest {
         var innerThrew = false
 
         override fun getCookie(tag: String): String {
-            val inner = engine.compileForSubScope(
-                if (throwInner) "throw new Error('Nested shared fixture')" else "'inner-complete'")
+            val inner = if (throwInner) "throw new Error('Nested shared fixture')" else "'inner-complete'"
             try {
                 engine.evalInSubScope(inner, scope, JsBindings(), innerJob)
             } catch (error: Exception) {

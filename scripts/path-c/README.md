@@ -94,3 +94,41 @@ results remain on the host; the simulator's installed apps and data are disposab
 A shutdown error does not prevent deletion. A deletion error fails a successful run
 or is logged alongside the original test failure, including the UUID to inspect.
 Forced termination (for example SIGKILL) cannot execute Python cleanup.
+
+
+## Required upstream synchronization regressions
+
+C1 builds both iOS engine frameworks, compiles the original Compose iOS UI, and
+runs the data/core/UI JVM regression suites. It then runs `kotlin_native_ci.py`. It selects one new
+simulator, starts owned reading/search fixtures, and supplies their address plus
+its UUID through `C1_NATIVE_SIMULATOR` to the Gradle
+`data`, `core` and `engine-ios` simulator test tasks. Test execution cannot be
+up-to-date even when compiled artifacts come from cache. Every module must emit
+nonempty XML results without failures, errors or skips; the native JS concurrency
+suite must be present. No default or pre-existing simulator is selected.
+
+The cloud job runs the network/cache harness and ordinary Swift suite via
+`native_product_ci.py`, without process tests. A parallel local job checks out the
+same PR head, builds its own simulator engine and fresh Swift test host, and runs
+`native_product_ci.py --process-tests-only --runtime-version 27.0`. This mode runs
+all four interruption boundaries and the offline shelf restart without repeating
+the ordinary Swift suite or starting its fixtures. The existing
+`--include-process-tests` mode remains available for full local validation.
+
+The required `C1 engine regression` check depends on both jobs and fails unless
+both report success; failure, cancellation, missing results and skipped jobs never
+pass. Fork PRs cannot execute either job and therefore cannot satisfy the gate.
+A manual `execution=local` run moves the regular job locally too; process tests
+always remain local. An offline local runner leaves required validation pending.
+Both jobs retain invocation-owned simulator cleanup. Local process logs and
+xcresults are uploaded even after failure. No timeout or assertion is relaxed.
+Process checks honor the selected Xcode; each successful verification phase
+requires exactly one passed XCTest and no skipped tests.
+
+For the 2026-10-17 upstream synchronization, retain product schema 89/90/91 and
+migration lineage unchanged. The new shared JS evaluator must inherit the
+calling source script's coroutine context, including with and without a jsLib.
+Nested/shared cancellation restoration and independent DOM lifetime remain
+native regression requirements. Android's removed HandleFileHost is replaced
+by upstream's file-dialog and PlatformFileService write paths; do not restore
+its obsolete caller or its removed view model.

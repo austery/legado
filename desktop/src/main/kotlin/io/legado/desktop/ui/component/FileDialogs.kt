@@ -31,35 +31,32 @@ object FileDialogs {
         title: String? = null,
         extensions: List<String> = emptyList(),
         extensionDesc: String? = null,
-    ): File? {
-        if (WindowsFileDialogs.isSupported) {
-            return WindowsFileDialogs.show(
-                title = title,
-                extensions = extensions,
-                extensionDesc = extensionDesc,
-                owner = ownerWindow(),
-            ).firstOrNull()
-        }
-        return showAwtDialog(title, FileDialog.LOAD, extensions, extensionDesc).firstOrNull()
-    }
+    ): File? = pickOpenInternal(title, extensions, extensionDesc, multiSelect = false).firstOrNull()
 
-    /** 选多个文件（打开）。Windows 走 IFileDialog 多选；macOS/Linux 走 AWT 多选模式。 */
+    /** 多选文件（打开）。用户取消返回空列表。 */
     fun pickOpenFiles(
         title: String? = null,
         extensions: List<String> = emptyList(),
         extensionDesc: String? = null,
+    ): List<File> = pickOpenInternal(title, extensions, extensionDesc, multiSelect = true)
+
+    private fun pickOpenInternal(
+        title: String?,
+        extensions: List<String>,
+        extensionDesc: String?,
+        multiSelect: Boolean,
     ): List<File> {
         if (WindowsFileDialogs.isSupported) {
             return WindowsFileDialogs.show(
                 title = title,
-                multiSelect = true,
+                multiSelect = multiSelect,
                 extensions = extensions,
                 extensionDesc = extensionDesc,
                 owner = ownerWindow(),
             )
         }
         return showAwtDialog(
-            title, FileDialog.LOAD, extensions, extensionDesc, multiSelect = true,
+            title, FileDialog.LOAD, extensions, extensionDesc, multiSelect = multiSelect,
         )
     }
 
