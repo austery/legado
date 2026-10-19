@@ -3,7 +3,7 @@ import CryptoKit
 import ReaderEngine
 import SwiftUI
 
-enum ReaderRoute { case shelf, search, contents, reading }
+enum ReaderRoute { case shelf, search, sources, details, contents, reading }
 enum ReaderSearchScope: String, CaseIterable { case all, selected }
 
 @MainActor
@@ -174,7 +174,7 @@ final class ReaderModel: ObservableObject {
     private func acceptShelfEntry(_ reply: ShelfEntryReply) {
         book = reply.entry.book; chapters = reply.chapters
         // Never carry a candidate source's text into a reused shelf identity.
-        content = nil; route = .contents
+        content = nil; route = .details
     }
 
     static func authorLabel(_ author: String) -> String {
@@ -211,7 +211,7 @@ final class ReaderModel: ObservableObject {
             guard let self, let reply = reply as? SourcesReply else { return }
             self.importNotice = "Imported \(reply.sources.count) sources."
             self.clearSearch(); self.chapters = []; self.book = nil; self.content = nil
-            self.route = .search
+            self.route = .sources
             self.refreshSources()
         }
     }
@@ -313,7 +313,7 @@ final class ReaderModel: ObservableObject {
             guard let self, let reply = reply as? TocReply else { return }
             self.shelfNotice = nil
             self.book = selected; self.chapters = reply.chapters
-            self.content = nil; self.route = .contents
+            self.content = nil; self.route = .details
         }
     }
 

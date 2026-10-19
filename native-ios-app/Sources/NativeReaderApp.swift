@@ -13,14 +13,19 @@ struct NativeReaderApp: App {
 @MainActor
 struct ReaderScreen: View {
     @StateObject private var model: ReaderModel
-    init(model: ReaderModel) { _model = StateObject(wrappedValue: model) }
+    @ObservedObject private var preferences: ReadingPreferences
+    init(model: ReaderModel, preferences: ReadingPreferences? = nil) {
+        _model = StateObject(wrappedValue: model)
+        self.preferences = preferences ?? .shared
+    }
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var confirmingDiscard = false
     @State private var importing = false
     @State private var settings = false
     @State private var menu = true
-    @State private var style = ReadingStyle()
+    @State private var catalogQuery = ""
+    private var style: ReadingStyle { preferences.style }
     @State private var expandedWorks: Set<String> = []
 
     var body: some View {
@@ -68,9 +73,12 @@ struct ReaderScreen: View {
                     }
                     if model.route == .shelf { shelf }
                     if model.route == .search { search }
+                    if model.route == .sources { sources }
+                    if model.route == .details { details }
                     if model.route == .contents { contents }
                 }
                 if model.route == .reading { readingControls }
+                if model.route == .shelf || model.route == .search || model.route == .sources { libraryNavigation }
 
             }
             .background(model.route == .reading ? paper : Color(uiColor: .systemGroupedBackground))
@@ -85,9 +93,10 @@ struct ReaderScreen: View {
                             .disabled(model.busy)
                     }
                 }
-                if model.route == .shelf || model.route == .contents {
+                if model.route == .details || model.route == .contents {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Button { model.navigate(.search) } label: { Label("Search", systemImage: "magnifyingglass") }
+                        Button { model.navigate(.search) } label: { Label("Search results", systemImage: "magnifyingglass") }
+                            .accessibilityIdentifier("navigation.searchResults").disabled(model.busy)
                     }
                 }
                 if model.route == .reading {
@@ -122,8 +131,10 @@ struct ReaderScreen: View {
     private var title: String {
         switch model.route {
         case .shelf: return "Library"
-        case .search: return "Native Reader"
-        case .contents: return model.book?.title ?? "Contents"
+        case .search: return "Search"
+        case .sources: return "Sources"
+        case .details: return "Book details"
+        case .contents: return "Contents"
         case .reading: return model.content?.chapter.title ?? "Reader"
         }
     }
@@ -136,9 +147,11 @@ struct ReaderScreen: View {
                     .accessibilityIdentifier("shelf.notice")
             }
             if model.shelf.isEmpty {
-                Text("Your shelf is empty. Search for a book and add it from Contents.").foregroundStyle(.secondary)
+                Text("Your shelf is empty. Find a book, try a chapter, and keep it here for later.").foregroundStyle(.secondary)
             }
-            Button("Search and import sources") { model.navigate(.search) }
+            if model.shelf.isEmpty {
+                Button("Find a book") { model.navigate(.search) }
+            }
             ForEach(model.shelf, id: \.book.id) { entry in
                 Button { model.openShelfBook(entry) } label: {
                     VStack(alignment: .leading, spacing: 6) {
@@ -157,20 +170,61 @@ struct ReaderScreen: View {
         }.refreshable { model.refreshShelf() }
     }
 
-    private var search: some View {
+    private var libraryNavigation: some View {
+        HStack {
+            libraryButton("Library", icon: "books.vertical", route: .shelf)
+            libraryButton("Search", icon: "magnifyingglass", route: .search)
+            libraryButton("Sources", icon: "square.stack.3d.up", route: .sources)
+        }.padding(.vertical, 8).background(.regularMaterial)
+    }
+
+    private func libraryButton(_ title: String, icon: String, route: ReaderRoute) -> some View {
+        Button {
+            if route == .shelf { model.showShelf() } else { model.navigate(route) }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.title3)
+                Text(title).font(.caption)
+            }.frame(maxWidth: .infinity, minHeight: 44)
+                .foregroundStyle(model.route == route ? Color.accentColor : .secondary)
+        }.disabled(model.busy || model.route == route)
+            .accessibilityIdentifier("navigation.\(String(describing: route))")
+    }
+
+    private var sources: some View {
         List {
-            Section("Sources") {
+            Section {
+                Text("Import Legado source files to find and read books.").foregroundStyle(.secondary)
                 if !model.initialized && !model.busy { Button("Initialize reader") { model.start() } }
-                if model.initialized { Button("Refresh sources") { model.refreshSources() }.disabled(model.busy) }
-                Button("Import Legado JSON") { importing = true }.disabled(model.busy || !model.initialized)
+                Button("Import Legado JSON") { importing = true }
+                    .disabled(model.busy || !model.initialized).accessibilityIdentifier("sources.import")
+                Button("Refresh sources") { model.refreshSources() }.disabled(model.busy || !model.initialized)
                 if let notice = model.importNotice { Text(notice).foregroundStyle(.secondary) }
                 if let details = model.importDetails {
                     DisclosureGroup("Import details") {
                         Text(details).font(.caption.monospaced()).textSelection(.enabled)
                     }
                 }
-                if model.sources.isEmpty { Text("Import an enabled text source to begin.").foregroundStyle(.secondary) }
-                else {
+            }
+            Section("Enabled text sources (\(model.sources.count))") {
+                if model.sources.isEmpty { Text("No enabled text sources. Import a source file to begin.") }
+                ForEach(model.sources, id: \.id) { source in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(source.name).font(.headline)
+                        Text(source.id).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }.padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private var search: some View {
+        List {
+            Section("Search scope") {
+                if model.sources.isEmpty {
+                    Text("No enabled text sources.").foregroundStyle(.secondary)
+                    Button("Import sources") { model.navigate(.sources) }
+                } else {
                     Picker("Search scope", selection: $model.searchScope) {
                         Text("All enabled sources").tag(ReaderSearchScope.all)
                         Text("Selected sources").tag(ReaderSearchScope.selected)
@@ -194,7 +248,8 @@ struct ReaderScreen: View {
             }
             Section("Search") {
                 TextField("Book title or author", text: $model.query).onSubmit { model.search() }
-                Button("Search") { model.search() }.disabled(!model.canSearch)
+                    .accessibilityIdentifier("search.query")
+                Button("Search") { model.search() }.disabled(!model.canSearch).accessibilityIdentifier("search.submit")
             }
             Section("Results") {
                 if model.hasSearched {
@@ -220,7 +275,7 @@ struct ReaderScreen: View {
                                     Text(candidate.sourceName)
                                     Text(candidate.book.id).font(.caption).foregroundStyle(.secondary)
                                 }
-                            }.disabled(model.busy)
+                            }.disabled(model.busy).accessibilityIdentifier("search.candidate." + candidate.book.sourceId)
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
@@ -228,7 +283,7 @@ struct ReaderScreen: View {
                             Text(ReaderModel.authorLabel(work.author)).font(.caption).foregroundStyle(.secondary)
                             Text("\(work.sourceCount) discovered sources · \(work.candidates.count) candidates").font(.caption).foregroundStyle(.secondary)
                         }
-                    }
+                    }.accessibilityIdentifier("search.work." + work.id)
                 }
                 if model.hasNextPage { Button("More results") { model.loadMoreSearch() }.disabled(model.busy || model.searchCommandPending) }
                 if !model.searchSources.isEmpty {
@@ -249,51 +304,99 @@ struct ReaderScreen: View {
                     }
                 }
             }
-        }.onChange(of: model.searchSessionID) { _ in
-            if model.searchSessionID == nil { expandedWorks.removeAll() }
+        }.onChange(of: model.query) { _ in expandedWorks.removeAll() }
+        .onChange(of: model.searchSessionID) { _ in
+            if model.searchSessionID != nil && model.searchWorks.isEmpty { expandedWorks.removeAll() }
         }
     }
 
-    private var contents: some View {
+    private var details: some View {
         List {
             if let book = model.book {
                 Section {
-                    Text(ReaderModel.authorLabel(book.author)).font(.subheadline).foregroundStyle(.secondary)
-                    if !book.intro.isEmpty { Text(book.intro).font(.callout).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(book.title).font(.largeTitle.weight(.semibold))
+                        Text(ReaderModel.authorLabel(book.author)).font(.title3).foregroundStyle(.secondary)
+                        Label(model.sources.first { $0.id == book.sourceId }?.name ?? book.sourceId,
+                              systemImage: "square.stack.3d.up").font(.subheadline).foregroundStyle(.secondary)
+                        Text("\(model.chapters.count) chapters").font(.caption).foregroundStyle(.secondary)
+                    }.padding(.vertical, 12)
+                }
+                Section {
+                    Button {
+                        if model.content != nil { model.returnToCurrentReading() }
+                        else if let first = model.chapters.first { model.read(first) }
+                    } label: {
+                        Label(model.content == nil ? "Read first chapter" : "Continue reading", systemImage: "book.fill")
+                    }.disabled(model.busy || model.chapters.isEmpty).accessibilityIdentifier("details.read")
+                    Button { model.navigate(.contents) } label: { Label("Contents", systemImage: "list.bullet") }
+                        .disabled(model.busy).accessibilityIdentifier("details.contents")
+                    Button { model.addCurrentBook() } label: { Label("Add to shelf", systemImage: "plus.circle") }
+                        .disabled(model.busy || model.chapters.isEmpty).accessibilityIdentifier("details.add")
+                    if let notice = model.shelfNotice { Text(notice).foregroundStyle(.secondary) }
+                }
+                Section("About this book") {
+                    Text(book.intro.isEmpty ? "No introduction available." : book.intro)
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private var filteredChapters: [ChapterSnapshot] {
+        let query = catalogQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? model.chapters : model.chapters.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var contents: some View {
+        ScrollViewReader { scroll in
+            List {
+                Section {
+                    if let book = model.book { Text(book.title).font(.headline) }
                     if let content = model.content {
                         Button { model.returnToCurrentReading() } label: {
                             Label("Continue reading · " + content.chapter.title, systemImage: "book")
                         }.disabled(model.busy).accessibilityIdentifier("contents.continue")
+                        Button("Locate current chapter") {
+                            catalogQuery = ""
+                            withAnimation { scroll.scrollTo(content.chapter.id, anchor: .center) }
+                        }.accessibilityIdentifier("contents.locate")
+                    }
+                    Button("Book details") { model.navigate(.details) }
+                        .disabled(model.busy).accessibilityIdentifier("contents.details")
+                    TextField("Filter chapter titles", text: $catalogQuery)
+                        .accessibilityIdentifier("contents.filter")
+                    if !catalogQuery.isEmpty {
+                        Button("Clear filter") { catalogQuery = "" }.accessibilityIdentifier("contents.clearFilter")
                     }
                 }
-            }
-            Section {
-                Button("Add to shelf") { model.addCurrentBook() }.disabled(model.busy || model.chapters.isEmpty)
-                if let notice = model.shelfNotice { Text(notice).foregroundStyle(.secondary) }
-            }
-            Section("Chapters") {
-                if model.chapters.isEmpty { Text("No chapters available.") }
-                ForEach(model.chapters, id: \.id) { chapter in
-                    Button {
-                        if model.content?.chapter.id == chapter.id {
-                            model.returnToCurrentReading()
-                        } else {
-                            model.read(chapter)
-                        }
-                    } label: {
-                        HStack {
-                            Text(chapter.title).foregroundStyle(.primary)
-                            Spacer()
-                            if model.content?.chapter.id == chapter.id {
-                                Label("Current chapter", systemImage: "bookmark.fill")
-                                    .labelStyle(.iconOnly).font(.caption)
-                            }
-                        }.padding(.vertical, 5).contentShape(Rectangle())
-                    }.disabled(model.busy)
-                        .accessibilityIdentifier(model.content?.chapter.id == chapter.id ? "contents.currentChapter" : "contents.chapter.\(chapter.id)")
+                Section("Chapters · \(filteredChapters.count)") {
+                    if model.chapters.isEmpty { Text("No chapters available.") }
+                    else if filteredChapters.isEmpty { Text("No matching chapters. Try another title or clear the filter.") }
+                    ForEach(filteredChapters, id: \.id) { chapter in
+                        Button {
+                            if model.content?.chapter.id == chapter.id { model.returnToCurrentReading() }
+                            else { model.read(chapter) }
+                        } label: {
+                            HStack {
+                                Text(chapter.title).foregroundStyle(.primary)
+                                Spacer()
+                                if model.content?.chapter.id == chapter.id {
+                                    Label("Current chapter", systemImage: "bookmark.fill")
+                                        .labelStyle(.iconOnly).font(.caption)
+                                }
+                            }.padding(.vertical, 5).contentShape(Rectangle())
+                        }.disabled(model.busy).id(chapter.id)
+                            .accessibilityIdentifier(model.content?.chapter.id == chapter.id ? "contents.currentChapter" : "contents.chapter.\(chapter.id)")
+                    }
+                }
+            }.onChange(of: catalogQuery) { query in
+                if query.isEmpty, let chapter = model.content?.chapter {
+                    scroll.scrollTo(chapter.id, anchor: .center)
                 }
             }
-        }
+        }.onChange(of: model.book?.id) { _ in catalogQuery = "" }
+        .onChange(of: model.book?.sourceId) { _ in catalogQuery = "" }
     }
 
     private var paper: Color {
@@ -352,28 +455,34 @@ struct ReaderScreen: View {
                     HStack {
                         Text("Text size")
                         Spacer()
-                        Button { style.size = max(16, style.size - 2) } label: { Image(systemName: "textformat.size.smaller") }
+                        Button { preferences.style.size = max(16, style.size - 2) } label: { Image(systemName: "textformat.size.smaller") }
                             .accessibilityLabel("Smaller text").accessibilityIdentifier("typography.smaller")
                             .disabled(style.size <= 16)
-                        Text("\(Int(style.size))").monospacedDigit().frame(minWidth: 32)
-                        Button { style.size = min(36, style.size + 2) } label: { Image(systemName: "textformat.size.larger") }
+                        Text("\(Int(style.size))").monospacedDigit().frame(minWidth: 32).accessibilityIdentifier("typography.size")
+                        Button { preferences.style.size = min(36, style.size + 2) } label: { Image(systemName: "textformat.size.larger") }
                             .accessibilityLabel("Larger text").accessibilityIdentifier("typography.larger")
                             .disabled(style.size >= 36)
                     }.buttonStyle(.borderless)
-                    Toggle("Dark appearance", isOn: $style.dark)
+
                 }
-                Section {
+                Section("Typography") {
                     DisclosureGroup("More text options") {
-                        Picker("Font", selection: $style.fontName) {
+                        Picker("Font", selection: $preferences.style.fontName) {
                             ForEach(["PingFangSC-Regular", "STSongti-SC-Regular", "STKaitiSC-Regular"].filter { UIFont(name: $0, size: 22) != nil }, id: \.self) { Text($0).tag($0) }
                         }
-                        setting("Size", value: $style.size, range: 16...36)
-                        setting("Line spacing", value: $style.lineSpacing, range: 0...18)
-                        setting("Paragraph spacing", value: $style.paragraphSpacing, range: 0...30)
-                        setting("Margins", value: $style.margin, range: 12...64)
+                        setting("Size", value: $preferences.style.size, range: 16...36)
+                        setting("Line spacing", value: $preferences.style.lineSpacing, range: 0...18)
+                        setting("Paragraph spacing", value: $preferences.style.paragraphSpacing, range: 0...30)
+                        setting("Margins", value: $preferences.style.margin, range: 12...64)
                     }
                 }
-            }.navigationTitle("Typography").navigationBarTitleDisplayMode(.inline)
+                Section("Appearance") {
+                    Toggle("Dark appearance", isOn: $preferences.style.dark).accessibilityIdentifier("appearance.dark")
+                }
+                Section {
+                    Text("These settings apply to every book and are kept when you reopen the app.").font(.footnote).foregroundStyle(.secondary)
+                }
+            }.navigationTitle("Reading settings").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { settings = false } } }
         }.presentationDetents([.medium, .large])
     }

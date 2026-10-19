@@ -56,3 +56,5 @@ oh_modules/
 # JVM 崩溃现场 (hs_err_pid*.log) 与 JIT 重放日志 (replay_pid*.log)
 hs_err_pid*.log
 replay_pid*.log
+
+!/docs/architecture/specs/PLAN-005-native-ui-feature-expansion.md

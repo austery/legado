@@ -150,6 +150,78 @@ final class ReaderUITests: XCTestCase {
         capture("after-relaunched-position")
     }
 
+    @MainActor func testSearchDetailsCatalogAndGlobalPreferences() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        XCTAssertTrue(app.buttons["navigation.sources"].waitForExistence(timeout: 40))
+        app.buttons["navigation.sources"].tap()
+        XCTAssertTrue(app.buttons["sources.import"].waitForExistence(timeout: 10))
+        capture("everyday-sources")
+        app.buttons["navigation.search"].tap()
+        XCTAssertTrue(app.textFields["search.query"].waitForExistence(timeout: 10))
+        app.buttons["search.submit"].tap()
+        let work = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.work.")).firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 15), app.debugDescription)
+        work.tap()
+        let candidate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.candidate.")).firstMatch
+        XCTAssertTrue(candidate.waitForExistence(timeout: 10), app.debugDescription)
+        capture("everyday-expanded-search")
+        candidate.tap()
+        XCTAssertTrue(app.buttons["details.read"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["details.add"].isHittable)
+        capture("everyday-details")
+        app.buttons["navigation.searchResults"].tap()
+        XCTAssertTrue(candidate.waitForExistence(timeout: 10), "Returning to search keeps the expanded candidate")
+        candidate.tap()
+        XCTAssertTrue(app.buttons["details.contents"].waitForExistence(timeout: 15))
+        app.buttons["details.contents"].tap()
+        let filter = app.textFields["contents.filter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 10))
+        filter.tap(); filter.typeText("no-matching-chapter")
+        XCTAssertTrue(app.staticTexts["No matching chapters. Try another title or clear the filter."].waitForExistence(timeout: 5))
+        app.buttons["contents.clearFilter"].tap()
+        filter.tap(); filter.typeText("Chapter 2")
+        let chapter = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "contents.chapter.")).firstMatch
+        XCTAssertTrue(chapter.waitForExistence(timeout: 5))
+        capture("everyday-filtered-catalog")
+        chapter.tap()
+        let body = app.textViews["reader.text"]
+        XCTAssertTrue(body.waitForExistence(timeout: 15))
+        wait(app) { (body.value as? String ?? "").contains("C2-LAST") }
+        body.swipeUp(); body.swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        let position = anchor(app)
+        app.buttons["reader.contents"].tap()
+        XCTAssertTrue(app.buttons["contents.locate"].waitForExistence(timeout: 10))
+        app.buttons["contents.locate"].tap()
+        XCTAssertTrue(app.buttons["contents.currentChapter"].isHittable)
+        app.buttons["contents.continue"].tap()
+        wait(app) { self.anchor(app) == position }
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5))
+        app.buttons["typography.larger"].tap()
+        app.switches["appearance.dark"].tap()
+        XCTAssertEqual(app.staticTexts["typography.size"].label, "24")
+        capture("everyday-global-settings")
+        app.buttons["Done"].tap()
+        wait(app) { self.anchor(app) == position }
+        app.buttons["reader.shelf"].tap()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 10))
+        app.terminate(); app.launchEnvironment.removeValue(forKey: "READER_UI_RESET"); app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 30)); book.tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.staticTexts["typography.size"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["typography.size"].label, "24")
+        XCTAssertEqual(app.switches["appearance.dark"].value as? String, "1")
+        app.buttons["Done"].tap()
+        capture("everyday-reopened-dark-reading")
+        app.terminate()
+    }
+
     @MainActor func testUnshelvedDirectoryReturnKeepsSession() throws {
         try checkSessionReturn(scenario: "preview", canSave: "nil")
     }

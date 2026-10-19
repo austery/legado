@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-struct ReadingStyle: Equatable {
+struct ReadingStyle: Equatable, Codable {
     var fontName = "PingFangSC-Regular"
     var size: Double = 22
     var lineSpacing: Double = 6

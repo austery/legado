@@ -68,6 +68,7 @@ struct FixtureReaderApp: App {
     }
     @MainActor private func prepare() async throws {
         if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
+            UserDefaults.standard.removeObject(forKey: ReadingPreferences.storageKey)
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             for name in ["legado.db", "legado.db-wal", "legado.db-shm"] {
                 let url = documents.appendingPathComponent(name)
