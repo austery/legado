@@ -277,7 +277,7 @@ struct ReaderScreen: View {
                                     Text(candidate.sourceName)
                                     Text(candidate.book.id).font(.caption).foregroundStyle(.secondary)
                                 }
-                            }.disabled(model.busy).accessibilityIdentifier("search.candidate." + candidate.book.sourceId)
+                            }.disabled(model.busy).accessibilityIdentifier("search.candidate." + candidate.id)
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
@@ -285,7 +285,7 @@ struct ReaderScreen: View {
                             Text(ReaderModel.authorLabel(work.author)).font(.caption).foregroundStyle(.secondary)
                             Text("\(work.sourceCount) discovered sources · \(work.candidates.count) candidates").font(.caption).foregroundStyle(.secondary)
                         }
-                    }.accessibilityIdentifier("search.work." + work.id)
+                    }
                 }
                 if model.hasNextPage { Button("More results") { model.loadMoreSearch() }.disabled(model.busy || model.searchCommandPending) }
                 if !model.searchSources.isEmpty {

@@ -162,7 +162,7 @@ final class ReaderUITests: XCTestCase {
         app.buttons["navigation.search"].tap()
         XCTAssertTrue(app.textFields["search.query"].waitForExistence(timeout: 10))
         app.buttons["search.submit"].tap()
-        let work = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.work.")).firstMatch
+        let work = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "discovered sources")).firstMatch
         XCTAssertTrue(work.waitForExistence(timeout: 15), app.debugDescription)
         work.tap()
         let candidate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.candidate.")).firstMatch
@@ -231,11 +231,11 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.buttons["navigation.search"].waitForExistence(timeout: 40))
         app.buttons["navigation.search"].tap()
         app.buttons["search.submit"].tap()
-        let work = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.work.")).firstMatch
+        let work = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "discovered sources")).firstMatch
         XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
         let original = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND NOT identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
         let alternate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
-        XCTAssertTrue(alternate.waitForExistence(timeout: 15)); original.tap()
+        XCTAssertTrue(alternate.waitForExistence(timeout: 15), app.debugDescription); original.tap()
         XCTAssertTrue(app.buttons["details.read"].waitForExistence(timeout: 15))
         app.buttons["details.read"].tap()
         XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
