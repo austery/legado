@@ -323,3 +323,40 @@ if (enableOhosTarget) {
             )
     }
 }
+
+// This regression changes process-wide playback providers and must own its JVM.
+val catalogReturnRegressionTest by tasks.registering(Test::class) {
+    val sharedTests = tasks.named<Test>("jvmTest")
+    testClassesDirs = sharedTests.get().testClassesDirs
+    classpath = sharedTests.get().classpath
+    include("**/CatalogReturnRegressionTest.class")
+    forkEvery = 1
+    failOnNoDiscoveredTests = true
+}
+val verifyCatalogReturnRegressionTest by tasks.registering {
+    dependsOn(catalogReturnRegressionTest)
+    val candidates = files(catalogReturnRegressionTest.map { it.candidateClassFiles })
+    val report = layout.buildDirectory.file(
+        "test-results/catalogReturnRegressionTest/TEST-io.legado.app.ui.route.CatalogReturnRegressionTest.xml"
+    )
+    inputs.files(candidates)
+    inputs.file(report).optional()
+    doLast {
+        check(candidates.files.any { it.name == "CatalogReturnRegressionTest.class" }) {
+            "Missing required CatalogReturnRegressionTest class"
+        }
+        check(report.get().asFile.isFile) { "Missing required catalog return test report" }
+        val document = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+            .newDocumentBuilder().parse(report.get().asFile)
+        check(document.getElementsByTagName("testcase").length > 0) {
+            "No catalog return regressions executed"
+        }
+        check(listOf("failure", "error", "skipped").all { document.getElementsByTagName(it).length == 0 }) {
+            "Audio return regressions failed or were skipped"
+        }
+    }
+}
+tasks.named<Test>("jvmTest") {
+    exclude("**/CatalogReturnRegressionTest.class")
+    dependsOn(verifyCatalogReturnRegressionTest)
+}

@@ -98,7 +98,13 @@ fun BookInfoRoute(
     // 显式 copy, 此处直接共享路由快照; 页面改动走 bookDao.update 落库, 快照随 DB 一致)
     val book = route.book.asBook()
 
-    val screenModel = screenModelStore.getOrCreateTyped(entry) { BookInfoScreenModel(book) }
+    val screenModel = screenModelStore.getOrCreateTyped(entry) {
+        BookInfoScreenModel(book) { loadedBook, toc ->
+            navigator.updateSourceCatalog(entry.id, loadedBook, toc)
+        }.also { model ->
+            navigator.registerCatalogHandler(entry.id, model::updateLoadedCatalog)
+        }
+    }
     val state by screenModel.state.collectAsState()
     val scope = rememberCoroutineScope()
     // 本页封面端点的共享身份: 页转场 token 来自发起方 (被点的卡片) 经导航带过来的 entry.sharedToken,
@@ -291,9 +297,7 @@ fun BookInfoRoute(
             // 不交接时阅读/播放页只能读 DB, 未加书架的书目录不落库 → 落空后走回源重拉。
             // 在架书目录已落库 (DB 为权威), 不写避免残留过期内存目录 (与 TOC 交接的
             // !inBookshelf 条件一致)。
-            if (!screenModel.state.value.inBookshelf) {
-                IntentData.chapterList = screenModel.loadedChapterList
-            }
+            handoffDetailsCatalog(screenModel)
             val target = when {
                 b.isAudio -> AppRoute.AudioPlay(b.toRouteRef())
                 b.isVideo -> AppRoute.VideoPlay(b.toRouteRef())
@@ -714,9 +718,7 @@ fun BookInfoRoute(
                                 // 未加书架的书目录不落库, 不交接则阅读页读库落空后回源重拉目录
                                 // (表现为打开阅读页的加载空白/卡顿)。在架书优先 DB (目录页反转等
                                 // 已持久化, DB 为最新权威), 不做交接避免残留旧实例
-                                if (!screenModel.state.value.inBookshelf) {
-                                    IntentData.chapterList = screenModel.loadedChapterList
-                                }
+                                handoffDetailsCatalog(screenModel)
                                 // 同步 push: 目录页的 pop 与本次 push 落在同一批 dispatch,
                                 // 组合只看到最终栈 → 一次单段前进转场。中间夹 await 落库
                                 // (Room 整行写几十毫秒) 会让返回动画先播一截再改判前进, 出栈页
@@ -740,6 +742,10 @@ fun BookInfoRoute(
 
                         // 阅读器返回: 刷新阅读进度 + 书架状态 (对照 app 端 readBookResult launcher)
                         RouteResults.READER -> {
+                            (result.payload as? RouteResultPayload.ChangeSource)?.let { changed ->
+                                bookSource = changed.source
+                                screenModel.acceptSourceReturn(changed.book, changed.toc)
+                            }
                             val b = screenModel.state.value.book ?: book
                             // 书籍可能在阅读中被加入书架/删除, 重新查询 DB 同步状态
                             scope.launch(IoDispatcher) {
@@ -865,18 +871,22 @@ fun BookInfoRoute(
             book = state.book ?: book,
             onSourceChanged = { source, newBook, toc ->
                 showChangeSourceDialog = false
-                // bookSource 由 LaunchedEffect(book.origin) 按路由书籍加载, 换源后不会自动更新
-                bookSource = source
-                scope.launch(IoDispatcher) {
-                    runCatching {
-                        val oldBook = screenModel.state.value.book ?: book
-                        oldBook.changeSourceTo(newBook, toc, screenModel.state.value.inBookshelf)
-                    }.onFailure {
-                        AppLog.put("换源失败\n${it.message}", it, true)
+                val audioRevision = io.legado.app.model.AudioPlayShared.sourceRevision
+                scope.launch {
+                    val oldBook = screenModel.state.value.book ?: book
+                    try {
+                        withContext(IoDispatcher) {
+                            oldBook.changeSourceTo(newBook, toc, screenModel.state.value.inBookshelf)
+                        }
+                    } catch (error: kotlinx.coroutines.CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        AppLog.put("Source change failed\n${error.message}", error, true)
+                        return@launch
                     }
-                    screenModel.dispatch(
-                        BookInfoUiEvent.ShowBook(newBook, screenModel.lastedTitleOf(newBook))
-                    )
+                    bookSource = source
+                    navigator.publishSourceChange(entry.id, oldBook, RouteResultPayload.ChangeSource(source, newBook, toc, audioRevision))
+                    screenModel.acceptSourceReturn(newBook, toc)
                     // 重新拉取新书信息 + 目录 (对照原版 changeTo 后 onSourceChanged 刷新)
                     screenModel.refresh(
                         newBook, source, errorLoadTocLabel,

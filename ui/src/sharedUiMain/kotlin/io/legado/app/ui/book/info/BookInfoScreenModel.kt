@@ -30,6 +30,7 @@ import kotlin.concurrent.atomics.incrementAndFetch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -57,7 +58,10 @@ import org.jetbrains.compose.resources.getString
  * 由宿主在 Composition 时经 [BookInfoUiState.copy] 覆盖, 不走 dispatch。
  */
 @OptIn(ExperimentalAtomicApi::class)
-class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
+class BookInfoScreenModel(
+    initialBook: Book? = null,
+    private val onCatalogLoaded: (Book, List<BookChapter>) -> Unit = { _, _ -> },
+) : ScreenModel {
 
     private val appDb get() = AppDbProviders.get()
 
@@ -115,6 +119,20 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val actionLive: SharedFlow<String> = _actionLive.asSharedFlow()
+
+    fun updateLoadedCatalog(book: Book, chapters: List<BookChapter>) {
+        val current = state.value.book ?: return
+        if (current.bookUrl == book.bookUrl && current.origin == book.origin) {
+            loadedChapterList = chapters
+        }
+    }
+
+    suspend fun acceptSourceReturn(book: Book, toc: List<BookChapter>) {
+        refreshingJob?.cancelAndJoin()
+        dispatch(BookInfoUiEvent.RefreshDone)
+        loadedChapterList = toc
+        dispatch(BookInfoUiEvent.ShowBook(book, lastedTitleOf(book)))
+    }
 
     fun upWaitDialog(show: Boolean) {
         _waitDialog.value = show
@@ -335,7 +353,12 @@ class BookInfoScreenModel(initialBook: Book? = null) : ScreenModel {
 
     /** 加载完成后回填书籍与目录文案 (对照 Activity showBook + upLoading(false, chapterList))。 */
     private suspend fun upShowBook(book: Book, toc: List<BookChapter>, errorLoadToc: String) {
-        if (toc.isNotEmpty()) loadedChapterList = toc
+        if (toc.isNotEmpty()) {
+            loadedChapterList = toc
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                onCatalogLoaded(book, toc)
+            }
+        }
         val lasted = lastedTitleOf(book)
         dispatch(BookInfoUiEvent.ShowBook(book, lasted))
         dispatch(

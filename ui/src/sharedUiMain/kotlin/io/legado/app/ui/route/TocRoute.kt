@@ -62,6 +62,7 @@ fun TocRoute(
         navigator = navigator,
         onBack = { navigator.pop() },
         isTopEntry = backStack.lastOrNull()?.id == entry.id,
+        ownerEntryId = entry.id,
         onOpenChapter = { chapterIndex, chapterPos, chapterChanged ->
             if (resultKey != null) {
                 navigator.pop(
@@ -91,6 +92,7 @@ fun TocDialogHost(
     navigator: AppNavigator,
     onOpenChapter: (chapterIndex: Int, chapterPos: Int) -> Unit,
     onTocRegexChanged: (book: Book, tocRegex: String) -> Unit = { _, _ -> },
+    ownerEntryId: io.legado.app.ui.root.RouteEntryId? = null,
     onDismiss: () -> Unit,
 ) {
     AppBottomSheetDialog(
@@ -108,6 +110,7 @@ fun TocDialogHost(
                         onOpenChapter(chapterIndex, chapterPos)
                     },
                     onTocRegexChanged = onTocRegexChanged,
+                    ownerEntryId = ownerEntryId,
                 )
             }
         }
@@ -133,6 +136,7 @@ fun TocContent(
     onBack: () -> Unit,
     onOpenChapter: (chapterIndex: Int, chapterPos: Int, chapterChanged: Boolean) -> Unit,
     onTocRegexChanged: (book: Book, tocRegex: String) -> Unit = { _, _ -> },
+    ownerEntryId: io.legado.app.ui.root.RouteEntryId? = null,
     // 目录页是否栈顶: 非栈顶时搜索返回拦截失效 (防不可见目录页吞掉压栈页面的返回键)
     isTopEntry: Boolean = true,
 ) {
@@ -206,22 +210,7 @@ fun TocContent(
 
             // 反转章节列表: 重排 index 后 dispatch, 并持久化 (对照原版 TocViewModel.reverseToc)
             override fun reverseChapterList() {
-                val current = screenModel.state.value.chapters
-                if (current.isEmpty()) return
-                // 产出副本, 不就地改 index: 这些 BookChapter 实例是经 IntentData 从
-                // 阅读器/播放器内存目录交接过来的同一批对象, 就地改 .index 会让它们的
-                // "列表下标 ↔ chapter.index" 映射整体翻转 (列表顺序没动而 index 全反),
-                // 之后阅读器按下标取章全部错位 (原版 ChapterListFragment 同样就地改, 是上游缺陷)
-                val reversed = current.reversed().mapIndexed { i, c -> c.copy(index = i) }
-                screenModel.dispatch(TocUiEvent.ReverseChapterList(reversed))
-                val curBook = screenModel.state.value.book ?: return
-                curBook.config.reverseToc = !curBook.config.reverseToc
-                scope.launch {
-                    val db = AppDbProviders.get()
-                    // 未入架的书不落库 (books 行都没有), UI 已由上面 dispatch 反转
-                    if (curBook.isNotShelf) return@launch
-                    db.bookChapterDao.insert(*reversed.toTypedArray())
-                }
+                reverseTocCatalog(screenModel, navigator, ownerEntryId, scope)
             }
 
             // 切换净化标题开关: AppConfig 写回与 state 同步由 ScreenModel 内部完成 (对照 Activity)

@@ -1,5 +1,6 @@
 package io.legado.app.help.http
 
+import io.legado.app.utils.canonicalizeUri
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 
@@ -17,22 +18,25 @@ object DownloadProgressRegistry {
 
     /** 注册按 url 的进度监听 (url 与 [KmpRequest.url] 一致), 返回注销函数。 */
     fun addListener(url: String, listener: (bytesRead: Long, total: Long?) -> Unit): () -> Unit {
+        val key = url.canonicalizeUri()
         synchronized(lock) {
-            listeners.getOrPut(url) { mutableListOf() }.add(listener)
+            listeners.getOrPut(key) { mutableListOf() }.add(listener)
         }
-        return { removeListener(url, listener) }
+        return { removeListener(key, listener) }
     }
 
     fun removeListener(url: String, listener: (Long, Long?) -> Unit) {
+        val key = url.canonicalizeUri()
         synchronized(lock) {
-            listeners[url]?.remove(listener)
-            if (listeners[url].isNullOrEmpty()) listeners.remove(url)
+            listeners[key]?.remove(listener)
+            if (listeners[key].isNullOrEmpty()) listeners.remove(key)
         }
     }
 
     /** Ktor onDownload 上报 (任意线程; 监听者自行切线程, 与 ProgressManager 同为 IO 线程回调)。 */
     fun notify(url: String, bytesRead: Long, total: Long?) {
-        val snapshot = synchronized(lock) { listeners[url]?.toList() } ?: return
+        val key = url.canonicalizeUri()
+        val snapshot = synchronized(lock) { listeners[key]?.toList() } ?: return
         snapshot.forEach { it(bytesRead, total) }
     }
 }

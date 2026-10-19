@@ -108,6 +108,7 @@ sealed interface RouteResultPayload {
         val source: BookSource,
         val book: Book,
         val toc: List<BookChapter>,
+        val audioSourceRevision: Long? = null,
     ) : RouteResultPayload
 
     /** 书籍信息编辑回传编辑后的 Book (对齐 BookInfoEditActivity.saveData 末尾 IntentData.book + finish) */

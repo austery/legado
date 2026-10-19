@@ -472,6 +472,7 @@ fun ReadRssRoute(
     // 选篇对齐原版 BookInfoActivity.tocActivityResult: 先落进度再加载正文)
     if (showTocDialog) {
         TocDialogHost(
+            ownerEntryId = entry.id,
             book = readingBook,
             navigator = navigator,
             onOpenChapter = { index, _ ->

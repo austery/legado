@@ -124,7 +124,12 @@ data class TocUiState(
     val bookmarks: List<Bookmark>,
     val bookmarkScroll: TocScrollCmd,
     val isLocalBook: Boolean,
+    val catalogSearchKey: String? = null,
 ) {
+    /** The catalog and its query are published together; clearing search alone is insufficient. */
+    val canReverseCatalog: Boolean
+        get() = !searching && searchKey.isBlank() && catalogSearchKey == ""
+
     companion object {
         val Empty = TocUiState(
             book = null,
@@ -305,8 +310,10 @@ private fun TocActions(state: TocUiState, actions: TocUiActions, page: Int) {
                     book.config.splitLongChapter,
                 ) { dismiss(); actions.toggleSplitLongChapter() }
             }
-            MenuItem(stringResource(Res.string.reverse_toc)) {
-                dismiss(); actions.reverseChapterList()
+            if (state.canReverseCatalog) {
+                MenuItem(stringResource(Res.string.reverse_toc)) {
+                    dismiss(); actions.reverseChapterList()
+                }
             }
             CheckItem(stringResource(Res.string.use_replace), state.useReplace) {
                 dismiss(); actions.toggleUseReplace()

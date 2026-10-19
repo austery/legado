@@ -159,6 +159,10 @@ fun ReaderRoute(
         ReaderScreenModel(
             menuControllerFactory = { model -> provider.createMenuController(navigator, model) },
             getBatteryLevel = { provider.getBatteryLevel() },
+            onSourceChanged = { previous, source, replacement, toc ->
+                navigator.publishSourceChange(entry.id, previous,
+                    RouteResultPayload.ChangeSource(source, replacement, toc))
+            },
             // 搜索菜单"结果"按钮 → 打开全文搜索页 (对照原版 openSearchActivity:
             // 携带当前书/索引/结果列表, 免重搜; 列表仅首条 query 匹配时携带)
             onOpenSearch = { model, book, word ->
@@ -1105,6 +1109,7 @@ fun ReaderRoute(
             val book = screenModel.currentBook
             if (book != null) {
                 TocDialogHost(
+                    ownerEntryId = entry.id,
                     book = book,
                     navigator = navigator,
                     onOpenChapter = { index, pos ->
