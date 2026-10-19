@@ -102,6 +102,13 @@ struct FixtureReaderApp: App {
                 model.read(model.chapters[1]); try await settle()
                 guard model.content?.reading?.canSave == false else { throw NSError(domain: "FixtureSetup", code: 4) }
             } else {
+                if scenario == "catalog" {
+                    let alternate = base + "-alternate"
+                    let (alternateData, _) = try await URLSession.shared.data(from: URL(string: alternate + "/sources.json")!)
+                    try alternateData.write(to: file)
+                    model.importFile(file); try await settle()
+                    model.searchScope = .all
+                }
                 model.showShelf(); try await settle()
             }
         }

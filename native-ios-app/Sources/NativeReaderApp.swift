@@ -124,6 +124,8 @@ struct ReaderScreen: View {
             .onChange(of: scenePhase) { phase in
                 if phase != .active { model.flushReadingPosition() }
             }
+            .onChange(of: model.book?.id) { _ in catalogQuery = "" }
+            .onChange(of: model.book?.sourceId) { _ in catalogQuery = "" }
             .preferredColorScheme(style.dark ? .dark : .light)
         }
     }
@@ -395,8 +397,7 @@ struct ReaderScreen: View {
                     scroll.scrollTo(chapter.id, anchor: .center)
                 }
             }
-        }.onChange(of: model.book?.id) { _ in catalogQuery = "" }
-        .onChange(of: model.book?.sourceId) { _ in catalogQuery = "" }
+        }
     }
 
     private var paper: Color {

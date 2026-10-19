@@ -222,6 +222,50 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
+    @MainActor func testCatalogFilterResetsForAnotherSourceAndPreferencesApply() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "catalog"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        XCTAssertTrue(app.buttons["navigation.search"].waitForExistence(timeout: 40))
+        app.buttons["navigation.search"].tap()
+        app.buttons["search.submit"].tap()
+        let work = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "search.work.")).firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
+        let original = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND NOT identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
+        let alternate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
+        XCTAssertTrue(alternate.waitForExistence(timeout: 15)); original.tap()
+        XCTAssertTrue(app.buttons["details.read"].waitForExistence(timeout: 15))
+        app.buttons["details.read"].tap()
+        XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
+        app.buttons["reader.typography"].tap()
+        app.buttons["typography.larger"].tap()
+        app.buttons["Done"].tap()
+        app.buttons["reader.contents"].tap()
+        let filter = app.textFields["contents.filter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 10)); filter.tap(); filter.typeText("no-matching-chapter")
+        XCTAssertTrue(app.buttons["contents.clearFilter"].waitForExistence(timeout: 5))
+        app.buttons["navigation.searchResults"].tap()
+        XCTAssertTrue(alternate.waitForExistence(timeout: 10)); alternate.tap()
+        XCTAssertTrue(app.buttons["details.contents"].waitForExistence(timeout: 15)); app.buttons["details.contents"].tap()
+        XCTAssertTrue(filter.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["contents.clearFilter"].exists, "A different source entry starts with an unfiltered catalog")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "contents.chapter.")).count, 3)
+        capture("everyday-new-source-unfiltered-catalog")
+        app.buttons["contents.details"].tap()
+        XCTAssertTrue(app.buttons["details.read"].waitForExistence(timeout: 5)); app.buttons["details.read"].tap()
+        XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15)); app.buttons["reader.typography"].tap()
+        XCTAssertEqual(app.staticTexts["typography.size"].label, "24", "Presentation settings apply to another source entry too")
+        app.buttons["Done"].tap()
+        wait(app) { self.state(app).contains("-alternate") && self.state(app).contains("canSave=nil;") }
+        app.buttons["reader.shelf"].tap()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 10)); book.tap()
+        wait(app) { !self.state(app).contains("-alternate") && self.state(app).contains("chapter=0;") }
+        app.terminate()
+    }
+
     @MainActor func testUnshelvedDirectoryReturnKeepsSession() throws {
         try checkSessionReturn(scenario: "preview", canSave: "nil")
     }

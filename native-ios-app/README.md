@@ -320,7 +320,7 @@ process relaunch. The test host observes the actual TextKit paragraph anchor;
 only setup and fault injection use test controls. No production provider, physical
 device or existing reader data is involved. The ordinary Swift product
 gate remains separate; UI tests do not replace it. The UI gate requires exactly
-four passing tests with no failures or skips. Both directory buttons are exercised
+five passing tests with no failures or skips. Both directory buttons are exercised
 for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
@@ -345,3 +345,6 @@ filtered Contents and reading settings, then relaunches to check both saved styl
 and paragraph. Ordinary preference tests cover corrupt data, invalid layout values
 and fresh-store reload. Run results, exact revisions and screenshot inspection are
 recorded separately; adding tests is not a claim that they passed.
+
+A separate two-source UI journey verifies catalog-filter reset and global settings
+across source entries, without changing the original shelf entry.
