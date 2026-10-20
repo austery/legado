@@ -202,7 +202,9 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.typography"].tap()
         XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5))
         app.buttons["typography.larger"].tap()
-        app.switches["appearance.dark"].tap()
+        let darkAppearance = app.switches["appearance.dark"]
+        darkAppearance.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        wait(app) { darkAppearance.value as? String == "1" }
         XCTAssertEqual(app.staticTexts["typography.size"].label, "24")
         capture("everyday-global-settings")
         app.buttons["Done"].tap()
