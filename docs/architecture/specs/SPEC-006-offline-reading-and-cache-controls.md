@@ -1,7 +1,7 @@
 ---
 specId: SPEC-006
 title: Offline Reading and Bounded Cache Controls
-status: Ready for Implementation
+status: Implemented
 priority: P1 - Core Feature
 creationDate: 2026-10-20
 lastUpdateDate: 2026-10-20
@@ -23,7 +23,7 @@ Let readers prepare a bounded amount of reading for offline use, see which chapt
 
 ## 2. Verified baseline
 
-PR #30 delivered everyday navigation and global presentation preferences. PR #31 delivered explicit source switching and merged as `6fd56ebecd1891a80b7c791d6e6490868a3f0683`. Its exact-head required C1 passed; the separate post-merge C1 run is still in progress at drafting time.
+PR #30 delivered everyday navigation and global presentation preferences. PR #31 delivered explicit source switching and merged as `6fd56ebecd1891a80b7c791d6e6490868a3f0683`. Its exact-head required C1 passed, and post-merge [C1 run 39510877804](https://github.com/austery/legado/actions/runs/39510877804) subsequently passed both regression jobs and the required aggregate check.
 
 - `ReaderEngine.kt:325-382` already opens saved chapters and supports cache-only reads, including saved-body hash/length checks. Normal reading saves downloaded text and verifies readback.
 - `BookStorage.kt` exposes chapter listing, reading, writing and individual deletion. `NativeBookStorage.native.kt:117-118` checks only file existence for `hasContent`, so it cannot alone justify an offline-ready label. Deletion also needs post-operation verification.
@@ -57,21 +57,21 @@ Prefer existing source execution, atomic chapter storage and per-source request 
 
 ## 4. Implementation order
 
-- [ ] Establish typed availability, batch progress and cancellation results; audit cache-key ownership and failure-safe deletion.
-- [ ] Implement manual next-20 caching and verified catalog indicators before enabling automatic prefetch.
-- [ ] Add the opt-in next-2 policy and protected optional-cache clearing.
-- [ ] Exercise real Swift/KMP behavior with isolated loopback fixtures, then complete independent review and exact-head required checks.
+- [x] Establish typed availability, batch progress and cancellation results; audit cache-key ownership and failure-safe deletion.
+- [x] Implement manual next-20 caching and verified catalog indicators before enabling automatic prefetch.
+- [x] Add the opt-in next-2 policy and protected optional-cache clearing.
+- [x] Exercise real Swift/KMP behavior with isolated loopback fixtures and complete independent review. Require `C1 engine regression` on the exact PR head before merge.
 
 ## 5. Simulator acceptance
 
-- [ ] Cache a range, disable fixture networking, relaunch and read every reported available chapter without any network request.
-- [ ] Empty, unreadable, interrupted and saved-body-mismatched cache files never receive an available label.
-- [ ] Partial HTTP or storage failure preserves completed bodies and the old reading position; retry requests only missing/failed chapters.
-- [ ] Cancellation, backgrounding, removal and source switching retire pending work; late results cannot repopulate cleared caches or modify another source entry.
-- [ ] Prefetch stays within the next two readable chapters and never consumes the last capacity needed for a foreground reading request.
-- [ ] Clearing optional chapters preserves displayed content, the saved resume body and unrelated entries; offline resume still works after process restart.
-- [ ] Catalog counts, progress, failure and confirmation controls remain usable in portrait and landscape.
-- [ ] Existing source switching, preview isolation, shelf admission, resume and global typography regressions remain green. Report simulator and physical-device acceptance separately.
+- [x] Cache a range, disable fixture networking, relaunch and read every reported available chapter without any network request.
+- [x] Empty, unreadable, interrupted and saved-body-mismatched cache files never receive an available label.
+- [x] Partial HTTP or storage failure preserves completed bodies and the old reading position; retry requests only missing/failed chapters.
+- [x] Cancellation, backgrounding, removal and source switching retire pending work; late results cannot repopulate cleared caches or modify another source entry.
+- [x] Prefetch stays within the next two readable chapters and never consumes the last capacity needed for a foreground reading request.
+- [x] Clearing optional chapters preserves displayed content, the saved resume body and unrelated entries; offline resume still works after process restart.
+- [x] Catalog counts, progress, failure and confirmation controls remain usable in portrait and landscape.
+- [x] Existing source switching, preview isolation, shelf admission, resume and global typography regressions remain green. Report simulator and physical-device acceptance separately.
 
 ## 6. Approval and history
 
@@ -81,8 +81,13 @@ The owner approved this scope on 2026-10-20 and requested continuous implementat
 | --- | --- | --- |
 | 2026-10-20 | Draft | Proposed after PR #31 merge; based on the live native engine and storage interfaces. |
 | 2026-10-20 | Ready for Implementation | Owner approved the scope and simulator acceptance. |
+| 2026-10-20 | Implemented | Local simulator acceptance and independent review complete; PR publication requires exact-head C1 before merge. |
 
-## 7. Related
+## 7. Acceptance evidence
+
+[Simulator acceptance record](../../evidence/2026-10-20-offline-reading.md): 52 Swift/KMP tests, 9 iPad UI tests, 107 Kotlin/Native regressions, 42 harness tests, four forced interruption boundaries and a 21-chapter offline process restart. All passed locally; exact-head C1 is checked on the published PR. Physical-device and live-source acceptance are not claimed.
+
+## 8. Related
 
 - [Feature expansion](PLAN-005-native-ui-feature-expansion.md)
 - [Explicit source switching](SPEC-005-explicit-source-switching.md)
