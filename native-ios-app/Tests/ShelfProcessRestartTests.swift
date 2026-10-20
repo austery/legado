@@ -14,7 +14,10 @@ final class ShelfProcessRestartTests: XCTestCase {
         let readingChapter: String
         let paragraphOffset: Int32
     }
-    private let key = "SPEC003.disposableSimulator.restartManifest"
+    private var manifestURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("spec003-restart-manifest.json")
+    }
 
     private func findText(_ root: UIView) -> AnchoredTextView? {
         if let view = root as? AnchoredTextView { return view }
@@ -81,15 +84,15 @@ final class ShelfProcessRestartTests: XCTestCase {
             chapters: model.chapters.map(\.id), readingChapter: readingChapter, paragraphOffset: Int32(offset))
         try Data(json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false").utf8).write(to: file)
         model.importFile(file); try await settle(model)
-        UserDefaults.standard.set(try JSONEncoder().encode(manifest), forKey: key)
-        XCTAssertTrue(UserDefaults.standard.synchronize())
+        // XCTest reinstalls the host between phases; handoff must be on disk before that migration.
+        try JSONEncoder().encode(manifest).write(to: manifestURL, options: .atomic)
         print("SPEC003 prepare PID=\(getpid()) book=\(book.id)")
         try await OfflineRestartJourney.prepare()
     }
 
     func testVerify() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["SPEC003_RESTART_PHASE"] == "verify")
-        let manifest = try JSONDecoder().decode(Manifest.self, from: XCTUnwrap(UserDefaults.standard.data(forKey: key)))
+        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
         XCTAssertNotEqual(getpid(), manifest.processID, "Verification requires a new app process")
         let model = ReaderModel()
         model.start(); try await settle(model)

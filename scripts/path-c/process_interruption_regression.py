@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import hashlib
+import sqlite3
 import subprocess
 import threading
 import time
@@ -157,11 +159,32 @@ def main() -> None:
                 require_one_pass(config)
             finally:
                 reading.shutdown(); reading.server_close(); worker.join(5)
+            def snapshot_restart_storage(label: str) -> None:
+                documents = owned_documents(simctl("get_app_container", simulator, BUNDLE, "data"), simulator)
+                preferences = documents.parent / "Library/Preferences" / (BUNDLE + ".plist")
+                record: dict[str, object] = {"container": str(documents.parent), "preferencesExists": preferences.exists()}
+                if preferences.exists():
+                    payload = preferences.read_bytes()
+                    record["preferencesSha256"] = hashlib.sha256(payload).hexdigest()
+                    record["preferenceKeys"] = sorted(plistlib.loads(payload).keys())
+                    (args.output / (label + ".preferences.plist")).write_bytes(payload)
+                record["documentFiles"] = sorted(str(path.relative_to(documents)) for path in documents.rglob("*") if path.is_file())
+                record["cachedBodySha256"] = {str(path.relative_to(documents)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                             for path in (documents / "book_cache").rglob("*.nb") if path.is_file()}
+                database = documents / "legado.db"
+                if database.exists():
+                    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+                        record["bookCount"] = connection.execute("SELECT count(*) FROM books").fetchone()[0]
+                (args.output / (label + ".storage.json")).write_text(json.dumps(record, indent=2))
+            snapshot_restart_storage("before-restart")
             # No reading listener exists in this process during offline verification.
             config = run_config(str(uuid.uuid4()), "restart", "verify")
-            with (args.output / "restart-verify.log").open("w") as log:
-                subprocess.run(command(config, "ShelfProcessRestartTests/testVerify"), stdout=log,
-                               stderr=subprocess.STDOUT, env=env, check=True, timeout=300)
+            try:
+                with (args.output / "restart-verify.log").open("w") as log:
+                    subprocess.run(command(config, "ShelfProcessRestartTests/testVerify"), stdout=log,
+                                   stderr=subprocess.STDOUT, env=env, check=True, timeout=300)
+            finally:
+                snapshot_restart_storage("after-restart")
             require_one_pass(config)
             (args.output / "results.json").write_text(json.dumps({"prepare": "passed", "offlineVerify": "passed"}))
             return

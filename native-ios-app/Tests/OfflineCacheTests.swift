@@ -235,4 +235,42 @@ final class OfflineCacheTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL(book, chapters[1]).path))
         }
     }
+
+    func testSourceSwitchRetiresCacheWithoutPublishingIntoEitherIdentity() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, chapters, _) = try await fixture(engine)
+        let alternate = book.sourceId + "-alternate"
+        let suffix = String(book.title.dropFirst("Path C Book".count))
+        let json = try await control(alternate, "/sources.json")
+            .replacingOccurrences(of: "class.name@text", with: "class.name@text##$##" + suffix)
+            .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$##" + suffix)
+        _ = await call { engine.importSources(json: json, completion: $0) }
+        let search = await call { engine.search(sourceId: alternate, query: "Path", page: 1, completion: $0) }
+        let candidate = try XCTUnwrap((search as? SearchReply)?.books.first)
+        _ = await call { engine.loadBook(sourceId: alternate, bookId: candidate.id, completion: $0) }
+        let toc = await call { engine.loadToc(sourceId: alternate, bookId: candidate.id, completion: $0) }
+        let replacement = try XCTUnwrap((toc as? TocReply)?.chapters.first)
+        _ = try await control(book.sourceId, "/control/hold/chapter")
+        let finished = expectation(description: "Source switch cancels cache")
+        _ = engine.cacheNextChapters(sourceId: book.sourceId, bookId: book.id,
+            afterChapterId: chapters[0].id, prefetch: false) { reply in
+            if let progress = reply as? CacheProgress, !progress.running {
+                XCTAssertTrue(progress.cancelled); finished.fulfill()
+            }
+        }
+        let entered = try await control(book.sourceId, "/control/entered/chapter")
+        XCTAssertEqual(entered, "entered")
+        let prepared = await call { engine.prepareSourceSwitch(oldSourceId: book.sourceId, oldBookId: book.id,
+            sourceId: alternate, bookId: candidate.id, chapterId: replacement.id, completion: $0) }
+        let plan = try XCTUnwrap(prepared as? SourceSwitchPrepared)
+        let committed = await call { engine.commitSourceSwitch(token: plan.token, completion: $0) }
+        XCTAssertEqual((committed as? ShelfEntryReply)?.entry.book.sourceId, alternate)
+        _ = try await control(book.sourceId, "/control/release/chapter")
+        _ = try await control(book.sourceId, "/control/completed/chapter")
+        await fulfillment(of: [finished], timeout: 10)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL(book, chapters[1]).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cacheURL(book, chapters[0]).path))
+        let current = try await status(engine, candidate)
+        XCTAssertEqual(current.chapters.filter { $0.availability == .available }.map(\.chapterId), [replacement.id])
+    }
 }

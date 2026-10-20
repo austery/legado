@@ -11,7 +11,10 @@ enum OfflineRestartJourney {
         let book: String
         let bodies: [String: String]
     }
-    private static let key = "SPEC006.disposableSimulator.offlineManifest"
+    private static var manifestURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("spec006-offline-manifest.json")
+    }
     private static func call(_ start: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
         await withCheckedContinuation { continuation in _ = start { continuation.resume(returning: $0) } }
     }
@@ -64,12 +67,11 @@ enum OfflineRestartJourney {
             bodies[chapter.chapterId] = hash(try XCTUnwrap(reply as? ContentReply).text)
         }
         let manifest = Manifest(processID: getpid(), source: base, book: book.id, bodies: bodies)
-        UserDefaults.standard.set(try JSONEncoder().encode(manifest), forKey: key)
-        XCTAssertTrue(UserDefaults.standard.synchronize())
+        try JSONEncoder().encode(manifest).write(to: manifestURL, options: .atomic)
         print("SPEC006 prepared 21 verified offline chapters PID=\(getpid())")
     }
     static func verify() async throws {
-        let manifest = try JSONDecoder().decode(Manifest.self, from: XCTUnwrap(UserDefaults.standard.data(forKey: key)))
+        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
         XCTAssertNotEqual(manifest.processID, getpid())
         let engine = ReaderEngine(); defer { engine.close() }
         _ = await call { engine.initialize(completion: $0) }
