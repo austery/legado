@@ -8,6 +8,9 @@ import androidx.room3.Transaction
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.NativeReadingResume
+import io.legado.app.data.entities.BookSource
+import io.legado.app.utils.systemCurrentTimeMillis
 
 /** Native shelf policy; deliberately separate from the legacy replacement writer. */
 @Dao
@@ -26,6 +29,81 @@ abstract class NativeShelfDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertChapters(chapters: List<BookChapter>)
+
+    @Query("SELECT * FROM native_reading_resume WHERE bookUrl = :bookUrl")
+    abstract suspend fun resume(bookUrl: String): NativeReadingResume?
+
+    @Query("DELETE FROM books WHERE bookUrl = :bookUrl")
+    protected abstract suspend fun deleteBook(bookUrl: String)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract suspend fun insertResume(resume: NativeReadingResume)
+
+    @Query("SELECT bookUrl, name, author FROM books")
+    protected abstract suspend fun switchIdentities(): List<NativeWorkIdentity>
+
+    @Query("SELECT * FROM book_sources WHERE bookSourceUrl = :sourceId")
+    protected abstract suspend fun switchSourceRecord(sourceId: String): BookSource?
+
+    /** The engine proves the target body is durable before entering this transaction. */
+    @Transaction
+    open suspend fun switchSource(sourceId: String, bookUrl: String, expectedRevision: Long,
+        expectedProjection: NativeChapterProjection, candidate: Book, catalog: List<BookChapter>,
+        chapterUrl: String, body: String, expectedSource: BookSource): NativeShelfEntry {
+        val existing = openBook(sourceId, bookUrl).book
+        val previous = resume(bookUrl)
+        if ((previous?.revision ?: 0L) != expectedRevision || expectedRevision < 0 ||
+            expectedRevision == Long.MAX_VALUE || NativeChapterProjection.from(existing) != expectedProjection) {
+            throw NativeResumeException(NativeResumeFailure.STALE_REVISION, "Reading state changed; prepare the switch again")
+        }
+        if (previous != null && (previous.sourceId != sourceId ||
+                previous.textVersion != NativeBodyCoordinates.VERSION || previous.revision <= 0)) {
+            throw NativeResumeException(NativeResumeFailure.UNSUPPORTED_VERSION, "Existing resume cannot be safely replaced")
+        }
+        requireTextBook(candidate)
+        val targetSource = switchSourceRecord(candidate.origin)
+        if (targetSource == null || !targetSource.enabled || targetSource.bookSourceType != 0 ||
+            targetSource != expectedSource) {
+            throw NativeResumeException(NativeResumeFailure.STALE_REVISION, "Replacement source changed; prepare again")
+        }
+        if (candidate.name.trim().isEmpty() || candidate.author.trim().isEmpty() ||
+            candidate.name.trim() != existing.name.trim() || candidate.author.trim() != existing.author.trim() ||
+            candidate.origin.isBlank() || candidate.bookUrl.isBlank() || candidate.bookUrl == bookUrl ||
+            findBook(candidate.bookUrl) != null) {
+            throw NativeShelfException(NativeShelfFailure.IDENTITY_CONFLICT, "Replacement identity conflicts with the shelf")
+        }
+        if (switchIdentities().any { it.bookUrl != bookUrl &&
+                it.name.trim() == existing.name.trim() && it.author.trim() == existing.author.trim() }) {
+            throw NativeShelfException(NativeShelfFailure.AMBIGUOUS_IDENTITY, "Multiple records identify this work")
+        }
+        if (body.isEmpty() || catalog.isEmpty() ||
+            catalog.any { it.bookUrl != candidate.bookUrl || it.url.isBlank() || it.index < 0 } ||
+            catalog.map { it.url }.distinct().size != catalog.size ||
+            catalog.map { it.index }.distinct().size != catalog.size) {
+            throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "A verified replacement chapter and catalog are required")
+        }
+        val chapter = catalog.singleOrNull { it.url == chapterUrl && !it.isVolume }
+            ?: throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "Choose a readable replacement chapter")
+        val now = systemCurrentTimeMillis()
+        val replacement = candidate.copy(
+            name = existing.name, author = existing.author,
+            customTag = existing.customTag, customCoverUrl = existing.customCoverUrl,
+            customIntro = existing.customIntro, group = existing.group, order = existing.order,
+            canUpdate = existing.canUpdate, readConfig = existing.readConfig,
+            type = candidate.type and BookType.notShelf.inv(),
+            totalChapterNum = catalog.size, durChapterIndex = chapter.index,
+            durChapterTitle = chapter.title, durChapterPos = 0, durChapterTime = now,
+            syncTime = 0L
+        )
+        // Foreign keys retire the old catalog and native resume within the same transaction.
+        deleteBook(bookUrl)
+        insertBook(replacement)
+        insertChapters(catalog)
+        insertResume(NativeReadingResume(replacement.bookUrl, replacement.origin, chapter.url,
+            chapter.index, NativeBodyCoordinates.VERSION, NativeBodyCoordinates.sha256(body),
+            body.length, 0, expectedRevision + 1, now))
+        return NativeShelfEntry(replacement, chapters(replacement.bookUrl))
+    }
 
     @Query("UPDATE books SET type = type & ${BookType.notShelf.inv()} WHERE bookUrl = :bookUrl")
     protected abstract suspend fun restoreShelfFlag(bookUrl: String)
@@ -108,6 +186,7 @@ abstract class NativeShelfDao {
 
 /** These snapshots stay within KMP; the engine will provide its own public transport types. */
 data class NativeShelfEntry(val book: Book, val chapters: List<BookChapter>)
+data class NativeWorkIdentity(val bookUrl: String, val name: String, val author: String)
 
 enum class NativeShelfFailure { INVALID_INPUT, IDENTITY_CONFLICT, AMBIGUOUS_IDENTITY, UNSUPPORTED_BOOK, NOT_ON_SHELF }
 

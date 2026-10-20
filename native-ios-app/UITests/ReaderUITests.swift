@@ -1,6 +1,89 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testSourceSwitchProcessLossBeforeCommitAndAfterCommitBeforeAcknowledgment() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "catalog"
+        app.launchEnvironment["READER_UI_DROP_SWITCH_ACK"] = "1"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        func openBook() {
+            let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+            XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+            XCTAssertTrue(app.buttons["reader.changeSource"].waitForExistence(timeout: 15))
+        }
+        func prepare() {
+            app.buttons["reader.changeSource"].tap()
+            let work = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "discovered sources")).firstMatch
+            XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
+            let alternate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
+            XCTAssertTrue(alternate.waitForExistence(timeout: 15)); alternate.tap()
+            let chapter = app.buttons["switch.chapter.0"]
+            XCTAssertTrue(chapter.waitForExistence(timeout: 15)); chapter.tap()
+            XCTAssertTrue(app.buttons["switch.confirm"].waitForExistence(timeout: 15))
+        }
+        openBook(); prepare()
+        capture("switch-before-commit-termination")
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch(); openBook()
+        wait(app) { !self.state(app).contains("-alternate") && self.state(app).contains("chapter=0;") }
+        prepare()
+        app.buttons["switch.confirm"].tap()
+        wait(app) { app.staticTexts["fixture.switchCommit"].value as? String == "true" }
+        XCTAssertTrue(app.staticTexts["Switching source…"].exists)
+        capture("switch-committed-before-acknowledgment")
+        app.terminate()
+        app.launch(); openBook()
+        wait(app) { self.state(app).contains("-alternate") && self.state(app).contains("chapter=0;") && self.anchor(app) == 0 }
+        capture("switch-lost-acknowledgment-recovered")
+        app.terminate()
+    }
+
+    @MainActor func testExplicitSourceSwitchAndRelaunch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "catalog"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        XCTAssertTrue(app.buttons["reader.changeSource"].waitForExistence(timeout: 15))
+        app.buttons["reader.changeSource"].tap()
+        let work = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "discovered sources")).firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
+        let alternate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
+        XCTAssertTrue(alternate.waitForExistence(timeout: 15)); alternate.tap()
+        let chapter = app.buttons["switch.chapter.0"]
+        XCTAssertTrue(chapter.waitForExistence(timeout: 15)); chapter.tap()
+        XCTAssertTrue(app.buttons["switch.confirm"].waitForExistence(timeout: 15))
+        capture("switch-prepared-portrait")
+        app.buttons["switch.cancel"].tap()
+        wait(app) { self.state(app).contains("chapter=0;") && !self.state(app).contains("-alternate") }
+        app.buttons["reader.changeSource"].tap()
+        XCTAssertTrue(alternate.waitForExistence(timeout: 15)); alternate.tap()
+        XCTAssertTrue(chapter.waitForExistence(timeout: 15)); chapter.tap()
+        XCTAssertTrue(app.buttons["switch.confirm"].waitForExistence(timeout: 15))
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height && app.buttons["switch.confirm"].isHittable }
+        capture("switch-prepared-landscape")
+        app.buttons["switch.confirm"].tap()
+        wait(app) { self.state(app).contains("-alternate") && self.state(app).contains("canSave=true;") && self.anchor(app) == 0 }
+        capture("switch-committed")
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(book.waitForExistence(timeout: 15))
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        wait(app) { self.state(app).contains("-alternate") && self.state(app).contains("chapter=0;") && self.anchor(app) == 0 }
+        capture("switch-reopened")
+        app.terminate()
+    }
+
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
     @MainActor func testShelfReadingRecoveryAndResume() throws {

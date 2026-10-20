@@ -4,8 +4,9 @@ An independent SwiftUI/TextKit client of ReaderEngine, with bundle ID
 `io.legado.pathc.nativereader`. It does not share a sandbox with existing readers
 or the C1 harness. The app covers source import, incremental multi-source search,
 contents, scrolling text, chapter navigation, typography, an explicit bookshelf
-and durable reading positions with cached reopening. Changing an existing shelf
-book's active source remains outside this slice.
+and durable reading positions with cached reopening. Explicit source switching
+prepares replacement text before confirmation and starts the chosen chapter at
+its beginning.
 
 ## Deliberate UI defaults
 
@@ -320,7 +321,7 @@ process relaunch. The test host observes the actual TextKit paragraph anchor;
 only setup and fault injection use test controls. No production provider, physical
 device or existing reader data is involved. The ordinary Swift product
 gate remains separate; UI tests do not replace it. The UI gate requires exactly
-five passing tests with no failures or skips. Both directory buttons are exercised
+seven passing tests with no failures or skips. Both directory buttons are exercised
 for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
@@ -348,3 +349,23 @@ recorded separately; adding tests is not a claim that they passed.
 
 A separate two-source UI journey verifies catalog-filter reset and global settings
 across source entries, without changing the original shelf entry.
+
+## Explicit source switching (SPEC-005)
+
+Change source is available for shelved books with a known title and author. Search
+retains exact candidates; only another listing with the same trimmed title and
+author is eligible. A unique trimmed chapter-title match is recommended; duplicate
+or missing matches require manual selection. Volume headings are excluded.
+
+The replacement chapter is fetched and its cache verified before confirmation.
+Confirmation atomically replaces the shelf record, catalog, and native resume,
+preserving user shelf metadata. Reading starts at offset zero. Existing progress,
+source-rule, and URL-ownership changes reject stale preparations. Cancel and
+pre-commit failures retain the original source; a lost post-commit acknowledgment
+is resolved from durable shelf state.
+
+The synthetic UI host can withhold only the final switch reply to test termination
+after database commit but before UI acknowledgment. This hook is excluded from the
+product application. The UI suite also terminates before confirmation and checks
+that relaunch retains the old source. Actual results and revision evidence are
+recorded separately; these test descriptions are not acceptance claims.
