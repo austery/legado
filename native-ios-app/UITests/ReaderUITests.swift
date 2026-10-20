@@ -65,6 +65,7 @@ final class ReaderUITests: XCTestCase {
         app.buttons["switch.cancel"].tap()
         wait(app) { self.state(app).contains("chapter=0;") && !self.state(app).contains("-alternate") }
         app.buttons["reader.changeSource"].tap()
+        XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
         XCTAssertTrue(alternate.waitForExistence(timeout: 15)); alternate.tap()
         XCTAssertTrue(chapter.waitForExistence(timeout: 15)); chapter.tap()
         XCTAssertTrue(app.buttons["switch.confirm"].waitForExistence(timeout: 15))
