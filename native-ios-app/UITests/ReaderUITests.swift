@@ -13,8 +13,9 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.typography"].tap()
         let toggle = app.switches["offline.prefetch"]
         for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
-        XCTAssertEqual(toggle.value as? String, "0"); toggle.tap()
-        XCTAssertEqual(toggle.value as? String, "1")
+        XCTAssertEqual(toggle.value as? String, "0")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        wait(app) { toggle.value as? String == "1" }
         capture("offline-global-prefetch-enabled")
         app.buttons["Done"].tap()
         wait(app) { self.state(app).contains("cached=2;cacheRunning=false;") }
@@ -29,8 +30,8 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.typography"].tap()
         for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
         XCTAssertEqual(toggle.value as? String, "1")
-        toggle.tap()
-        XCTAssertEqual(toggle.value as? String, "0")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        wait(app) { toggle.value as? String == "0" }
         app.terminate()
     }
 
