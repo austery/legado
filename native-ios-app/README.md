@@ -14,7 +14,7 @@ These are product defaults awaiting owner feedback, not recovered Wanyuan values
 - System-available PingFang, Songti and Kaiti candidates; unavailable fonts are omitted.
 - 22-point initial text; size range 16–36, line spacing 6 (0–18), paragraph spacing
   12 (0–30), margins 28 (12–64). Maximum text column width is approximately 680 points.
-- Warm light background; optional dark appearance. Settings last for the view session.
+- Warm light background; optional dark appearance. Typography and appearance apply globally and persist in this app's preferences across launches. Invalid saved layout values fall back to safe defaults; book progress remains owned by ReaderEngine.
 - Explicit show/hide control button instead of guessed tap regions. Long-press text
   selection follows UITextView behavior. No custom pagination engine.
 - Text layout keeps a paragraph-based UTF-16 anchor across typography and size
@@ -318,9 +318,33 @@ text size and rotation, rejected save without leaving, cancelling discard,
 retry, acknowledged shelf return and same-chapter/paragraph reopening, including
 process relaunch. The test host observes the actual TextKit paragraph anchor;
 only setup and fault injection use test controls. No production provider, physical
-device or existing reader data is involved. The ordinary 38-test Swift product
+device or existing reader data is involved. The ordinary Swift product
 gate remains separate; UI tests do not replace it. The UI gate requires exactly
-three passing tests with no failures or skips. Both directory buttons are exercised
+five passing tests with no failures or skips. Both directory buttons are exercised
 for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
+
+## Everyday native UI (PLAN-005)
+
+Library, Search and Sources have distinct top-level destinations. Source files are
+imported from Sources; search scope remains in Search. Selecting a candidate opens
+its details and explicit Read first chapter / Add to shelf / Contents actions.
+Returning to Search keeps the retained results and expanded candidates; it does
+not restart cancelled source work. Details use only metadata the engine supplies.
+
+Contents supports title filtering, empty-filter feedback and current-chapter
+location. Continue reading and the marked chapter preserve the existing session
+and paragraph rules. Reading settings group typography and appearance, persist
+application-wide in `nativeReader.readingStyle.v1`, and do not introduce another
+book/progress store. Removing that one optional preference key restores defaults;
+older builds ignore it. Existing database schemas and source execution are unchanged.
+
+The additional UI journey taps Sources, Search, an expanded candidate, Details,
+filtered Contents and reading settings, then relaunches to check both saved style
+and paragraph. Ordinary preference tests cover corrupt data, invalid layout values
+and fresh-store reload. Run results, exact revisions and screenshot inspection are
+recorded separately; adding tests is not a claim that they passed.
+
+A separate two-source UI journey verifies catalog-filter reset and global settings
+across source entries, without changing the original shelf entry.

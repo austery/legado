@@ -347,7 +347,7 @@ final class ReadingJourneyTests: XCTestCase {
         model.select(book)
         try await settle(model)
         XCTAssertNil(model.message)
-        XCTAssertEqual(model.route, .contents)
+        XCTAssertEqual(model.route, .details)
         XCTAssertEqual(model.chapters.count, 3)
         let chapter = try XCTUnwrap(model.chapters.first)
         model.read(chapter)
