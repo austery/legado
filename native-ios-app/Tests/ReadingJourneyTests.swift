@@ -138,9 +138,12 @@ final class ReadingJourneyTests: XCTestCase {
         func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "''") + "'" }
         let insert = """
         INSERT INTO books(bookUrl,origin,name,author,type) VALUES(\(quoted(target.id)),\(quoted(second)),\(quoted(target.title)),'Different author',8);
-        INSERT INTO chapters(bookUrl,url,title,`index`) VALUES(\(quoted(target.id)),\(quoted(chapter.id)),\(quoted(chapter.title)),0);
+        INSERT INTO chapters(bookUrl,url,title,`index`,isVolume,isVip,isPay) VALUES(\(quoted(target.id)),\(quoted(chapter.id)),\(quoted(chapter.title)),0,0,0,0);
         """
-        XCTAssertEqual(sqlite3_exec(db, insert, nil, nil, nil), SQLITE_OK)
+        guard sqlite3_exec(db, insert, nil, nil, nil) == SQLITE_OK else {
+            throw NSError(domain: "SwitchFixture", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+        }
         func shortHash(_ value: String) -> String {
             let hash = Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
             return String(hash.dropFirst(8).prefix(16))
