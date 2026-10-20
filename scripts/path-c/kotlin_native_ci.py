@@ -18,6 +18,23 @@ REQUIRED_DATA_SUITES = (
     "NativeJsCryptoBridgeTest", "NativeUrlCanonicalTest",
 )
 
+def write_failure_report(root: Path, output: Path) -> None:
+    failures: list[dict[str, str]] = []
+    for module in MODULES:
+        for path in sorted((root / module / "build/test-results/iosSimulatorArm64Test").glob("TEST-*.xml")):
+            for case in ET.parse(path).getroot().iter("testcase"):
+                for tag in ("failure", "error"):
+                    for failure in case.findall(tag):
+                        failures.append({
+                            "module": module,
+                            "class": case.get("classname", ""),
+                            "test": case.get("name", ""),
+                            "type": failure.get("type", ""),
+                            "message": failure.get("message", ""),
+                            "stack": failure.text or "",
+                        })
+    (output / "failures.json").write_text(json.dumps(failures, indent=2))
+
 
 def validate_reports(root: Path) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -56,9 +73,12 @@ def main() -> None:
                    "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8",
                    *[f":{module}:iosSimulatorArm64Test" for module in MODULES]]
         with fixtures() as fixture_url, (output / "tests.log").open("x") as log:
-            subprocess.run(command, cwd=ROOT, env=dict(os.environ, C1_NATIVE_SIMULATOR=simulator,
-                           SPEC004_FIXTURE_BASE=fixture_url, SIMCTL_CHILD_SPEC004_FIXTURE_BASE=fixture_url),
-                           stdout=log, stderr=subprocess.STDOUT, check=True, timeout=2400)
+            try:
+                subprocess.run(command, cwd=ROOT, env=dict(os.environ, C1_NATIVE_SIMULATOR=simulator,
+                               SPEC004_FIXTURE_BASE=fixture_url, SIMCTL_CHILD_SPEC004_FIXTURE_BASE=fixture_url),
+                               stdout=log, stderr=subprocess.STDOUT, check=True, timeout=2400)
+            finally:
+                write_failure_report(ROOT, output)
         counts = validate_reports(ROOT)
         (output / "summary.json").write_text(json.dumps(counts, indent=2))
         print(f"Kotlin/Native tests passed: {counts}", flush=True)
