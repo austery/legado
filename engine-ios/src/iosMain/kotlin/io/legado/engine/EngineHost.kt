@@ -49,7 +49,8 @@ internal object EngineHost {
     private var networkPermits: Semaphore? = null
 
     /** Process-wide leases include legacy requests and independent engine sessions. */
-    suspend fun <T> withSourceRequest(sourceId: String, background: Boolean = false, action: suspend () -> T): T {
+    suspend fun <T> withSourceRequest(sourceId: String, background: Boolean = false,
+        reserveForeground: Boolean = true, action: suspend () -> T): T {
         if (!background) OfflineWork.cancel()
         val (permits, lease) = networkRegistryMutex.withLock {
             val permits = networkPermits ?: Semaphore(
@@ -57,11 +58,15 @@ internal object EngineHost {
             ).also { networkPermits = it }
             permits to sourceLeases.getOrPut(sourceId) { Mutex() }
         }
-        if (!background) return lease.withLock { permits.withPermit { action() } }
+        if (!background || !reserveForeground) return lease.withLock { permits.withPermit { action() } }
         // The single cache lane may borrow spare capacity, never the foreground's last permit.
         return lease.withLock {
             val acquired = networkRegistryMutex.withLock {
-                permits.availablePermits > 1 && permits.tryAcquire()
+                if (permits.availablePermits <= 1 || !permits.tryAcquire()) false
+                else if (permits.availablePermits == 0) {
+                    permits.release()
+                    false
+                } else true
             }
             check(acquired) { "No spare network capacity for caching; retry after foreground requests finish" }
             try { action() } finally { permits.release() }

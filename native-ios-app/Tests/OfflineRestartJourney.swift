@@ -44,6 +44,17 @@ enum OfflineRestartJourney {
             }
         }
         XCTAssertEqual((terminal as? CacheProgress)?.completed, 20)
+        let allChapters = try XCTUnwrap((toc as? TocReply)?.chapters)
+        let speculative: EngineReply = await withCheckedContinuation { continuation in
+            _ = engine.cacheNextChapters(sourceId: base, bookId: book.id,
+                afterChapterId: allChapters[20].id, prefetch: true) { reply in
+                if let progress = reply as? CacheProgress, progress.running { return }
+                continuation.resume(returning: reply)
+            }
+        }
+        // Unlike explicit caching, prefetch must leave the single configured permit available.
+        XCTAssertEqual((speculative as? CacheProgress)?.completed, 0)
+        XCTAssertEqual((speculative as? CacheProgress)?.failedChapterIds.count, 2)
         let status = await call { engine.offlineStatus(sourceId: base, bookId: book.id, completion: $0) }
         let available = try XCTUnwrap(status as? OfflineStatus).chapters.filter { $0.availability == .available }
         XCTAssertEqual(available.count, 21)

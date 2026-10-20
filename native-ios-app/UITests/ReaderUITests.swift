@@ -17,6 +17,18 @@ final class ReaderUITests: XCTestCase {
         app.buttons["contents.details"].tap()
         let cache = app.buttons["offline.cache"]
         for _ in 0..<5 where !cache.isHittable { app.swipeUp() }
+        app.buttons["fixture.hold"].tap()
+        XCTAssertTrue(cache.isHittable); cache.tap()
+        let (entered, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: source + "/control/entered/chapter")))
+        XCTAssertEqual(String(decoding: entered, as: UTF8.self), "entered")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        wait(app) { app.staticTexts["offline.progress"].label.contains("Cancelled") }
+        app.buttons["fixture.hold"].tap()
+        let (released, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: source + "/control/completed/chapter")))
+        XCTAssertEqual(String(decoding: released, as: UTF8.self), "completed")
+        XCTAssertEqual(app.staticTexts["offline.count"].label, "1 of 26 chapters available offline")
+        capture("offline-background-cancelled")
         XCTAssertTrue(cache.isHittable); cache.tap()
         wait(app) { app.staticTexts["offline.count"].label == "21 of 26 chapters available offline" }
         capture("offline-ready-portrait")

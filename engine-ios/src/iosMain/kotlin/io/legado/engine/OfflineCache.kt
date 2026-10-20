@@ -28,6 +28,7 @@ class CacheCleared internal constructor(val deleted: Int, val failed: Int) : Eng
 internal object OfflineWork {
     private val active = atomic<Job?>(null)
     val lane = Mutex()
+    val deliveryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     fun replace(job: Job) { active.getAndSet(job)?.cancel() }
     fun cancel() { active.getAndSet(null)?.cancel() }
     suspend fun retire() { active.getAndSet(null)?.cancelAndJoin() }
@@ -114,8 +115,10 @@ internal class OfflineCache(private val scope: CoroutineScope,
         return CacheCleared(deleted, failed)
     }
 
-    fun start(sourceId: String, bookId: String, afterChapterId: String?, count: Int,
+    fun start(sourceId: String, bookId: String, afterChapterId: String?, prefetch: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest {
+        val terminal = atomic(false)
+        val latest = atomic<CacheProgress?>(null)
         val job = scope.launch(start = CoroutineStart.LAZY) {
             var completed = 0
             var target = 0
@@ -123,76 +126,88 @@ internal class OfflineCache(private val scope: CoroutineScope,
             val failures = mutableListOf<String>()
             suspend fun report(running: Boolean, cancelled: Boolean = false) {
                 val reply = CacheProgress(completed, target, failures.toList(), running, cancelled, lastFailure)
+                latest.value = reply
+                if (!running && !terminal.compareAndSet(false, true)) return
                 withContext(NonCancellable + Dispatchers.Main) { completion(reply) }
             }
             try {
                 OfflineWork.lane.withLock {
-                val initial = EngineHost.gate.withLock { entry(sourceId, bookId) }
-                val selected = EngineHost.gate.withLock {
-                    val anchor = afterChapterId ?: dao.resume(bookId)?.chapterUrl ?:
-                        initial.chapters.firstOrNull { it.index == initial.book.durChapterIndex }?.url
-                    val start = initial.chapters.indexOfFirst { it.url == anchor }
-                    check(start >= 0) { "Open a chapter before caching" }
-                    initial.chapters.drop(start + 1).filterNot { it.isVolume }.take(count)
-                }
-                target = selected.size
-                report(true)
-                for (chapter in selected) {
-                    currentCoroutineContext().ensureActive()
-                    try {
-                        val shouldFetch = EngineHost.gate.withLock {
-                            val current = entry(sourceId, bookId)
-                            check(sameCatalog(initial, current)) { "Stored catalog changed" }
-                            if (availability(current, chapter) == OfflineAvailability.AVAILABLE) false
-                            else {
-                                check(chapter.url !in protected(current)) { "Protected chapter cannot be replaced by caching" }
-                                true
-                            }
-                        }
-                        if (shouldFetch) {
-                            val source = EngineHost.gate.withLock {
-                                AppDbProviders.get().bookSourceDao.getBookSource(sourceId)?.also {
-                                    check(it.enabled && it.bookSourceType == 0) { "Source is unavailable" }
-                                } ?: error("Source is missing")
-                            }
-                            val body = withContext(WebBookResponsePolicy { response ->
-                                check(response.isSuccessful()) { "HTTP ${response.code()}" }
-                            }) {
-                                EngineHost.withOperation {
-                                    EngineHost.withSourceRequest(sourceId, background = true) {
-                                        WebBook.getContentAwait(source, initial.book.copy(), chapter.copy(),
-                                            nextChapterUrl = initial.chapters.getOrNull(initial.chapters.indexOf(chapter) + 1)?.url,
-                                            needSave = false)
-                                    }.also { EngineHost.interactionFailure()?.let { failure -> error(failure.message) } }
+                    val initial = EngineHost.gate.withLock { entry(sourceId, bookId) }
+                    val selected = EngineHost.gate.withLock {
+                        val anchor = afterChapterId ?: dao.resume(bookId)?.chapterUrl ?:
+                            initial.chapters.firstOrNull { it.index == initial.book.durChapterIndex }?.url
+                        val start = initial.chapters.indexOfFirst { it.url == anchor }
+                        check(start >= 0) { "Open a chapter before caching" }
+                        initial.chapters.drop(start + 1).filterNot { it.isVolume }.take(if (prefetch) 2 else 20)
+                    }
+                    target = selected.size
+                    report(true)
+                    for (chapter in selected) {
+                        currentCoroutineContext().ensureActive()
+                        try {
+                            val shouldFetch = EngineHost.gate.withLock {
+                                val current = entry(sourceId, bookId)
+                                check(sameCatalog(initial, current)) { "Stored catalog changed" }
+                                if (availability(current, chapter) == OfflineAvailability.AVAILABLE) false
+                                else {
+                                    check(chapter.url !in protected(current)) { "Protected chapter cannot be replaced by caching" }
+                                    true
                                 }
                             }
-                            currentCoroutineContext().ensureActive()
-                            check(body.isNotBlank()) { "Empty chapter response" }
-                            EngineHost.gate.withLock {
+                            if (shouldFetch) {
+                                val source = EngineHost.gate.withLock {
+                                    AppDbProviders.get().bookSourceDao.getBookSource(sourceId)?.also {
+                                        check(it.enabled && it.bookSourceType == 0) { "Source is unavailable" }
+                                    } ?: error("Source is missing")
+                                }
+                                val body = withContext(WebBookResponsePolicy { response ->
+                                    check(response.isSuccessful()) { "HTTP ${response.code()}" }
+                                }) {
+                                    EngineHost.withOperation {
+                                        EngineHost.withSourceRequest(sourceId, background = true, reserveForeground = prefetch) {
+                                            WebBook.getContentAwait(source, initial.book.copy(), chapter.copy(),
+                                                nextChapterUrl = initial.chapters.getOrNull(initial.chapters.indexOf(chapter) + 1)?.url,
+                                                needSave = false)
+                                        }.also { EngineHost.interactionFailure()?.let { failure -> error(failure.message) } }
+                                    }
+                                }
                                 currentCoroutineContext().ensureActive()
-                                val current = entry(sourceId, bookId)
-                                check(sameCatalog(initial, current) &&
-                                    AppDbProviders.get().bookSourceDao.getBookSource(sourceId) == source) { "Source or catalog changed" }
-                                check(chapter.url !in protected(current)) { "Chapter became protected" }
-                                // Atomic writer plus readback: no suspension between publish and verification.
-                                BookHelpProviders.get().saveContent(source, current.book, chapter, body)
-                                check(storage.getContent(current.book, chapter) == body) { "Cache write could not be verified" }
+                                check(body.isNotBlank()) { "Empty chapter response" }
+                                EngineHost.gate.withLock {
+                                    currentCoroutineContext().ensureActive()
+                                    val current = entry(sourceId, bookId)
+                                    check(sameCatalog(initial, current) &&
+                                        AppDbProviders.get().bookSourceDao.getBookSource(sourceId) == source) { "Source or catalog changed" }
+                                    check(chapter.url !in protected(current)) { "Chapter became protected" }
+                                    // Atomic writer plus readback: no suspension between publish and verification.
+                                    BookHelpProviders.get().saveContent(source, current.book, chapter, body)
+                                    check(storage.getContent(current.book, chapter) == body) { "Cache write could not be verified" }
+                                }
                             }
+                            completed++
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) {
+                            failures.add(chapter.url)
+                            lastFailure = error.message ?: "Chapter could not be cached"
                         }
-                        completed++
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (error: Exception) {
-                        failures.add(chapter.url)
-                        lastFailure = error.message ?: "Chapter could not be cached"
+                        report(true)
                     }
-                    report(true)
-                }
-                report(false)
+                    report(false)
                 }
             } catch (cancelled: CancellationException) { report(false, true) }
             catch (error: Exception) {
-                withContext(NonCancellable + Dispatchers.Main) {
+                if (terminal.compareAndSet(false, true)) withContext(NonCancellable + Dispatchers.Main) {
                     completion(EngineFailure(EngineErrorCode.STORAGE, error.message ?: "Cache operation failed"))
+                }
+            }
+        }
+        // A lazy job cancelled before its first dispatch never enters the try/catch above.
+        job.invokeOnCompletion {
+            if (terminal.compareAndSet(false, true)) {
+                val previous = latest.value
+                OfflineWork.deliveryScope.launch {
+                    completion(CacheProgress(previous?.completed ?: 0, previous?.target ?: 0,
+                        previous?.failedChapterIds.orEmpty(), false, true, previous?.lastFailure.orEmpty()))
                 }
             }
         }

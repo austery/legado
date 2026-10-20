@@ -30,6 +30,8 @@ final class ShelfProcessRestartTests: XCTestCase {
 
     func testPrepare() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["SPEC003_RESTART_PHASE"] == "prepare")
+        // A real persisted single-request configuration must still support explicit manual caching.
+        UserDefaults.standard.set(1, forKey: "threadCount")
         let model = ReaderModel()
         model.start(); try await settle(model)
         let run = UUID().uuidString

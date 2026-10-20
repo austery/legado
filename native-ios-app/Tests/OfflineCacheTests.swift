@@ -4,6 +4,36 @@ import CryptoKit
 
 @MainActor
 final class OfflineCacheTests: XCTestCase {
+    func testImmediateCancellationAndClosedEngineDeliverExactlyOneTerminalResult() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, chapters, _) = try await fixture(engine)
+        let finished = expectation(description: "Every cache request terminates once")
+        finished.expectedFulfillmentCount = 201
+        finished.assertForOverFulfill = true
+        var terminalIDs: Set<Int> = []
+        for id in 0..<200 {
+            let request = engine.cacheNextChapters(sourceId: book.sourceId, bookId: book.id,
+                afterChapterId: chapters[0].id, prefetch: false) { reply in
+                if let progress = reply as? CacheProgress, !progress.running {
+                    XCTAssertTrue(terminalIDs.insert(id).inserted)
+                    finished.fulfill()
+                }
+            }
+            request.cancel()
+        }
+        engine.close()
+        _ = engine.cacheNextChapters(sourceId: book.sourceId, bookId: book.id,
+            afterChapterId: chapters[0].id, prefetch: false) { reply in
+            if let progress = reply as? CacheProgress, !progress.running {
+                XCTAssertTrue(progress.cancelled)
+                XCTAssertTrue(terminalIDs.insert(200).inserted)
+                finished.fulfill()
+            }
+        }
+        await fulfillment(of: [finished], timeout: 10)
+        XCTAssertEqual(terminalIDs.count, 201)
+    }
+
     private func call(_ start: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
         await withCheckedContinuation { continuation in _ = start { continuation.resume(returning: $0) } }
     }
@@ -144,6 +174,13 @@ final class OfflineCacheTests: XCTestCase {
         XCTAssertEqual(final[0].availability, .unavailable)
         XCTAssertEqual(final[1].availability, .available)
         XCTAssertEqual(final[2].availability, .unavailable)
+        let prepared = await call { engine.prepareCacheClear(sourceId: book.sourceId, bookId: book.id, completion: $0) }
+        let plan = try XCTUnwrap(prepared as? CacheClearPrepared)
+        XCTAssertEqual(plan.count, 2)
+        let cleared = await call { engine.clearOptionalCache(token: plan.token, completion: $0) }
+        XCTAssertEqual((cleared as? CacheCleared)?.deleted, 1)
+        XCTAssertEqual((cleared as? CacheCleared)?.failed, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: blocked.appendingPathComponent("marker").path))
     }
 
     func testCancelThenClearRejectsLateNetworkPublication() async throws {

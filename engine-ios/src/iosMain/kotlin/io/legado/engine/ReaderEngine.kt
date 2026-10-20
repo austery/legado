@@ -81,7 +81,7 @@ class ReaderEngine {
 
     fun cacheNextChapters(sourceId: String, bookId: String, afterChapterId: String?,
         prefetch: Boolean, completion: (EngineReply) -> Unit): EngineRequest =
-        offlineCache.start(sourceId, bookId, afterChapterId, if (prefetch) 2 else 20, completion)
+        offlineCache.start(sourceId, bookId, afterChapterId, prefetch, completion)
 
     fun cancelCaching() { offlineCache.cancel() }
 
