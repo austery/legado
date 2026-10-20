@@ -52,7 +52,18 @@ struct ReaderScreen: View {
                     }.padding().background(.regularMaterial)
                 }
                 if model.busy {
-                    HStack { ProgressView(); Text("Loading…"); Spacer(); Button("Cancel") { model.cancelLoading() } }.padding()
+                    HStack {
+                        ProgressView(); Text(model.committingSwitch ? "Switching source…" : "Loading…"); Spacer()
+                        if !model.committingSwitch { Button("Cancel") { model.cancelLoading() } }
+                    }.padding()
+                }
+                if let original = model.switchingFrom {
+                    HStack {
+                        Text("Change source · \(original.title)").font(.callout)
+                        Spacer()
+                        Button("Keep original source") { model.cancelSourceSwitch() }
+                            .disabled(model.committingSwitch).accessibilityIdentifier("switch.cancel")
+                    }.padding()
                 }
                 if model.route == .reading, let content = model.content {
                     VStack(spacing: 6) {
@@ -76,9 +87,10 @@ struct ReaderScreen: View {
                     if model.route == .sources { sources }
                     if model.route == .details { details }
                     if model.route == .contents { contents }
+                    if model.route == .sourceSwitch { sourceSwitch }
                 }
                 if model.route == .reading { readingControls }
-                if model.route == .shelf || model.route == .search || model.route == .sources { libraryNavigation }
+                if model.switchingFrom == nil && (model.route == .shelf || model.route == .search || model.route == .sources) { libraryNavigation }
 
             }
             .background(model.route == .reading ? paper : Color(uiColor: .systemGroupedBackground))
@@ -86,7 +98,7 @@ struct ReaderScreen: View {
             .navigationTitle(model.route == .reading ? "" : title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if model.route != .shelf {
+                if model.route != .shelf && model.switchingFrom == nil {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button { model.showShelf() } label: { Label("Shelf", systemImage: "chevron.left") }
                             .accessibilityIdentifier("reader.shelf")
@@ -138,6 +150,7 @@ struct ReaderScreen: View {
         case .details: return "Book details"
         case .contents: return "Contents"
         case .reading: return model.content?.chapter.title ?? "Reader"
+        case .sourceSwitch: return "Replacement chapter"
         }
     }
 
@@ -277,7 +290,7 @@ struct ReaderScreen: View {
                                     Text(candidate.sourceName)
                                     Text(candidate.book.id).font(.caption).foregroundStyle(.secondary)
                                 }
-                            }.disabled(model.busy).accessibilityIdentifier("search.candidate." + candidate.id)
+                            }.disabled(model.busy || !model.eligibleSwitchCandidate(candidate.book)).accessibilityIdentifier("search.candidate." + candidate.id)
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
@@ -335,6 +348,10 @@ struct ReaderScreen: View {
                         .disabled(model.busy).accessibilityIdentifier("details.contents")
                     Button { model.addCurrentBook() } label: { Label("Add to shelf", systemImage: "plus.circle") }
                         .disabled(model.busy || model.chapters.isEmpty).accessibilityIdentifier("details.add")
+                    if model.canChangeSource {
+                        Button("Change source") { model.beginSourceSwitch() }
+                            .disabled(model.busy).accessibilityIdentifier("details.changeSource")
+                    }
                     if let notice = model.shelfNotice { Text(notice).foregroundStyle(.secondary) }
                 }
                 Section("About this book") {
@@ -407,6 +424,10 @@ struct ReaderScreen: View {
     private var readingControls: some View {
         VStack(spacing: 12) {
             if menu {
+                if model.canChangeSource {
+                    Button("Change source") { model.beginSourceSwitch() }
+                        .disabled(model.busy).accessibilityIdentifier("reader.changeSource")
+                }
                 HStack {
                     chapterButton("Previous", icon: "chevron.left", delta: -1)
                     Spacer(minLength: 12)
@@ -434,6 +455,50 @@ struct ReaderScreen: View {
         .padding(.top, menu ? 8 : 4).padding(.bottom, 12)
         .frame(maxWidth: .infinity).background(paper)
         .overlay(alignment: .top) { if menu { Divider().opacity(0.35) } }
+    }
+
+    private var sourceSwitch: some View {
+        List {
+            if let candidate = model.switchCandidate {
+                Section("Replacement source") {
+                    if let original = model.switchingFrom {
+                        Text("From: " + (model.sources.first { $0.id == original.sourceId }?.name ?? original.sourceId))
+                            .accessibilityIdentifier("switch.originalSource")
+                    }
+                    Text("To: " + (model.sources.first { $0.id == candidate.sourceId }?.name ?? candidate.sourceId))
+                        .accessibilityIdentifier("switch.replacementSource")
+                    Text(candidate.title)
+                    Text("Choose a chapter. Switching starts at its beginning; the old paragraph position is not copied.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Choose another source") { model.navigate(.search) }
+                        .disabled(model.busy)
+                }
+                if let prepared = model.preparedSwitch {
+                    Section("Ready to switch") {
+                        Text(prepared.chapter.title)
+                        Text("The replacement text is downloaded. Your original source stays active until you confirm.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button("Confirm source switch") { model.confirmSourceSwitch() }
+                            .disabled(model.busy).accessibilityIdentifier("switch.confirm")
+                    }
+                }
+                Section("Choose replacement chapter") {
+                    if model.recommendedSwitchChapter == nil {
+                        Text("No unique title match. Select the chapter explicitly.").foregroundStyle(.secondary)
+                    }
+                    ForEach(model.switchChapters, id: \.id) { chapter in
+                        Button { model.prepareSourceSwitch(chapter) } label: {
+                            HStack {
+                                Text(chapter.title)
+                                if model.recommendedSwitchChapter?.id == chapter.id {
+                                    Text("Recommended").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }.disabled(model.busy).accessibilityIdentifier("switch.chapter.\(chapter.index)")
+                    }
+                }
+            }
+        }
     }
 
     private func chapterButton(_ title: String, icon: String, delta: Int) -> some View {

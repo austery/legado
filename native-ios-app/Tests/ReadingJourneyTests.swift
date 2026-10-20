@@ -1,6 +1,8 @@
 import XCTest
 import ReaderEngine
 import SwiftUI
+import CryptoKit
+import SQLite3
 @testable import NativeReader
 
 @MainActor
@@ -93,7 +95,7 @@ final class ReadingJourneyTests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
-    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false) async throws {
+    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, duplicateChapters: Bool = false) async throws {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
         var json = try XCTUnwrap(String(data: data, encoding: .utf8))
         if !titleSuffix.isEmpty {
@@ -101,11 +103,162 @@ final class ReadingJourneyTests: XCTestCase {
                 .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$## " + titleSuffix)
         }
         if paragraphs { json = json.replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第") }
+        if duplicateChapters {
+            json = json.replacingOccurrences(of: "\"chapterName\": \"text\"", with: "\"chapterName\": \"text##Chapter [0-9]+##Chapter 1\"")
+        }
         if unknown { json = json.replacingOccurrences(of: "class.author@text", with: "class.absent-author@text") }
         if !enabled { json = json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false") }
         let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
         try Data(json.utf8).write(to: local)
         model.importFile(local); try await settle(model); XCTAssertNil(model.message)
+    }
+
+    func testConflictingTargetKeepsItsCacheAndIsNeverReportedAsSuccessfulSwitch() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let first = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let title = UUID().uuidString
+        try await importFixture(model, base: first, titleSuffix: title)
+        try await importFixture(model, base: second, titleSuffix: title)
+        model.searchScope = .selected; model.selectedSourceIDs = [first, second]
+        model.query = "Path"; model.search(); try await settle(model)
+        let old = try XCTUnwrap(model.results.first { $0.sourceId == first })
+        let target = try XCTUnwrap(model.results.first { $0.sourceId == second })
+        model.select(old); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        model.beginSourceSwitch(); try await settle(model)
+        model.select(target); try await settle(model)
+        let chapter = try XCTUnwrap(model.switchChapters.first)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(documents.appendingPathComponent("legado.db").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "''") + "'" }
+        let insert = """
+        INSERT INTO books(bookUrl,origin,name,author,type) VALUES(\(quoted(target.id)),\(quoted(second)),\(quoted(target.title)),'Different author',8);
+        INSERT INTO chapters(bookUrl,url,title,`index`,isVolume,isVip,isPay) VALUES(\(quoted(target.id)),\(quoted(chapter.id)),\(quoted(chapter.title)),0,0,0,0);
+        """
+        guard sqlite3_exec(db, insert, nil, nil, nil) == SQLITE_OK else {
+            throw NSError(domain: "SwitchFixture", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+        }
+        func shortHash(_ value: String) -> String {
+            let hash = Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+            return String(hash.dropFirst(8).prefix(16))
+        }
+        let cache = documents.appendingPathComponent("book_cache")
+            .appendingPathComponent(String(target.title.prefix(9)) + shortHash(target.id))
+            .appendingPathComponent("00000-" + shortHash(chapter.title) + ".nb")
+        try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let originalBody = "unrelated\npreserve this offline paragraph"
+        try Data(originalBody.utf8).write(to: cache)
+        let other = ReaderEngine()
+        defer { other.close() }
+        func call(_ action: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
+            await withCheckedContinuation { continuation in _ = action { continuation.resume(returning: $0) } }
+        }
+        _ = await call { other.initialize(completion: $0) }
+        let opened = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
+        let token = try XCTUnwrap((opened as? ContentReply)?.reading?.token)
+        let saved: EngineReply = await withCheckedContinuation { continuation in
+            other.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: 10) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(saved is ReadingSaved)
+        model.prepareSourceSwitch(chapter); try await settle(model)
+        XCTAssertNotNil(model.preparedSwitch)
+        XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), originalBody)
+        model.confirmSourceSwitch(); try await settle(model)
+        XCTAssertNotNil(model.message)
+        XCTAssertNotNil(model.switchingFrom)
+        XCTAssertEqual(model.book?.sourceId, first)
+        XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), originalBody)
+        let recovered = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((recovered as? ContentReply)?.text, originalBody)
+        XCTAssertEqual((recovered as? ContentReply)?.reading?.paragraphUtf16Offset, 10)
+    }
+
+    func testExplicitSourceSwitchCancellationCommitAndReopen() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let first = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let title = UUID().uuidString
+        try await importFixture(model, base: first, titleSuffix: title, paragraphs: true)
+        try await importFixture(model, base: second, titleSuffix: title, paragraphs: true)
+        model.searchScope = .selected; model.selectedSourceIDs = [first, second]
+        model.query = "Path"; model.search(); try await settle(model)
+        let oldBook = try XCTUnwrap(model.results.first { $0.sourceId == first })
+        let replacement = try XCTUnwrap(model.results.first { $0.sourceId == second })
+        model.select(oldBook); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.refreshShelf(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        XCTAssertTrue(model.canChangeSource)
+        model.beginSourceSwitch(); try await settle(model)
+        model.select(replacement); try await settle(model)
+        XCTAssertEqual(model.route, .sourceSwitch)
+        let recommended = try XCTUnwrap(model.recommendedSwitchChapter)
+        model.prepareSourceSwitch(recommended); try await settle(model)
+        XCTAssertNotNil(model.preparedSwitch)
+        model.cancelSourceSwitch(); try await settle(model)
+        XCTAssertEqual(model.book?.sourceId, first)
+        XCTAssertEqual(model.content?.chapter.sourceId, first)
+        model.beginSourceSwitch(); try await settle(model)
+        model.select(replacement); try await settle(model)
+        model.prepareSourceSwitch(try XCTUnwrap(model.recommendedSwitchChapter)); try await settle(model)
+        model.confirmSourceSwitch(); try await settle(model)
+        XCTAssertNil(model.message)
+        XCTAssertNil(model.switchingFrom)
+        XCTAssertEqual(model.book?.sourceId, second)
+        XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, 0)
+        model.refreshShelf(); try await settle(model)
+        XCTAssertEqual(model.shelf.filter { $0.book.title == oldBook.title }.count, 1)
+        let reopened = ReaderEngine()
+        defer { reopened.close() }
+        func call(_ action: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
+            await withCheckedContinuation { continuation in _ = action { continuation.resume(returning: $0) } }
+        }
+        let ready = await call { reopened.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let result = await call { reopened.openReading(sourceId: second, bookId: replacement.id, cacheOnly: true, completion: $0) }
+        let content = try XCTUnwrap(result as? ContentReply)
+        XCTAssertEqual(content.chapter.id, recommended.id)
+        XCTAssertEqual(content.reading?.paragraphUtf16Offset, 0)
+    }
+
+    func testSwitchPreparationFailureRetainsOriginalReading() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let first = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let title = UUID().uuidString
+        try await importFixture(model, base: first, titleSuffix: title)
+        try await importFixture(model, base: second, titleSuffix: title, duplicateChapters: true)
+        model.searchScope = .selected; model.selectedSourceIDs = [first, second]
+        model.query = "Path"; model.search(); try await settle(model)
+        let replacement = try XCTUnwrap(model.results.first { $0.sourceId == second })
+        model.select(try XCTUnwrap(model.results.first { $0.sourceId == first })); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.refreshShelf(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let originalText = model.content?.text
+        model.beginSourceSwitch(); try await settle(model)
+        model.select(replacement); try await settle(model)
+        XCTAssertNil(model.recommendedSwitchChapter, "Duplicate titles require explicit chapter selection")
+        model.prepareSourceSwitch(try XCTUnwrap(model.switchChapters.last)); try await settle(model)
+        XCTAssertNil(model.preparedSwitch)
+        XCTAssertNotNil(model.message)
+        XCTAssertEqual(model.book?.sourceId, first)
+        XCTAssertEqual(model.content?.text, originalText)
+        model.prepareSourceSwitch(try XCTUnwrap(model.switchChapters.last)); try await settle(model)
+        XCTAssertNotNil(model.preparedSwitch)
+        model.confirmSourceSwitch(); try await settle(model)
+        XCTAssertNil(model.message)
+        XCTAssertEqual(model.content?.chapter.sourceId, second)
+        XCTAssertEqual(model.content?.chapter.index, 2, "Manual selection must win over chapter index matching")
+        XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, 0)
     }
 
     func testStalePositionCanBeDiscardedWithoutOverwritingSharedProgress() async throws {

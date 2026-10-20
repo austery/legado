@@ -58,3 +58,4 @@ hs_err_pid*.log
 replay_pid*.log
 
 !/docs/architecture/specs/PLAN-005-native-ui-feature-expansion.md
+!/docs/architecture/specs/SPEC-005-explicit-source-switching.md

@@ -26,6 +26,116 @@ import io.legado.app.data.dao.NativeShelfFailure
 /** Native shelf persistence only; all databases and book records are synthetic. */
 class NativeShelfNativeIntegrationTest {
     @Test
+    fun explicitSwitchReplacesCatalogAndResumeWhilePreservingUserMetadata() = runBlocking {
+        withDatabase { database, _ ->
+            val original = Book(bookUrl = "old", origin = "old-source", name = "Title", author = "Author",
+                group = 17, order = 4, customIntro = "My notes", customCoverUrl = "my-cover")
+            val oldChapter = BookChapter(bookUrl = "old", url = "old-chapter", title = "Chapter")
+            database.nativeShelfDao.addToShelf(original, listOf(oldChapter))
+            val oldResume = database.nativeResumeDao.save("old-source", "old", "old-chapter", 0,
+                "first\nsecond", 6, 0, io.legado.app.data.dao.NativeChapterProjection.from(original))
+            val savedBook = database.nativeShelfDao.openBook("old-source", "old").book
+            val target = Book(bookUrl = "new", origin = "new-source", name = "Title", author = "Author", intro = "New description")
+            val source = io.legado.app.data.entities.BookSource(bookSourceUrl = "new-source", bookSourceName = "New")
+            database.bookSourceDao.insert(source)
+            val chapter = BookChapter(bookUrl = "new", url = "new-chapter", title = "Chapter", index = 3)
+            val entry = database.nativeShelfDao.switchSource("old-source", "old", oldResume.revision,
+                io.legado.app.data.dao.NativeChapterProjection.from(savedBook), target, listOf(chapter), chapter.url, "different body", source)
+            assertEquals(1, database.nativeShelfDao.listBooks().size)
+            assertEquals(null, database.bookDao.getBook("old"))
+            assertEquals(emptyList(), database.bookChapterDao.getChapterList("old"))
+            assertEquals(null, database.nativeResumeDao.get("old"))
+            assertEquals(listOf(chapter), entry.chapters)
+            assertEquals(17L, entry.book.group)
+            assertEquals(4, entry.book.order)
+            assertEquals("My notes", entry.book.customIntro)
+            assertEquals("my-cover", entry.book.customCoverUrl)
+            assertEquals("New description", entry.book.intro)
+            val resume = requireNotNull(database.nativeResumeDao.get("new"))
+            assertEquals(0, resume.paragraphUtf16Offset)
+            assertEquals(3, resume.chapterIndex)
+            assertEquals("new-source", resume.sourceId)
+            assertEquals(io.legado.app.data.dao.NativeBodyCoordinates.sha256("different body"), resume.textSha256)
+            assertFailsWith<io.legado.app.data.dao.NativeResumeException> {
+                database.nativeResumeDao.save("old-source", "old", "old-chapter", 0, "first\nsecond",
+                    6, oldResume.revision, io.legado.app.data.dao.NativeChapterProjection.from(savedBook))
+            }
+        }
+    }
+
+    @Test
+    fun failedSwitchRollsBackDeletionAndStalePreparationDoesNotMutate() = runBlocking {
+        withDatabase { database, path ->
+            val original = Book(bookUrl = "old", origin = "source", name = "Title", author = "Author")
+            val chapter = BookChapter(bookUrl = "old", url = "chapter", title = "Chapter")
+            database.nativeShelfDao.addToShelf(original, listOf(chapter))
+            val projection = io.legado.app.data.dao.NativeChapterProjection.from(original)
+            val target = original.copy(bookUrl = "new", origin = "other")
+            val source = io.legado.app.data.entities.BookSource(bookSourceUrl = "other", bookSourceName = "Other")
+            database.bookSourceDao.insert(source)
+            val catalog = listOf(chapter.copy(bookUrl = "new"))
+            assertFailsWith<IllegalStateException> {
+                database.nativeShelfDao.switchSource("source", "old", 0, projection, target,
+                    catalog, "chapter", "body", source) { throw IllegalStateException("Synthetic cache publication failure") }
+            }
+            assertEquals(original, database.nativeShelfDao.openBook("source", "old").book)
+            assertEquals(listOf(chapter), database.bookChapterDao.getChapterList("old"))
+            NativeSQLiteDriver().open(path).use {
+                it.execSQL("CREATE TRIGGER reject_switch BEFORE INSERT ON native_reading_resume WHEN NEW.bookUrl = 'new' BEGIN SELECT RAISE(ABORT, 'Synthetic switch failure'); END")
+            }
+            assertFailsWith<Exception> {
+                database.nativeShelfDao.switchSource("source", "old", 0, projection, target, catalog, "chapter", "body", source)
+            }
+            assertEquals(original, database.nativeShelfDao.openBook("source", "old").book)
+            assertEquals(listOf(chapter), database.bookChapterDao.getChapterList("old"))
+            assertEquals(null, database.bookDao.getBook("new"))
+            val saved = database.nativeResumeDao.save("source", "old", "chapter", 0, "body", 0, 0, projection)
+            assertEquals(io.legado.app.data.dao.NativeResumeFailure.STALE_REVISION,
+                assertFailsWith<io.legado.app.data.dao.NativeResumeException> {
+                    database.nativeShelfDao.switchSource("source", "old", 0, projection, target, catalog, "chapter", "body", source)
+                }.failure)
+            assertEquals(saved, database.nativeResumeDao.get("old"))
+            assertEquals(null, database.bookDao.getBook("new"))
+        }
+    }
+
+    @Test
+    fun switchRejectsUnknownIdentityOccupiedUrlAndChangedSourceWithoutMutation() = runBlocking {
+        withDatabase { database, _ ->
+            val original = Book(bookUrl = "old", origin = "source", name = "Title", author = "Author")
+            val chapter = BookChapter(bookUrl = "old", url = "chapter", title = "Chapter")
+            database.nativeShelfDao.addToShelf(original, listOf(chapter))
+            val source = io.legado.app.data.entities.BookSource(bookSourceUrl = "target", bookSourceName = "Target")
+            database.bookSourceDao.insert(source)
+            val projection = io.legado.app.data.dao.NativeChapterProjection.from(original)
+            val target = original.copy(bookUrl = "new", origin = "target")
+            val catalog = listOf(chapter.copy(bookUrl = "new"))
+            for (author in listOf("", "Different")) {
+                assertEquals(NativeShelfFailure.IDENTITY_CONFLICT, assertFailsWith<NativeShelfException> {
+                    database.nativeShelfDao.switchSource("source", "old", 0, projection,
+                        target.copy(author = author), catalog, "chapter", "body", source)
+                }.failure)
+            }
+            database.bookSourceDao.insert(source.copy(enabled = false))
+            assertEquals(io.legado.app.data.dao.NativeResumeFailure.STALE_REVISION,
+                assertFailsWith<io.legado.app.data.dao.NativeResumeException> {
+                    database.nativeShelfDao.switchSource("source", "old", 0, projection,
+                        target, catalog, "chapter", "body", source)
+                }.failure)
+            database.bookSourceDao.insert(source)
+            val unrelated = target.copy(name = "Another work")
+            database.nativeShelfDao.addToShelf(unrelated, catalog)
+            assertEquals(NativeShelfFailure.IDENTITY_CONFLICT, assertFailsWith<NativeShelfException> {
+                database.nativeShelfDao.switchSource("source", "old", 0, projection,
+                    target, catalog, "chapter", "body", source)
+            }.failure)
+            assertEquals(original, database.nativeShelfDao.openBook("source", "old").book)
+            assertEquals(listOf(chapter), database.bookChapterDao.getChapterList("old"))
+            assertEquals(unrelated, database.nativeShelfDao.openBook("target", "new").book)
+        }
+    }
+
+    @Test
     fun sameKnownIdentityReusesOriginalBookAndCatalogWithoutReplacing() = runBlocking {
         val path = NSTemporaryDirectory() + "PROTOTYPE-spec003-shelf-" + NSUUID().UUIDString + ".db"
         val database = Room.databaseBuilder<AppDatabase>(path)

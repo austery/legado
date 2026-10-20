@@ -5,13 +5,21 @@ import SQLite3
 /// Compiled only in the independent synthetic UI host, never in NativeReader.
 @main
 struct FixtureReaderApp: App {
-    @StateObject private var model = ReaderModel()
+    @StateObject private var model = ReaderModel(deliverReply: { stage, reply, apply in
+        if stage == .sourceSwitch, reply is ShelfEntryReply,
+           ProcessInfo.processInfo.environment["READER_UI_DROP_SWITCH_ACK"] == "1" {
+            UserDefaults.standard.set(true, forKey: "fixture.switchCommitted")
+            return
+        }
+        apply(reply)
+    })
     @State private var prepared = false
     @State private var failure: String?
     @State private var rejectingSave = false
     @State private var heldChapter = false
     @State private var positionStatus = "preparing"
     @State private var storedStatus = "preparing"
+    @State private var switchCommitted = false
     private var scenario: String { ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] ?? "shelf" }
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
     var body: some Scene {
@@ -23,6 +31,7 @@ struct FixtureReaderApp: App {
                         Text("SYNTHETIC UI HOST").font(.caption2)
                         Text("Fixture position").accessibilityIdentifier("fixture.position").accessibilityValue(positionStatus)
                         Text("Stored record").accessibilityIdentifier("fixture.stored").accessibilityValue(storedStatus)
+                        Text("Switch committed").accessibilityIdentifier("fixture.switchCommit").accessibilityValue(switchCommitted ? "true" : "false")
                         Spacer()
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
                             Task { @MainActor in
@@ -44,6 +53,7 @@ struct FixtureReaderApp: App {
                 } else { ProgressView("Preparing synthetic shelf…") }
                 if let failure { Text(failure).accessibilityIdentifier("fixture.failure") }
             }.onReceive(tick) { _ in
+                switchCommitted = UserDefaults.standard.bool(forKey: "fixture.switchCommitted")
                 let text = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                     .flatMap(\.windows).compactMap { $0.rootViewController?.view }.lazy.compactMap(findText).first
                 let chapter = model.chapterPosition.map(String.init) ?? "none"
@@ -69,6 +79,7 @@ struct FixtureReaderApp: App {
     @MainActor private func prepare() async throws {
         if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.storageKey)
+            UserDefaults.standard.removeObject(forKey: "fixture.switchCommitted")
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             for name in ["legado.db", "legado.db-wal", "legado.db-shm"] {
                 let url = documents.appendingPathComponent(name)
