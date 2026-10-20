@@ -357,12 +357,15 @@ retains exact candidates; only another listing with the same trimmed title and
 author is eligible. A unique trimmed chapter-title match is recommended; duplicate
 or missing matches require manual selection. Volume headings are excluded.
 
-The replacement chapter is fetched and its cache verified before confirmation.
-Confirmation atomically replaces the shelf record, catalog, and native resume,
+The replacement chapter is fetched into immutable in-memory preparation before
+confirmation. Confirmation validates URL ownership under the database write
+transaction, then publishes and verifies the body cache before committing the
+shelf record, catalog, and native resume,
 preserving user shelf metadata. Reading starts at offset zero. Existing progress,
 source-rule, and URL-ownership changes reject stale preparations. Cancel and
 pre-commit failures retain the original source; a lost post-commit acknowledgment
-is resolved from durable shelf state.
+is resolved only with this engine's successful commit receipt and matching durable
+shelf/resume state. Preparation never overwrites a different book's cache.
 
 The synthetic UI host can withhold only the final switch reply to test termination
 after database commit but before UI acknowledgment. This hook is excluded from the

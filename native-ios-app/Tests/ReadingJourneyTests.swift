@@ -1,6 +1,8 @@
 import XCTest
 import ReaderEngine
 import SwiftUI
+import CryptoKit
+import SQLite3
 @testable import NativeReader
 
 @MainActor
@@ -109,6 +111,69 @@ final class ReadingJourneyTests: XCTestCase {
         let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
         try Data(json.utf8).write(to: local)
         model.importFile(local); try await settle(model); XCTAssertNil(model.message)
+    }
+
+    func testConflictingTargetKeepsItsCacheAndIsNeverReportedAsSuccessfulSwitch() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let first = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let title = UUID().uuidString
+        try await importFixture(model, base: first, titleSuffix: title)
+        try await importFixture(model, base: second, titleSuffix: title)
+        model.searchScope = .selected; model.selectedSourceIDs = [first, second]
+        model.query = "Path"; model.search(); try await settle(model)
+        let old = try XCTUnwrap(model.results.first { $0.sourceId == first })
+        let target = try XCTUnwrap(model.results.first { $0.sourceId == second })
+        model.select(old); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        model.beginSourceSwitch(); try await settle(model)
+        model.select(target); try await settle(model)
+        let chapter = try XCTUnwrap(model.switchChapters.first)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(documents.appendingPathComponent("legado.db").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "''") + "'" }
+        let insert = """
+        INSERT INTO books(bookUrl,origin,name,author,type) VALUES(\(quoted(target.id)),\(quoted(second)),\(quoted(target.title)),'Different author',8);
+        INSERT INTO chapters(bookUrl,url,title,`index`) VALUES(\(quoted(target.id)),\(quoted(chapter.id)),\(quoted(chapter.title)),0);
+        """
+        XCTAssertEqual(sqlite3_exec(db, insert, nil, nil, nil), SQLITE_OK)
+        func shortHash(_ value: String) -> String {
+            let hash = Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+            return String(hash.dropFirst(8).prefix(16))
+        }
+        let cache = documents.appendingPathComponent("book_cache")
+            .appendingPathComponent(String(target.title.prefix(9)) + shortHash(target.id))
+            .appendingPathComponent("00000-" + shortHash(chapter.title) + ".nb")
+        try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let originalBody = "unrelated\npreserve this offline paragraph"
+        try Data(originalBody.utf8).write(to: cache)
+        let other = ReaderEngine()
+        defer { other.close() }
+        func call(_ action: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
+            await withCheckedContinuation { continuation in _ = action { continuation.resume(returning: $0) } }
+        }
+        _ = await call { other.initialize(completion: $0) }
+        let opened = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
+        let token = try XCTUnwrap((opened as? ContentReply)?.reading?.token)
+        let saved: EngineReply = await withCheckedContinuation { continuation in
+            other.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: 10) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(saved is ReadingSaved)
+        model.prepareSourceSwitch(chapter); try await settle(model)
+        XCTAssertNotNil(model.preparedSwitch)
+        XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), originalBody)
+        model.confirmSourceSwitch(); try await settle(model)
+        XCTAssertNotNil(model.message)
+        XCTAssertNotNil(model.switchingFrom)
+        XCTAssertEqual(model.book?.sourceId, first)
+        XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), originalBody)
+        let recovered = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((recovered as? ContentReply)?.text, originalBody)
+        XCTAssertEqual((recovered as? ContentReply)?.reading?.paragraphUtf16Offset, 10)
     }
 
     func testExplicitSourceSwitchCancellationCommitAndReopen() async throws {

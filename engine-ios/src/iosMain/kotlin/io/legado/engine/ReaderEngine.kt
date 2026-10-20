@@ -70,10 +70,12 @@ class ReaderEngine {
     private val ownedSearches = newConcurrentMap<String, NativeSearchSession>()
     private val sessionId = NSUUID().UUIDString
     private val preparedSwitches = mutableMapOf<String, PreparedSourceSwitch>()
+    private val committedSwitches = mutableMapOf<String, CommittedSourceSwitch>()
 
     fun prepareSourceSwitch(oldSourceId: String, oldBookId: String, sourceId: String,
         bookId: String, chapterId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         preparedSwitches.clear()
+        committedSwitches.clear()
         val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
         val original = dao.openBook(oldSourceId, oldBookId).book.copy()
         val revision = dao.resume(oldBookId)?.revision ?: 0L
@@ -95,11 +97,8 @@ class ReaderEngine {
         currentCoroutineContext().ensureActive()
         if (body.isEmpty()) throw CacheUnavailable("Replacement chapter is empty")
         EngineHost.interactionFailure()?.let { return@request it }
-        BookHelpProviders.get().saveContent(targetSource, candidate, chapter, body)
-        if (BookStorageProviders.get().getContent(candidate, chapter) != body) {
-            throw CacheUnavailable("Replacement chapter cache could not be verified")
-        }
         val token = NSUUID().UUIDString
+        // Keep preparation in memory. A conflicting listing must never overwrite another book's cache.
         preparedSwitches[token] = PreparedSourceSwitch(original, revision,
             NativeChapterProjection.from(original), candidate, catalog, chapter, body, targetSource)
         SourceSwitchPrepared(token, snapshot(sourceId, chapter), snapshot(original), snapshot(candidate))
@@ -107,23 +106,43 @@ class ReaderEngine {
 
     fun cancelSourceSwitch(completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         preparedSwitches.clear()
+        committedSwitches.clear()
         EngineReady()
+    }
+
+    /** Only this engine's successfully committed token can recover a lost acknowledgment. */
+    fun recoverSourceSwitch(token: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        val committed = committedSwitches[token] ?: throw StaleReading("This source switch did not commit")
+        val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
+        val entry = shelfOperation { dao.openBook(committed.entry.book.origin, committed.entry.book.bookUrl) }
+        val resume = dao.resume(entry.book.bookUrl)
+        if (entry != committed.entry || resume == null || resume.revision != committed.revision ||
+            resume.textSha256 != committed.bodyHash || dao.listBooks().any { it.bookUrl == committed.oldBookId }) {
+            throw StaleReading("Shelf changed after the switch; reopen it from the library")
+        }
+        acceptShelfEntry(entry)
     }
 
     fun commitSourceSwitch(token: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         val prepared = preparedSwitches.remove(token) ?: throw StaleReading("Prepare the source switch again")
         if (source(prepared.candidate.origin) != prepared.source) throw StaleReading("Source rules changed; prepare again")
-        if (BookStorageProviders.get().getContent(prepared.candidate, prepared.chapter) != prepared.body) {
-            throw CacheUnavailable("Replacement cache changed; prepare again")
-        }
         currentCoroutineContext().ensureActive()
         // Complete the transaction and invalidate old tokens even if foreground delivery is cancelled.
         withContext(NonCancellable) {
             val entry = shelfOperation {
                 AppDatabaseProviders.get().appDb.nativeShelfDao.switchSource(
                     prepared.original.origin, prepared.original.bookUrl, prepared.revision, prepared.projection,
-                    prepared.candidate, prepared.catalog, prepared.chapter.url, prepared.body, prepared.source)
+                    prepared.candidate, prepared.catalog, prepared.chapter.url, prepared.body, prepared.source) {
+                    val storage = BookStorageProviders.get()
+                    storage.saveText(prepared.candidate, prepared.chapter, prepared.body)
+                    if (storage.getContent(prepared.candidate, prepared.chapter) != prepared.body) {
+                        throw CacheUnavailable("Published replacement body could not be verified")
+                    }
+                }
             }
+            committedSwitches[token] = CommittedSourceSwitch(
+                NativeShelfEntry(entry.book.copy(), entry.chapters.map { it.copy() }),
+                prepared.original.bookUrl, prepared.revision + 1, NativeBodyCoordinates.sha256(prepared.body))
             ReadingSessions.invalidate(prepared.original.origin, prepared.original.bookUrl)
             books.remove(prepared.original.origin to prepared.original.bookUrl)
             chapters.remove(prepared.original.origin to prepared.original.bookUrl)
@@ -457,7 +476,11 @@ class ReaderEngine {
         activeSearch.getAndSet(null)?.retire()
         scope.cancel()
         ReadingSessions.scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            EngineHost.gate.withLock { ReadingSessions.tokens.entries.removeAll { it.value.owner == sessionId } }
+            EngineHost.gate.withLock {
+                ReadingSessions.tokens.entries.removeAll { it.value.owner == sessionId }
+                preparedSwitches.clear()
+                committedSwitches.clear()
+            }
         }
     }
 
@@ -559,6 +582,8 @@ private class InvalidInput(message: String) : Exception(message)
 private class HttpFailure(status: Int) : Exception("HTTP $status")
 
 private class ShelfStorageFailure(message: String) : Exception(message)
+private data class CommittedSourceSwitch(val entry: NativeShelfEntry, val oldBookId: String,
+    val revision: Long, val bodyHash: String)
 private data class PreparedSourceSwitch(val original: Book, val revision: Long,
     val projection: NativeChapterProjection, val candidate: Book, val catalog: List<BookChapter>,
     val chapter: BookChapter, val body: String, val source: BookSource)

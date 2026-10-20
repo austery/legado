@@ -45,11 +45,12 @@ abstract class NativeShelfDao {
     @Query("SELECT * FROM book_sources WHERE bookSourceUrl = :sourceId")
     protected abstract suspend fun switchSourceRecord(sourceId: String): BookSource?
 
-    /** The engine proves the target body is durable before entering this transaction. */
+    /** Publish and verify the body under the transaction's URL-ownership guard before committing. */
     @Transaction
     open suspend fun switchSource(sourceId: String, bookUrl: String, expectedRevision: Long,
         expectedProjection: NativeChapterProjection, candidate: Book, catalog: List<BookChapter>,
-        chapterUrl: String, body: String, expectedSource: BookSource): NativeShelfEntry {
+        chapterUrl: String, body: String, expectedSource: BookSource,
+        publishBody: () -> Unit = {}): NativeShelfEntry {
         val existing = openBook(sourceId, bookUrl).book
         val previous = resume(bookUrl)
         if ((previous?.revision ?: 0L) != expectedRevision || expectedRevision < 0 ||
@@ -95,8 +96,9 @@ abstract class NativeShelfDao {
             durChapterTitle = chapter.title, durChapterPos = 0, durChapterTime = now,
             syncTime = 0L
         )
-        // Foreign keys retire the old catalog and native resume within the same transaction.
+        // Acquire the write lock before publishing. Failure rolls back this deletion and its cascades.
         deleteBook(bookUrl)
+        publishBody()
         insertBook(replacement)
         insertChapters(catalog)
         insertResume(NativeReadingResume(replacement.bookUrl, replacement.origin, chapter.url,

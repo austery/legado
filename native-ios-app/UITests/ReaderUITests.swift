@@ -59,6 +59,8 @@ final class ReaderUITests: XCTestCase {
         let chapter = app.buttons["switch.chapter.0"]
         XCTAssertTrue(chapter.waitForExistence(timeout: 15)); chapter.tap()
         XCTAssertTrue(app.buttons["switch.confirm"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["switch.originalSource"].exists)
+        XCTAssertTrue(app.staticTexts["switch.replacementSource"].exists)
         capture("switch-prepared-portrait")
         app.buttons["switch.cancel"].tap()
         wait(app) { self.state(app).contains("chapter=0;") && !self.state(app).contains("-alternate") }

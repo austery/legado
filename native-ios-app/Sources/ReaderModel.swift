@@ -90,8 +90,7 @@ final class ReaderModel: ObservableObject {
                     self.finishSourceSwitch(entry)
                 } else {
                     let failure = (reply as? EngineFailure)?.message ?? "Switch was not acknowledged."
-                    self.engine.openShelfBook(sourceId: prepared.replacementBook.sourceId,
-                        bookId: prepared.replacementBook.id) { [weak self] recovered in
+                    self.engine.recoverSourceSwitch(token: prepared.token) { [weak self] recovered in
                         guard let self else { return }
                         self.committingSwitch = false; self.busy = false
                         if let entry = recovered as? ShelfEntryReply { self.finishSourceSwitch(entry) }

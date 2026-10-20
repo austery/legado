@@ -48,9 +48,10 @@ The old reader remains recoverable throughout preparation. Flush pending reading
 ### Persistence and concurrency
 
 - Add an engine-owned prepared-switch token bound to the current shelf identity, old source, resume revision, shared progress projection, target catalog, selected chapter, and verified body fingerprint.
-- Keep preparation separate from durable shelf admission. Prepared content may populate a verified cache but must not create another shelf entry.
+- Keep preparation separate from durable shelf admission. Keep the fetched body in immutable memory until confirmation; preparation must not overwrite an existing listing's cache or create another shelf entry.
 - Commit replacement book identity, catalog, and native resume in one Room transaction. Preserve existing user-owned shelf metadata; take source-owned metadata from the replacement. Explicitly enumerate the field ownership during implementation and review.
 - Validate the expected old source, revision, shared projection, candidate identity, target source availability, and target URL conflicts at commit. Reject stale or conflicting requests without partial mutation.
+- Acquire the database write lock before publishing the target cache, verify its readback, and then commit the replacement. A cache publication failure rolls back the transaction; the old source's cache is never touched.
 - Replace the old active database record rather than keeping two equal known-title/author records that would make existing admission ambiguous. Retire the old catalog/resume as part of the transaction. Keep unrelated records and user-owned associations intact; audit their URL references before implementation. Any required schema migration or unsupported association transfer is a separate design checkpoint.
 - Create a valid native resume for the selected replacement chapter at offset zero, using its actual body hash and coordinate version. Never copy character offsets, percentages, or paragraph numbers between sources.
 - Invalidate old reading-session tokens after successful commit. Old tokens must also fail persistent identity/revision checks if invalidation is interrupted.

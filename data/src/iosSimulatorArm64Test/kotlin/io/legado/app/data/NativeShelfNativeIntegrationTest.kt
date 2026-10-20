@@ -74,6 +74,12 @@ class NativeShelfNativeIntegrationTest {
             val source = io.legado.app.data.entities.BookSource(bookSourceUrl = "other", bookSourceName = "Other")
             database.bookSourceDao.insert(source)
             val catalog = listOf(chapter.copy(bookUrl = "new"))
+            assertFailsWith<IllegalStateException> {
+                database.nativeShelfDao.switchSource("source", "old", 0, projection, target,
+                    catalog, "chapter", "body", source) { throw IllegalStateException("Synthetic cache publication failure") }
+            }
+            assertEquals(original, database.nativeShelfDao.openBook("source", "old").book)
+            assertEquals(listOf(chapter), database.bookChapterDao.getChapterList("old"))
             NativeSQLiteDriver().open(path).use {
                 it.execSQL("CREATE TRIGGER reject_switch BEFORE INSERT ON native_reading_resume WHEN NEW.bookUrl = 'new' BEGIN SELECT RAISE(ABORT, 'Synthetic switch failure'); END")
             }

@@ -461,7 +461,12 @@ struct ReaderScreen: View {
         List {
             if let candidate = model.switchCandidate {
                 Section("Replacement source") {
-                    Text(model.sources.first { $0.id == candidate.sourceId }?.name ?? candidate.sourceId)
+                    if let original = model.switchingFrom {
+                        Text("From: " + (model.sources.first { $0.id == original.sourceId }?.name ?? original.sourceId))
+                            .accessibilityIdentifier("switch.originalSource")
+                    }
+                    Text("To: " + (model.sources.first { $0.id == candidate.sourceId }?.name ?? candidate.sourceId))
+                        .accessibilityIdentifier("switch.replacementSource")
                     Text(candidate.title)
                     Text("Choose a chapter. Switching starts at its beginning; the old paragraph position is not copied.")
                         .font(.callout).foregroundStyle(.secondary)
@@ -471,7 +476,7 @@ struct ReaderScreen: View {
                 if let prepared = model.preparedSwitch {
                     Section("Ready to switch") {
                         Text(prepared.chapter.title)
-                        Text("The replacement text is downloaded and verified. Your original source stays active until you confirm.")
+                        Text("The replacement text is downloaded. Your original source stays active until you confirm.")
                             .font(.callout).foregroundStyle(.secondary)
                         Button("Confirm source switch") { model.confirmSourceSwitch() }
                             .disabled(model.busy).accessibilityIdentifier("switch.confirm")
