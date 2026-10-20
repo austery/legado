@@ -82,6 +82,7 @@ final class ShelfProcessRestartTests: XCTestCase {
         UserDefaults.standard.set(try JSONEncoder().encode(manifest), forKey: key)
         XCTAssertTrue(UserDefaults.standard.synchronize())
         print("SPEC003 prepare PID=\(getpid()) book=\(book.id)")
+        try await OfflineRestartJourney.prepare()
     }
 
     func testVerify() async throws {
@@ -121,5 +122,6 @@ final class ShelfProcessRestartTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
         print("SPEC003 verify PID=\(getpid()) previousPID=\(manifest.processID) book=\(manifest.bookID)")
+        try await OfflineRestartJourney.verify()
     }
 }

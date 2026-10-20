@@ -15,6 +15,7 @@ import time
 import uuid
 
 from c2_fixture_server import C2Handler
+from boundary_fixture_server import BoundaryHandler
 from fixture_server import FixtureServer
 
 from ci_harness import delete_owned_simulator, simctl
@@ -145,7 +146,7 @@ def main() -> None:
         simctl("boot", simulator)
         subprocess.run(["xcrun", "simctl", "bootstatus", simulator, "-b"], check=True, env=env, timeout=180)
         if args.shelf_restart:
-            reading = FixtureServer(("127.0.0.1", 18769), C2Handler)
+            reading = FixtureServer(("127.0.0.1", 18769), BoundaryHandler)
             worker = threading.Thread(target=reading.serve_forever, daemon=True)
             worker.start()
             try:

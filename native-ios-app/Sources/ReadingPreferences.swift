@@ -7,6 +7,10 @@ final class ReadingPreferences: ObservableObject {
     static let shared = ReadingPreferences()
     static let storageKey = "nativeReader.readingStyle.v1"
     private let defaults: UserDefaults
+    static let prefetchKey = "nativeReader.prefetchNextTwo.v1"
+    @Published var prefetchNextTwo: Bool {
+        didSet { defaults.set(prefetchNextTwo, forKey: Self.prefetchKey) }
+    }
 
     @Published var style: ReadingStyle {
         didSet {
@@ -18,6 +22,7 @@ final class ReadingPreferences: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        prefetchNextTwo = defaults.bool(forKey: Self.prefetchKey)
         let saved = defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode(ReadingStyle.self, from: $0) }
         var value = saved ?? ReadingStyle()

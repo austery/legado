@@ -1,7 +1,7 @@
 ---
 specId: SPEC-006
 title: Offline Reading and Bounded Cache Controls
-status: Draft
+status: Ready for Implementation
 priority: P1 - Core Feature
 creationDate: 2026-10-20
 lastUpdateDate: 2026-10-20
@@ -75,11 +75,12 @@ Prefer existing source execution, atomic chapter storage and per-source request 
 
 ## 6. Approval and history
 
-This is a proposal, not implementation authorization. The owner requested planning before the next UI delivery. Confirmation is needed for this concrete scope: next-20 manual caching, next-2 opt-in foreground prefetch, and protected cache clearing. After scope confirmation, implementation can proceed continuously as the next round.
+The owner approved this scope on 2026-10-20 and requested continuous implementation and simulator acceptance under a goal: next-20 manual caching, next-2 opt-in foreground prefetch, and protected cache clearing.
 
 | Date | Status | Note |
 | --- | --- | --- |
 | 2026-10-20 | Draft | Proposed after PR #31 merge; based on the live native engine and storage interfaces. |
+| 2026-10-20 | Ready for Implementation | Owner approved the scope and simulator acceptance. |
 
 ## 7. Related
 

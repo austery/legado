@@ -132,8 +132,19 @@ struct ReaderScreen: View {
                 Text("The latest unsaved position will be lost. Previously saved progress is kept; reopen the book from the shelf to continue.")
             }
             .sheet(isPresented: $settings) { typography }
+            .alert("Clear optional cached chapters?", isPresented: Binding(
+                get: { model.cacheClearPlan != nil },
+                set: { if !$0 { model.cacheClearPlan = nil } })) {
+                Button("Clear cached chapters", role: .destructive) { model.confirmCacheClear() }
+                Button("Cancel", role: .cancel) { model.cacheClearPlan = nil }
+            } message: {
+                Text("Remove \(model.cacheClearPlan?.count ?? 0) cached chapters. Saved progress and chapters currently displayed are protected.")
+            }
             .task { model.start() }
+            .onAppear { model.setPrefetchEnabled(preferences.prefetchNextTwo) }
+            .onChange(of: preferences.prefetchNextTwo) { model.setPrefetchEnabled($0) }
             .onChange(of: scenePhase) { phase in
+                model.setForegroundActive(phase == .active)
                 if phase != .active { model.flushReadingPosition() }
             }
             .onChange(of: model.book?.id) { _ in catalogQuery = "" }
@@ -358,7 +369,33 @@ struct ReaderScreen: View {
                     Text(book.intro.isEmpty ? "No introduction available." : book.intro)
                         .foregroundStyle(.secondary).textSelection(.enabled)
                 }
+                if model.isShelved { offlineControls }
             }
+        }.onAppear { model.refreshOfflineStatus() }
+    }
+
+    private var offlineControls: some View {
+        Section("Offline reading") {
+            if let status = model.offlineStatus {
+                Text("\(status.chapters.filter { $0.availability == .available }.count) of \(status.chapters.count) chapters available offline")
+                    .accessibilityIdentifier("offline.count")
+            } else { Text("Checking cached chapters…") }
+            Text("Uses the stored catalog for this source.").font(.caption).foregroundStyle(.secondary)
+            if let progress = model.cacheProgress {
+                Text("\(progress.completed) / \(progress.target) ready · \(progress.failedChapterIds.count) failed\(progress.cancelled ? " · Cancelled" : "")")
+                    .accessibilityIdentifier("offline.progress")
+                if !progress.lastFailure.isEmpty { Text(progress.lastFailure).font(.caption).foregroundStyle(.secondary) }
+                if progress.running {
+                    ProgressView(value: Double(progress.completed), total: Double(max(1, progress.target)))
+                    Button("Cancel caching") { model.cancelCaching() }.accessibilityIdentifier("offline.cancel")
+                }
+            }
+            Button(model.cacheProgress?.failedChapterIds.isEmpty == false ? "Retry missing or failed chapters" : "Cache next 20 chapters") {
+                model.cacheNextChapters()
+            }.disabled(model.busy || model.cacheProgress?.running == true).accessibilityIdentifier("offline.cache")
+            Button("Clear optional cached chapters", role: .destructive) { model.prepareCacheClear() }
+                .disabled(model.busy).accessibilityIdentifier("offline.clear")
+            if let notice = model.cacheNotice { Text(notice).font(.caption).accessibilityIdentifier("offline.notice") }
         }
     }
 
@@ -398,7 +435,12 @@ struct ReaderScreen: View {
                             else { model.read(chapter) }
                         } label: {
                             HStack {
-                                Text(chapter.title).foregroundStyle(.primary)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(chapter.title).foregroundStyle(.primary)
+                                    if model.isShelved && !chapter.isVolume {
+                                        Text(model.offlineLabel(chapter)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
                                 Spacer()
                                 if model.content?.chapter.id == chapter.id {
                                     Label("Current chapter", systemImage: "bookmark.fill")
@@ -409,7 +451,7 @@ struct ReaderScreen: View {
                             .accessibilityIdentifier(model.content?.chapter.id == chapter.id ? "contents.currentChapter" : "contents.chapter.\(chapter.id)")
                     }
                 }
-            }.onChange(of: catalogQuery) { query in
+            }.onAppear { model.refreshOfflineStatus() }.onChange(of: catalogQuery) { query in
                 if query.isEmpty, let chapter = model.content?.chapter {
                     scroll.scrollTo(chapter.id, anchor: .center)
                 }
@@ -544,6 +586,12 @@ struct ReaderScreen: View {
                 }
                 Section("Appearance") {
                     Toggle("Dark appearance", isOn: $preferences.style.dark).accessibilityIdentifier("appearance.dark")
+                }
+                Section("Offline reading") {
+                    Toggle("Prefetch next 2 chapters", isOn: $preferences.prefetchNextTwo)
+                        .accessibilityIdentifier("offline.prefetch")
+                    Text("While reading in the foreground. Applies to every shelved book; off by default.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
                     Text("These settings apply to every book and are kept when you reopen the app.").font(.footnote).foregroundStyle(.secondary)

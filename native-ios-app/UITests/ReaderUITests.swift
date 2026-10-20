@@ -1,6 +1,49 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testOfflineCacheControlsAndProtectedRelaunch() async throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "offline"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
+        wait(app) { self.state(app).contains("canSave=true;") }
+        let source = try XCTUnwrap(state(app).components(separatedBy: ";").first { $0.hasPrefix("source=") })
+            .replacingOccurrences(of: "source=", with: "")
+        app.buttons["reader.contents"].tap()
+        app.buttons["contents.details"].tap()
+        let cache = app.buttons["offline.cache"]
+        for _ in 0..<5 where !cache.isHittable { app.swipeUp() }
+        XCTAssertTrue(cache.isHittable); cache.tap()
+        wait(app) { app.staticTexts["offline.count"].label == "21 of 26 chapters available offline" }
+        capture("offline-ready-portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height }
+        capture("offline-ready-landscape")
+        let clear = app.buttons["offline.clear"]
+        for _ in 0..<5 where !clear.isHittable { app.swipeUp() }
+        clear.tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.alerts.firstMatch.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Remove 20 cached chapters")).firstMatch.exists)
+        capture("offline-protected-clear-confirmation")
+        app.alerts.buttons["Clear cached chapters"].tap()
+        wait(app) { app.staticTexts["offline.count"].label == "1 of 26 chapters available offline" }
+        let (before, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: source + "/offline/disable")))
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        wait(app) { self.state(app).contains("chapter=0;") && self.state(app).contains("canSave=true;") }
+        let (after, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: source + "/offline/count")))
+        XCTAssertEqual(before, after, "Offline relaunch must not request chapter text")
+        capture("offline-resume-after-clear-and-relaunch")
+        app.terminate()
+    }
+
     @MainActor func testSourceSwitchProcessLossBeforeCommitAndAfterCommitBeforeAcknowledgment() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"

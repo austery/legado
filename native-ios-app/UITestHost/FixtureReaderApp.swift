@@ -79,6 +79,7 @@ struct FixtureReaderApp: App {
     @MainActor private func prepare() async throws {
         if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.storageKey)
+            UserDefaults.standard.removeObject(forKey: ReadingPreferences.prefetchKey)
             UserDefaults.standard.removeObject(forKey: "fixture.switchCommitted")
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             for name in ["legado.db", "legado.db-wal", "legado.db-shm"] {
@@ -90,8 +91,11 @@ struct FixtureReaderApp: App {
         if scenario == "shelf", !model.shelf.isEmpty { model.showShelf(); try await settle(); return }
         let base = "http://127.0.0.1:18769/runs/ui-\(UUID().uuidString)"
         let (data, _) = try await URLSession.shared.data(from: URL(string: base + "/sources.json")!)
-        let json = String(decoding: data, as: UTF8.self)
+        var json = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
+        if scenario == "offline" {
+            json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
+        }
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic.json")
         try Data(json.utf8).write(to: file)
         model.importFile(file); try await settle()
