@@ -17,6 +17,7 @@ final class ReaderUITests: XCTestCase {
         XCTAssertEqual(toggle.value as? String, "1")
         capture("offline-global-prefetch-enabled")
         app.buttons["Done"].tap()
+        wait(app) { self.state(app).contains("cached=2;cacheRunning=false;") }
         app.buttons["reader.contents"].tap(); app.buttons["contents.details"].tap()
         wait(app) { app.staticTexts["offline.count"].label == "3 of 26 chapters available offline" }
         app.terminate()

@@ -59,6 +59,9 @@ struct FixtureReaderApp: App {
                 let chapter = model.chapterPosition.map(String.init) ?? "none"
                 storedStatus = (try? storedRecord()) ?? "query-failed"
                 positionStatus = "dragging=\(text?.isDragging ?? false);decelerating=\(text?.isDecelerating ?? false);canSave=\(model.content?.reading.map { $0.canSave ? "true" : "false" } ?? "nil");chapter=\(chapter);anchor=\(text?.anchor ?? -1);source=\(model.content?.chapter.sourceId ?? "none");book=\(model.content?.chapter.bookId ?? "none");id=\(model.content?.chapter.id ?? "none")"
+                if let progress = model.cacheProgress {
+                    positionStatus += ";cached=\(progress.completed);cacheRunning=\(progress.running);"
+                }
             }.task {
                 guard !prepared else { return }
                 do { try await prepare(); prepared = true }
