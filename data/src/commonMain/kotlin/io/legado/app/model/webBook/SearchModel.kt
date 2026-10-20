@@ -484,13 +484,14 @@ class SearchModel(
         sessionVersion.incrementAndGet()
         mSearchId = 0L
         stoppedSourceControls = false
-        ownedJobs.toList().forEach { it.cancel() }
+        // Read one iterator snapshot; Collection.toList reads size separately from iteration.
+        ownedJobs.iterator().asSequence().toList().forEach { it.cancel() }
         searchPool = null
     }
 
     /** Await retirement outside resultMutex, including replaced source restart work. */
     suspend fun closeAndJoin() {
-        val jobs = ownedJobs.toList()
+        val jobs = ownedJobs.iterator().asSequence().toList()
         close()
         jobs.forEach { it.join() }
         searchJob = null
