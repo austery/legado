@@ -1,5 +1,7 @@
 package io.legado.engine
 
+import io.legado.app.constant.AppPattern
+
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.source.SourceHelp
@@ -47,8 +49,8 @@ internal class SourceManagement {
 
     suspend fun group(ids: List<String>, value: String, add: Boolean): ManagedSourcesReply {
         val group = value.trim()
-        require(group.isNotEmpty() && ',' !in group && '\n' !in group && '\r' !in group) {
-            "Enter one nonempty group name without commas or line breaks"
+        require(group.isNotEmpty() && !AppPattern.splitGroupRegex.containsMatchIn(group) && '\n' !in group && '\r' !in group) {
+            "Enter one nonempty group name without group separators or line breaks"
         }
         selected(ids)
         dao.changeMembership(ids.distinct(), group, add)
@@ -115,6 +117,6 @@ internal class SourceManagement {
     }
 
     private fun snapshot(source: BookSource) = ManagedSource(source.bookSourceUrl, source.bookSourceName,
-        source.enabled, source.bookSourceGroup.orEmpty().split(',').map { it.trim() }
+        source.enabled, source.bookSourceGroup.orEmpty().split(AppPattern.splitGroupRegex).map { it.trim() }
             .filter { it.isNotEmpty() }.distinct(), source.lastUpdateTime)
 }

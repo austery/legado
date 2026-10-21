@@ -102,6 +102,10 @@ struct FixtureReaderApp: App {
         if scenario == "offline" {
             json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
         }
+        if scenario == "sources" {
+            let second = json.replacingOccurrences(of: base, with: base + "/second")
+            json = "[" + String(json.dropFirst().dropLast()) + "," + String(second.dropFirst().dropLast()) + "]"
+        }
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic.json")
         try Data(json.utf8).write(to: file)
         model.importFile(file); try await settle()

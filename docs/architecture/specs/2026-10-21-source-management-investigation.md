@@ -8,7 +8,7 @@ Product baseline: `daa5ce0e5f96f36bc0bdac805d1f1cda4a1ca9a0` (merged PR #32).
 KMP upstream comparison: local tracking ref `c62a3c678c8a7d3f2f042a3fcbcad7ab74ade02e`, dated 2026-10-18; not claimed to be today's upstream tip.
 The primary checkout remains at `056b1f19b30d361b5b4135a0f2c036dde6966a5c`; product bridge/UI were read with `git show` at the merged baseline.
 The local Android upstream ref contains an announcement-only tree, so it does not establish the older Android implementation.
-The owner confirmed that the UI reference is Wanyuan Reader and agreed with the proposed management direction. Wanyuan's current screen layout has not been inspected in this investigation. Other-app comparisons below are official documentation reviews, not hands-on acceptance.
+The owner confirmed that the UI reference is Wanyuan Reader and agreed with the proposed management direction. Historical Wanyuan iPad screenshots were inspected during implementation: `wanyuan-reader/evidence/screenshots/03-all-book-sources.png` and `05-booksource-status.png` (2026-10-10). They show search by name/address, source name/address rows, group/status tags and a separate selection action. These are dated screenshots, not a fresh app walkthrough. Other-app comparisons below are official documentation reviews, not hands-on acceptance.
 
 ## Upstream and fork
 

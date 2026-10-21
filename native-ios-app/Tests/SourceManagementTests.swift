@@ -120,14 +120,14 @@ final class SourceManagementTests: XCTestCase {
     func testGroupAndEnableChangesPersistAcrossEngineSessions() async throws {
         let first = try await engine(); defer { first.close() }
         let id = "https://groups-\(UUID().uuidString).invalid"
-        _ = await call { first.importSources(json: source(id), completion: $0) }
+        _ = await call { first.importSources(json: source(id, group: "Local；Legacy"), completion: $0) }
         for _ in 0..<2 { _ = await call { first.changeSourceGroup(ids: [id], group: "  Favorites  ", add: true, completion: $0) } }
         _ = await call { first.changeSourceGroup(ids: [id], group: "Local", add: false, completion: $0) }
         _ = await call { first.setSourcesEnabled(ids: [id], enabled: false, completion: $0) }
         let second = try await engine(); defer { second.close() }
         let persisted = try await list(second)
         let source = try XCTUnwrap(persisted.first { $0.id == id })
-        XCTAssertEqual(source.groups, ["Favorites"]); XCTAssertFalse(source.enabled)
+        XCTAssertEqual(source.groups, ["Legacy", "Favorites"]); XCTAssertFalse(source.enabled)
         let enabledReply = await call { second.listSources(completion: $0) }
         XCTAssertFalse(try XCTUnwrap(enabledReply as? SourcesReply).sources.contains { $0.id == id })
     }

@@ -1,5 +1,7 @@
 package io.legado.app.data.dao
 
+import io.legado.app.constant.AppPattern
+
 import androidx.room3.Dao
 import androidx.room3.Delete
 import androidx.room3.Insert
@@ -32,7 +34,7 @@ interface BookSourceDao {
     suspend fun changeMembership(ids: List<String>, group: String, add: Boolean) {
         for (id in ids) {
             val source = getBookSource(id) ?: throw SourceImportConflict()
-            val groups = source.bookSourceGroup.orEmpty().split(',').map { it.trim() }
+            val groups = source.bookSourceGroup.orEmpty().split(AppPattern.splitGroupRegex).map { it.trim() }
                 .filter { it.isNotEmpty() }.toMutableSet()
             if (add) groups.add(group) else groups.remove(group)
             upGroup(id, groups.joinToString(","))

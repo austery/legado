@@ -9,6 +9,8 @@ final class ReaderUITests: XCTestCase {
         app.launch()
         let confirm = app.buttons["sources.confirmImport"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 40))
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "http://127.0.0.1:18769/runs/ui-")).count, 2,
+                       "Same-name sources must show distinct identities in review")
         capture("sources-import-review")
         confirm.tap()
         let select = app.buttons["sources.select"]
