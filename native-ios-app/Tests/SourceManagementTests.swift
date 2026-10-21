@@ -67,7 +67,11 @@ final class SourceManagementTests: XCTestCase {
         XCTAssertFalse(retained.enabled); XCTAssertEqual(retained.updatedAt, 3)
         let exported = await call { engine.exportSources(ids: [id], completion: $0) }
         let text = try XCTUnwrap(exported as? SourceExportReply).json
-        struct Exported: Decodable {
+        struct Exported: Decodable, Equatable {
+            let bookSourceUrl: String
+            let bookSourceName: String
+            let bookSourceGroup: String?
+            let enabled: Bool
             let header: String?
             let customOrder: Int
             let enabledExplore: Bool
@@ -89,6 +93,13 @@ final class SourceManagementTests: XCTestCase {
         let imported = try XCTUnwrap(roundTrip as? SourceImportPreview)
         XCTAssertEqual(imported.items.first?.kind, .existing)
         XCTAssertFalse(try XCTUnwrap(imported.items.first).selectedByDefault)
+        let restored = await call { engine.commitSourceImport(token: imported.token, ids: [id],
+            keepName: false, keepGroups: false, keepEnabled: false, completion: $0) }
+        XCTAssertTrue(restored is SourceImportCommitted)
+        let reexported = await call { engine.exportSources(ids: [id], completion: $0) }
+        let restoredJSON = try XCTUnwrap(reexported as? SourceExportReply).json
+        let restoredObject = try XCTUnwrap(JSONDecoder().decode([Exported].self, from: Data(restoredJSON.utf8)).first)
+        XCTAssertEqual(restoredObject, object)
     }
 
     func testStaleConfirmationRejectsChangesFromAnotherEngine() async throws {
