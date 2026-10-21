@@ -15,6 +15,10 @@ import io.legado.app.utils.systemCurrentTimeMillis
 /** Native shelf policy; deliberately separate from the legacy replacement writer. */
 @Dao
 abstract class NativeShelfDao {
+    /** Include removed entries when checking physical cache ownership. */
+    @Query("SELECT * FROM books")
+    abstract suspend fun cacheOwners(): List<Book>
+
     @Query("SELECT * FROM books WHERE bookUrl = :bookUrl")
     protected abstract suspend fun findBook(bookUrl: String): Book?
 

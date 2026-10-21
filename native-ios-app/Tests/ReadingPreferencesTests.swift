@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class ReadingPreferencesTests: XCTestCase {
+    func testPrefetchIsOptInAndPersistsAcrossStores() {
+        withDefaults { defaults in
+            let preferences = ReadingPreferences(defaults: defaults)
+            XCTAssertFalse(preferences.prefetchNextTwo)
+            preferences.prefetchNextTwo = true
+            XCTAssertTrue(ReadingPreferences(defaults: defaults).prefetchNextTwo)
+            preferences.prefetchNextTwo = false
+            XCTAssertFalse(ReadingPreferences(defaults: defaults).prefetchNextTwo)
+        }
+    }
     private func withDefaults(_ body: (UserDefaults) throws -> Void) rethrows {
         let name = "reading-preferences-tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: name)!

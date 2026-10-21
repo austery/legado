@@ -71,6 +71,25 @@ class ReaderEngine {
     private val sessionId = NSUUID().UUIDString
     private val preparedSwitches = mutableMapOf<String, PreparedSourceSwitch>()
     private val committedSwitches = mutableMapOf<String, CommittedSourceSwitch>()
+    private val offlineCache = OfflineCache(scope) { source, book ->
+        ReadingSessions.tokens.values.filter { it.sourceId == source && it.bookId == book }
+            .map { it.chapter.url }.toSet()
+    }
+
+    fun offlineStatus(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) { offlineCache.status(sourceId, bookId) }
+
+    fun cacheNextChapters(sourceId: String, bookId: String, afterChapterId: String?,
+        prefetch: Boolean, completion: (EngineReply) -> Unit): EngineRequest =
+        offlineCache.start(sourceId, bookId, afterChapterId, prefetch, completion)
+
+    fun cancelCaching() { offlineCache.cancel() }
+
+    fun prepareCacheClear(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion) { offlineCache.prepareClear(sourceId, bookId) }
+
+    fun clearOptionalCache(token: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion) { offlineCache.clear(token) }
 
     fun prepareSourceSwitch(oldSourceId: String, oldBookId: String, sourceId: String,
         bookId: String, chapterId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
@@ -473,6 +492,7 @@ class ReaderEngine {
 
     fun close() {
         closed.value = true
+        offlineCache.cancel()
         activeSearch.getAndSet(null)?.retire()
         scope.cancel()
         ReadingSessions.scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -497,12 +517,13 @@ class ReaderEngine {
         ChapterSnapshot(sourceId, chapter.bookUrl, chapter.url, chapter.index, chapter.title, chapter.isVolume)
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    private fun request(completion: (EngineReply) -> Unit, requiresReady: Boolean = true,
+    private fun request(completion: (EngineReply) -> Unit, requiresReady: Boolean = true, interruptCache: Boolean = true,
         action: suspend () -> EngineReply): EngineRequest {
         val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val operationJob = currentCoroutineContext().job
             var createdReadingToken: String? = null
             val reply = try {
+                if (interruptCache) OfflineWork.retire()
                 withContext(Dispatchers.Default + WebBookResponsePolicy { response ->
                     if (!response.isSuccessful()) throw HttpFailure(response.code())
                 }) {

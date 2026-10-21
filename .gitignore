@@ -59,3 +59,6 @@ replay_pid*.log
 
 !/docs/architecture/specs/PLAN-005-native-ui-feature-expansion.md
 !/docs/architecture/specs/SPEC-005-explicit-source-switching.md
+
+!/docs/architecture/specs/SPEC-006-offline-reading-and-cache-controls.md
+!/docs/evidence/2026-10-20-offline-reading.md

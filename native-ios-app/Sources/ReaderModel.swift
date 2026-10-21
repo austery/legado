@@ -18,6 +18,88 @@ final class ReaderModel: ObservableObject {
     }
 
     @Published var shelf: [ShelfBookSnapshot] = []
+    @Published private(set) var offlineStatus: OfflineStatus?
+    @Published private(set) var cacheProgress: CacheProgress?
+    @Published private(set) var cacheNotice: String?
+    @Published var cacheClearPlan: CacheClearPrepared?
+    private var cacheRequest: EngineRequest?
+    private var cacheGeneration = UUID()
+    private var statusGeneration = UUID()
+    private var foregroundActive = true
+    private var prefetchEnabled = false
+    var isShelved: Bool {
+        guard let book else { return false }
+        return shelf.contains { $0.book.id == book.id && $0.book.sourceId == book.sourceId }
+    }
+    func offlineLabel(_ chapter: ChapterSnapshot) -> String {
+        guard !chapter.isVolume, isShelved else { return "" }
+        guard let state = offlineStatus?.chapters.first(where: { $0.chapterId == chapter.id }) else { return "Checking…" }
+        switch state.availability {
+        case .available: return "Available offline"
+        case .missing: return "Not cached"
+        default: return "Unavailable after validation"
+        }
+    }
+    func refreshOfflineStatus() {
+        guard isShelved, let book else { offlineStatus = nil; return }
+        let generation = UUID(); statusGeneration = generation
+        engine.offlineStatus(sourceId: book.sourceId, bookId: book.id) { [weak self] reply in
+            guard let self, self.statusGeneration == generation,
+                  self.book?.id == book.id, self.book?.sourceId == book.sourceId else { return }
+            self.offlineStatus = reply as? OfflineStatus
+            if let failure = reply as? EngineFailure { self.cacheNotice = failure.message }
+        }
+    }
+    func cacheNextChapters(prefetch: Bool = false) {
+        guard isShelved, let book, foregroundActive, !busy,
+              !prefetch || (prefetchEnabled && content != nil) else { return }
+        cancelCaching()
+        cacheNotice = nil
+        let generation = UUID(); cacheGeneration = generation
+        cacheRequest = engine.cacheNextChapters(sourceId: book.sourceId, bookId: book.id,
+            afterChapterId: content?.chapter.id, prefetch: prefetch) { [weak self] reply in
+            guard let self, self.cacheGeneration == generation,
+                  self.book?.id == book.id, self.book?.sourceId == book.sourceId else { return }
+            if let progress = reply as? CacheProgress {
+                self.cacheProgress = progress
+                if !progress.running { self.cacheRequest = nil; self.refreshOfflineStatus() }
+            } else if let failure = reply as? EngineFailure {
+                self.cacheNotice = failure.message; self.cacheRequest = nil
+                self.refreshOfflineStatus()
+            }
+        }
+    }
+    func cancelCaching() {
+        cacheRequest?.cancel(); cacheRequest = nil
+        engine.cancelCaching()
+    }
+    func setPrefetchEnabled(_ enabled: Bool) {
+        prefetchEnabled = enabled
+        if enabled { cacheNextChapters(prefetch: true) } else { cancelCaching() }
+    }
+    func setForegroundActive(_ active: Bool) {
+        foregroundActive = active
+        if !active { cancelCaching() }
+    }
+    func prepareCacheClear() {
+        guard isShelved, let book else { return }
+        cancelCaching()
+        engine.prepareCacheClear(sourceId: book.sourceId, bookId: book.id) { [weak self] reply in
+            guard let self, self.book?.id == book.id, self.book?.sourceId == book.sourceId else { return }
+            self.cacheClearPlan = reply as? CacheClearPrepared
+            if let failure = reply as? EngineFailure { self.cacheNotice = failure.message }
+        }
+    }
+    func confirmCacheClear() {
+        guard let plan = cacheClearPlan else { return }
+        cacheClearPlan = nil
+        engine.clearOptionalCache(token: plan.token) { [weak self] reply in
+            if let result = reply as? CacheCleared {
+                self?.cacheNotice = "Removed \(result.deleted) chapters. \(result.failed) could not be removed."
+            } else if let failure = reply as? EngineFailure { self?.cacheNotice = failure.message }
+            self?.refreshOfflineStatus()
+        }
+    }
     @Published var shelfNotice: String?
     @Published private(set) var switchingFrom: BookSnapshot?
     @Published private(set) var switchCandidate: BookSnapshot?
@@ -263,8 +345,10 @@ final class ReaderModel: ObservableObject {
         shelf.removeAll { $0.book.id == reply.entry.book.id && $0.book.sourceId == reply.entry.book.sourceId }
         shelf.append(reply.entry)
         book = reply.entry.book; chapters = reply.chapters
+        offlineStatus = nil; cacheProgress = nil; cacheNotice = nil; cacheClearPlan = nil
         // Never carry a candidate source's text into a reused shelf identity.
         content = nil; route = .details
+        refreshOfflineStatus()
     }
 
     static func authorLabel(_ author: String) -> String {
@@ -476,6 +560,9 @@ final class ReaderModel: ObservableObject {
         saveNotice = reply.storageNotice.isEmpty ? nil : reply.storageNotice
         activeReadingToken = reply.reading?.token
         resumeNotice = reply.reading?.restoreNotice.isEmpty == false ? reply.reading?.restoreNotice : nil
+        refreshOfflineStatus()
+        // Deliver content first; automatic work is bounded and never restores a prior batch.
+        Task { [weak self] in self?.cacheNextChapters(prefetch: true) }
     }
 
     var readingRestoration: ReadingRestoration? {
