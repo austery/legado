@@ -1,7 +1,7 @@
 ---
 specId: SPEC-007
 title: Native Source Management
-status: In Progress
+status: Implemented
 priority: P1 - Core Feature
 creationDate: 2026-10-21
 lastUpdateDate: 2026-10-21
@@ -17,7 +17,7 @@ tags:
 
 # SPEC-007: Native Source Management
 
-Owner-approved implementation scope, 2026-10-21: reuse upstream source rules and persistence, with Wanyuan Reader as the interaction reference. See [source-management investigation](2026-10-21-source-management-investigation.md) for upstream behavior, native gaps, proposed inclusion of group membership, and reconsideration of the import defaults below. Postmerge CI attempt 2 also failed during simulator startup; the merged validation baseline remains unresolved.
+Owner-approved implementation scope, 2026-10-21: reuse upstream source rules and persistence, with Wanyuan Reader as the interaction reference. See [source-management investigation](2026-10-21-source-management-investigation.md) for upstream behavior, native gaps, and the reasons for the approved group and import policies. Postmerge CI attempt 2 also failed during simulator startup; the merged validation baseline remains unresolved.
 
 ## 1. Goal
 
@@ -57,16 +57,17 @@ The owner confirmed Wanyuan Reader as the visual/interaction reference. Existing
 
 ## 5. Simulator acceptance
 
-- [ ] Enabled/disabled list, filters and batch selection remain usable in portrait and landscape.
-- [ ] Group additions/removals survive relaunch; filters and selection remain consistent after membership changes.
-- [ ] Enable state survives process relaunch; search includes only enabled text sources.
-- [ ] Disable a source with a held request: no late search/cache publication, saved reading position unchanged.
-- [ ] A disabled source's verified cached chapter opens offline; missing text gives an actionable disabled-source error.
-- [ ] Preview/cancel, malformed input, duplicate identities, explicit replacement and stale confirmation obey their contracts.
-- [ ] Injected persistence failure leaves the pre-import source set unchanged.
-- [ ] Export/reimport preserves supported rules, identity, enabled state and groups without runtime session data.
-- [ ] Existing source switching, offline caching, protected clearing, resume and global typography regressions remain green.
-- [ ] Run real Swift/KMP and actual iPad simulator UI flows, independent review, and exact-head required C1. Report physical-device acceptance separately.
+- [x] Enabled/disabled list, filters and batch selection remain usable in portrait and landscape.
+- [x] Group additions/removals survive relaunch; filters and selection remain consistent after membership changes.
+- [x] Enable state survives process relaunch; search includes only enabled text sources.
+- [x] Disable a source with a held request: no late search/cache publication, saved reading position unchanged.
+- [x] A disabled source's verified cached chapter opens offline; missing text gives an actionable disabled-source error.
+- [x] Preview/cancel, malformed input, duplicate identities, explicit replacement and stale confirmation obey their contracts.
+- [x] Injected persistence failure leaves the pre-import source set unchanged.
+- [x] Export/reimport preserves supported rules, identity, enabled state and groups without runtime session data.
+- [x] Existing source switching, offline caching, protected clearing, resume and global typography regressions remain green.
+- [x] Run real Swift/KMP and actual iPad simulator UI flows and independent review.
+- Exact-head required C1 is an acceptance gate; use the task PR check runs as its current authority. Physical-device acceptance is separate and has not been performed.
 
 ## 6. Delivery sequence
 
@@ -76,4 +77,11 @@ Implementation is authorized. Use an isolated task branch from the merged baseli
 
 | Date | Status | Note |
 | --- | --- | --- |
-| 2026-10-21 | In Progress | Owner approved upstream reuse, Wanyuan-inspired management, group membership and import preview; implementation authorized. |
+| 2026-10-21 | Implemented | Owner-approved scope implemented; local product, iPad UI, interruption and restart acceptance passed. Required C1 is tracked on the task PR. |
+
+## 8. Local acceptance
+
+Implementation and simulator evidence are recorded in [the acceptance report](../../evidence/2026-10-21-source-management/acceptance.md).
+The final local product run passed 60 tests, actual iPad UI passed 10 journeys,
+all four process-interruption boundaries passed, and offline restart passed.
+Required C1 remains an explicit PR gate; these local results do not claim hosted CI success.

@@ -45,7 +45,7 @@ The native host currently rejects verification/browser interaction and backgroun
 
 Preserve upstream capability while progressively exposing controls. Default page: searchable source list, enabled/all/disabled filter, group filter, import, direct enable switch. Selection mode: batch enable/disable, group membership, export. Details: identity and configuration, then advanced edit/debug/login operations as supported. Discovery is a reading destination distinct from management.
 
-Include ordinary group membership in the next management scope rather than only displaying groups. Reconsider the draft's default new-only import policy against upstream's new/newer preview and keep-local-settings controls. Do not silently commit to either policy before the comparison is discussed. A timestamp is advisory; explicit replacement remains visible. Deletion needs shelf/cache dependency semantics before implementation.
+Include ordinary group membership in the next management scope rather than only displaying groups. The approved import policy follows upstream new/newer preview selection and defaults to retaining local settings. This replaces the earlier new-only draft policy and keeps familiar upstream behavior visible in native review. A timestamp is advisory; explicit replacement remains visible. Deletion needs shelf/cache dependency semantics before implementation.
 
 ## Closeout findings
 
@@ -56,3 +56,17 @@ Codex still lists the removed worktree as an active attachment. Three host archi
 Postmerge run 39524145312 failed twice. Attempt 1 timed out in simulator boot before Kotlin tests. Attempt 2 passed 107 Kotlin Native tests (63 data, 8 core, 36 engine), then timed out in Swift product simulator boot (`bootstatus`, 180 seconds); its Swift test log was not produced and boot log was empty. The local interruption/offline restart job passed. The second run sampled at least 27,491,491,840 free disk bytes. Aggregate RSS is not physical memory consumption and does not prove OOM.
 
 These observations locate the failure at simulator startup, not a product assertion, but do not establish the underlying cause or a green merged baseline. A useful next diagnostic run must retain CoreSimulator startup diagnostics and memory-pressure information; another unchanged retry or a larger timeout alone would not establish a fix. No CI thresholds or gates were changed.
+
+
+## Implementation follow-up
+
+The owner-approved scope is implemented in SPEC-007. Local acceptance passed 60 product tests,
+10 real iPad UI journeys, four process-interruption boundaries, offline restart, and 44 Python
+harness/gate tests. These results do not establish the historical hosted startup timeout's root cause.
+Startup diagnostics now retain bounded memory-pressure, swap and CoreSimulator logs without changing
+timeouts or success criteria. The current PR's exact-head checks remain the hosted acceptance authority.
+
+A later host archive attempt returned `This worktree is owned by another task.` The old path and
+Git registration remain absent, while the attachment remains listed. Preserve the host record under
+that ownership guard; do not edit global app state or claim the generic archive-queue log is conclusively
+this attachment's root cause.
