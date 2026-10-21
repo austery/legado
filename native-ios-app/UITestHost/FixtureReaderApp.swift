@@ -92,6 +92,9 @@ struct FixtureReaderApp: App {
         }
         model.start(); try await settle()
         if scenario == "shelf", !model.shelf.isEmpty { model.showShelf(); try await settle(); return }
+        if scenario == "sources", ProcessInfo.processInfo.environment["READER_UI_RESET"] != "1" {
+            model.navigate(.sources); try await settle(); return
+        }
         let base = "http://127.0.0.1:18769/runs/ui-\(UUID().uuidString)"
         let (data, _) = try await URLSession.shared.data(from: URL(string: base + "/sources.json")!)
         var json = String(decoding: data, as: UTF8.self)
@@ -102,6 +105,8 @@ struct FixtureReaderApp: App {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic.json")
         try Data(json.utf8).write(to: file)
         model.importFile(file); try await settle()
+        if scenario == "sources" { model.navigate(.sources); try await settle(); return }
+        model.confirmSourceImport(); try await settle()
         model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle()
         guard let book = model.results.first else { throw NSError(domain: "FixtureSetup", code: 2) }
         model.select(book); try await settle()
@@ -124,7 +129,7 @@ struct FixtureReaderApp: App {
                     let alternate = base + "-alternate"
                     let (alternateData, _) = try await URLSession.shared.data(from: URL(string: alternate + "/sources.json")!)
                     try alternateData.write(to: file)
-                    model.importFile(file); try await settle()
+                    model.importFile(file); try await settle(); model.confirmSourceImport(); try await settle()
                     model.searchScope = .all
                 }
                 model.showShelf(); try await settle()

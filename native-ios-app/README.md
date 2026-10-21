@@ -372,3 +372,25 @@ after database commit but before UI acknowledgment. This hook is excluded from t
 product application. The UI suite also terminates before confirmation and checks
 that relaunch retains the old source. Actual results and revision evidence are
 recorded separately; these test descriptions are not acceptance claims.
+
+
+## Source management (SPEC-007)
+
+Sources lists all imported text sources, including disabled ones. Search by name/address,
+filter by enabled state and group, or enter selection mode for batch enable/disable,
+group membership and JSON export. Selection survives view-only filtering. Source details
+also provide individual membership and export actions.
+
+File import first opens a review. New identities and sources with newer update timestamps
+are selected by default; timestamps are advisory. Same-ID replacement is visible and optional.
+Local name, groups and enabled/discovery-enabled settings are retained by default, and custom
+order is always retained for existing sources. Duplicate IDs use the last file entry, with a
+count in review. Confirmation compares the preview against current persisted sources inside
+the same Room transaction as replacement. Cancel, malformed input, stale confirmation and
+failed writes do not partially import sources.
+
+Export serializes supported Legado configuration fields, including configured headers, and
+normalizes dangerous API enablement to false, matching upstream export policy. Runtime
+cookie stores, books, cached chapters and progress are separate and are not exported.
+Disabled sources retain cached reading and shelf/progress data but do not enter new searches.
+Rule editing, source login/browser verification and discovery browsing remain later work.

@@ -1,6 +1,43 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testSourceImportGroupsDisableAndRelaunch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "sources"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let confirm = app.buttons["sources.confirmImport"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 40))
+        capture("sources-import-review")
+        confirm.tap()
+        let select = app.buttons["sources.select"]
+        XCTAssertTrue(select.waitForExistence(timeout: 20))
+        wait(app) { !confirm.exists && select.isEnabled }
+        select.tap()
+        app.buttons["Select visible"].tap()
+        app.buttons["Groups"].tap()
+        let field = app.textFields["sources.groupName"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText("Favorites")
+        app.buttons["Add to group"].tap()
+        wait(app) { app.staticTexts["Favorites"].firstMatch.exists }
+        app.buttons["Disable"].tap()
+        wait(app) { app.switches.matching(NSPredicate(format: "label BEGINSWITH %@", "Enable Path C")).firstMatch.value as? String == "0" }
+        capture("sources-disabled-portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height }
+        capture("sources-groups-landscape")
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launch()
+        XCTAssertTrue(app.buttons["sources.select"].waitForExistence(timeout: 40))
+        let toggle = app.switches.matching(NSPredicate(format: "label BEGINSWITH %@", "Enable Path C")).firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10)); XCTAssertEqual(toggle.value as? String, "0")
+        XCTAssertTrue(app.staticTexts["Favorites"].firstMatch.exists)
+        capture("sources-persisted-after-relaunch")
+        app.terminate()
+    }
+
     @MainActor func testGlobalPrefetchToggleCachesTwoAndSurvivesRelaunch() async throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"

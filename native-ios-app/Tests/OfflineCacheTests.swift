@@ -4,6 +4,21 @@ import CryptoKit
 
 @MainActor
 final class OfflineCacheTests: XCTestCase {
+    func testDisablingSourcePreservesCachedReadingAndRejectsMissingText() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, chapters, cached) = try await fixture(engine)
+        let disabled = await call { engine.setSourcesEnabled(ids: [book.sourceId], enabled: false, completion: $0) }
+        XCTAssertTrue(disabled is ManagedSourcesReply)
+        let read = await call { engine.loadChapter(sourceId: book.sourceId, bookId: book.id,
+            chapterId: chapters[0].id, cacheOnly: false, completion: $0) }
+        XCTAssertEqual((read as? ContentReply)?.text, cached.text)
+        XCTAssertEqual((read as? ContentReply)?.fromCache, true)
+        let missing = await call { engine.loadChapter(sourceId: book.sourceId, bookId: book.id,
+            chapterId: chapters[1].id, cacheOnly: false, completion: $0) }
+        XCTAssertEqual((missing as? EngineFailure)?.code, .cacheUnavailable)
+        XCTAssertTrue((missing as? EngineFailure)?.message.contains("disabled") == true)
+    }
+
     func testImmediateCancellationAndClosedEngineDeliverExactlyOneTerminalResult() async throws {
         let engine = ReaderEngine(); defer { engine.close() }
         let (book, chapters, _) = try await fixture(engine)

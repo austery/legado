@@ -110,7 +110,7 @@ final class ReadingJourneyTests: XCTestCase {
         if !enabled { json = json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false") }
         let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
         try Data(json.utf8).write(to: local)
-        model.importFile(local); try await settle(model); XCTAssertNil(model.message)
+        model.importFile(local); try await settle(model); model.confirmFixtureImport(); try await settle(model); XCTAssertNil(model.message)
     }
 
     func testConflictingTargetKeepsItsCacheAndIsNeverReportedAsSuccessfulSwitch() async throws {
@@ -259,6 +259,51 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertEqual(model.content?.chapter.sourceId, second)
         XCTAssertEqual(model.content?.chapter.index, 2, "Manual selection must win over chapter index matching")
         XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, 0)
+    }
+
+    private func storedProgress(_ bookID: String) throws -> [String] {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("legado.db")
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(url.path, &connection, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        let db = try XCTUnwrap(connection); defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, "SELECT revision, paragraphUtf16Offset, savedAt FROM native_reading_resume WHERE bookUrl = ?", -1, &statement, nil), SQLITE_OK)
+        let row = try XCTUnwrap(statement); defer { sqlite3_finalize(row) }
+        return try bookID.withCString { id in
+            XCTAssertEqual(sqlite3_bind_text(row, 1, id, -1, nil), SQLITE_OK)
+            if sqlite3_step(row) == SQLITE_DONE { return [] }
+            return try (0..<sqlite3_column_count(row)).map { String(cString: try XCTUnwrap(sqlite3_column_text(row, $0))) }
+        }
+    }
+
+    func testSourceExportAndListKeepActiveReadingTokenAndDurableProgress() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
+        model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search()
+        try await settle(model)
+        model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let original = try XCTUnwrap(model.content)
+        let token = try XCTUnwrap(original.reading?.token)
+        let book = try XCTUnwrap(model.book)
+        let before = try storedProgress(book.id)
+        model.refreshManagedSources(); try await settle(model)
+        model.exportSources([base]); try await settle(model)
+        XCTAssertNotNil(model.sourceExportJSON)
+        XCTAssertEqual(model.content?.reading?.token, token)
+        XCTAssertEqual(model.route, .reading)
+        XCTAssertEqual(try storedProgress(book.id), before)
+        // A displayed acknowledgment must still be accepted using the original engine token.
+        model.readingDisplayed(token, 0)
+        model.flushReadingPosition()
+        let deadline = Date().addingTimeInterval(5)
+        while model.canRetryPosition && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertNil(model.saveNotice)
+        XCTAssertNil(model.resumeNotice)
     }
 
     func testStalePositionCanBeDiscardedWithoutOverwritingSharedProgress() async throws {
@@ -457,6 +502,7 @@ final class ReadingJourneyTests: XCTestCase {
             try data.write(to: local)
             model.importFile(local)
             try await settle(model)
+            model.confirmFixtureImport(); try await settle(model)
             XCTAssertNil(model.message)
         }
         model.searchScope = .selected; model.selectedSourceIDs = [base + "/regex"]
@@ -487,6 +533,7 @@ final class ReadingJourneyTests: XCTestCase {
         try data.write(to: importURL)
         model.importFile(importURL)
         try await settle(model)
+        model.confirmFixtureImport(); try await settle(model)
         XCTAssertNil(model.message)
         XCTAssertTrue(model.importDetails?.contains(importURL.lastPathComponent) == true)
         model.searchScope = .selected; model.selectedSourceIDs = [String(sourceURL.absoluteString.dropLast("/sources.json".count))]
