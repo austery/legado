@@ -25,7 +25,7 @@ struct SourceManagementView: View {
     @State private var group = "All groups"
     @State private var selecting = false
     @State private var groupName = ""
-    @State private var editingGroups = false; editingDetailGroups = false
+    @State private var editingGroups = false
     @State private var detailID: String?
     @State private var editingDetailGroups = false
     @State private var pendingDetailExport: String?
