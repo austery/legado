@@ -15,6 +15,7 @@ from typing import Iterator, cast
 from boundary_fixture_server import BoundaryHandler
 from ci_harness import Runtime, delete_owned_simulator, simctl
 from fixture_server import FixtureServer
+from simulator_diagnostics import capture_startup_failure
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "engine-ios/fixtures"))
@@ -145,7 +146,11 @@ def main() -> None:
                 config = configure_test_run(generated_config, fixture_url)
                 result = output / "NativeReader.xcresult"
                 simctl("boot", simulator)
-                run(["xcrun", "simctl", "bootstatus", simulator, "-b"], output / "boot.log", 180)
+                try:
+                    run(["xcrun", "simctl", "bootstatus", simulator, "-b"], output / "boot.log", 180)
+                except (OSError, subprocess.SubprocessError):
+                    capture_startup_failure(simulator, output / "startup-diagnostics.json")
+                    raise
                 run(["xcodebuild", "test-without-building", "-xctestrun", str(config),
                      "-destination", f"platform=iOS Simulator,id={simulator}",
                      "-parallel-testing-enabled", "NO", "-resultBundlePath", str(result),
