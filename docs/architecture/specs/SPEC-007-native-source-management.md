@@ -85,3 +85,17 @@ Implementation and simulator evidence are recorded in [the acceptance report](..
 The final local product run passed 60 tests, actual iPad UI passed 10 journeys,
 all four process-interruption boundaries passed, and offline restart passed.
 Required C1 remains an explicit PR gate; these local results do not claim hosted CI success.
+
+## 9. Approved CI execution policy (2026-10-21)
+
+The owner approved routing automatic PR/push C1 through the existing complete local
+profile while hosted simulator responsiveness remains unresolved. Explicit manual
+cloud execution remains available for diagnosis; its dispatch default is unchanged.
+Both regression jobs, exact-head checkout, original test commands/timeouts and the
+required `C1 engine regression` aggregate remain unchanged. Local evidence retains
+the existing seven-day upload policy. An unavailable local runner leaves checks
+pending rather than falling back or passing. No service restart, global configuration
+change, branch-protection change or PR merge is authorized by this policy adjustment.
+Acceptance still requires the new PR head's associated automatic C1 to pass; an older
+head or manual profile result is not sufficient. Hosted failure logs remain evidence
+of an unresolved infrastructure issue, not a claimed product fix.

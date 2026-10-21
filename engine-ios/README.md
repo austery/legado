@@ -152,11 +152,11 @@ Every normal run imports a fixture under a new `/runs/<UUID>` URL namespace, inc
 
 ## C1 continuous integration
 
-The independent `C1 Engine` workflow runs automatically for relevant `native-reader` pull requests and pushes on the repository-scoped `legado-macmini-local` runner (`self-hosted`, `macOS`, `ARM64`, `legado-macos-local`). Fork pull requests are excluded from this personal host. Feature-branch pushes are covered by their PR event, avoiding duplicate automatic runs. The inherited `Test Build` workflow skips this fork and cannot start upstream packaging or publication from these changes.
+The independent `C1 Engine` workflow runs automatically for all `native-reader` pull requests and pushes on the repository-scoped `legado-macmini-local` runner (`self-hosted`, `macOS`, `ARM64`, `legado-macos-local`). Fork pull requests are excluded from this personal host. Feature-branch pushes are covered by their PR event, avoiding duplicate automatic runs. The inherited `Test Build` workflow skips this fork and cannot start upstream packaging or publication from these changes.
 
 Runner installation: `/Users/leipeng/GitHubRunners/legado`; checkout: `_work/legado/legado`. Start `./run.sh` from the installation directory and wait for `Listening for Jobs`. No launch service is installed. If it is offline, jobs queue rather than falling back to cloud. Stop only this runner, after GitHub reports it idle, using Ctrl-C in its owning terminal. Other repository runners are independent and must not be stopped or reconfigured. This is a native process under the logged-in user, not an isolation sandbox.
 
-Manual dispatch accepts `execution=local` (default) or `execution=cloud`. The cloud option uses the standard ARM64 `macos-26` runner and Xcode 26.5; local execution uses `/Applications/Xcode.app` (Xcode 27 at initial validation). Both use JDK 17/21 and a task-local XcodeGen 2.46.0 download. The local runner has its own `android-sdk/` copy for shared Gradle module configuration; the cloud route uses its preinstalled SDK. No Android build or test is added. Manual cloud dispatch has been accepted for `codex/c1-cloud-ci` in this repository without changing its default branch.
+Automatic PR/push C1 uses the complete local profile under the owner-approved temporary policy of 2026-10-21; the hosted simulator responsiveness issue remains unresolved. Manual dispatch accepts `execution=local` or `execution=cloud` (dispatch default retained for diagnosis). The cloud option uses the standard ARM64 `xcode-27` runner and pinned Xcode 27.0; local execution uses `/Applications/Xcode.app`. Both use JDK 17/21 and a task-local XcodeGen 2.46.0 download. The local runner has its own `android-sdk/` copy for shared Gradle module configuration; the cloud route uses its preinstalled SDK. No Android build or test is added. Manual cloud dispatch has been accepted for `codex/c1-cloud-ci` in this repository without changing its default branch.
 
 ```sh
 gh workflow run c1-engine.yml --repo austery/legado \
@@ -168,11 +168,12 @@ Both routes build the debug device and simulator engine frameworks, compile the 
 The same workflow also triggers on `native-ios-app/**` and runs the ordinary
 Swift product suites after the C1 harness, using a separate, newly created iPad
 simulator and synthetic loopback sources. See the [native product gate](../native-ios-app/README.md#automatic-native-product-gate)
-for its scope, failure checks and evidence. External process-interruption/restart
-suites and physical-device acceptance remain separate. This adds a failing CI
+for its scope, failure checks and evidence. A second required local job runs all
+four external process-interruption boundaries and offline shelf restart. Physical-device
+acceptance remains separate. This adds a failing CI
 check on regression; it does not change repository branch-protection settings.
 
-The job uses read-only repository permissions, a 60-minute timeout and seven-day evidence retention. New commits do not automatically cancel a running local job, allowing its owned fixture/simulator cleanup to finish. The single local runner serializes jobs. It does not sign an app, publish a release, use live community sources or implement C2. Standard hosted minutes remain free for this public repository. Required branch checks are a separate setting. Passing either route proves the bounded C1 contract, not physical-device acceptance or equivalence between the two Xcode versions.
+The jobs use read-only repository permissions, unchanged 90-minute regular/60-minute process timeouts and seven-day local evidence retention. New commits do not automatically cancel a running local job, allowing its owned fixture/simulator cleanup to finish. The single local runner serializes jobs. It does not sign an app, publish a release, use live community sources or implement C2. Standard hosted minutes remain free for this public repository. Required branch checks are a separate setting. Passing either route proves the bounded C1 contract, not physical-device acceptance or equivalence between the two Xcode versions.
 
 ## Upstream patch inventory and cost review
 
