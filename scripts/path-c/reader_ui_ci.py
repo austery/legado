@@ -61,7 +61,8 @@ def main() -> None:
                        '-scheme', 'NativeReaderUI', '-destination', f'platform=iOS Simulator,id={simulator}',
                        '-derivedDataPath', str(output / 'DerivedData'), '-parallel-testing-enabled', 'NO',
                        '-resultBundlePath', str(output / 'UI.xcresult'), 'CODE_SIGNING_ALLOWED=NO']
-            command.extend(f'-only-testing:NativeReaderUITests/{suite}' for suite in scope['suites'])
+            if args.only_test:
+                command.extend(f'-only-testing:NativeReaderUITests/{suite}' for suite in scope['suites'])
             (output / 'command.json').write_text(json.dumps(command, indent=2))
             run(command, output / 'tests.log', 900)
             summary = subprocess.check_output(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary',
