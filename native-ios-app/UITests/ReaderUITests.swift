@@ -17,12 +17,35 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(select.waitForExistence(timeout: 20))
         wait(app) { !confirm.exists && select.isEnabled }
         select.tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.exists); search.tap(); search.typeText("second")
+        wait(app) { app.staticTexts["Sources (1)"].exists }
         app.buttons["Select visible"].tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
+        wait(app) { app.staticTexts["Sources (2)"].exists }
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        app.buttons["Select visible"].tap()
+        app.segmentedControls["sources.status"].buttons["Disabled"].tap()
+        wait(app) { app.staticTexts["No matching text sources."].exists }
+        XCTAssertTrue(app.staticTexts["2 selected"].exists)
+        app.segmentedControls["sources.status"].buttons["All"].tap()
         app.buttons["Groups"].tap()
         let field = app.textFields["sources.groupName"]
         XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText("Favorites")
+        XCTAssertTrue(app.buttons["Add to group"].isEnabled)
         app.buttons["Add to group"].tap()
-        wait(app) { app.staticTexts["Favorites"].firstMatch.exists }
+        print("SOURCE REPLIES AFTER TAP: " + String(describing: app.staticTexts["fixture.sourceReplies"].value))
+        let grouped = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "Path C Controlled Source", "Favorites"))
+        wait(app) { !field.exists && grouped.count == 2 }
+        print("SOURCE REPLIES: " + String(describing: app.staticTexts["fixture.sourceReplies"].value))
+        app.buttons["sources.groupFilter"].tap()
+        app.buttons["Favorites"].tap()
+        wait(app) { app.buttons["sources.groupFilter"].label.contains("Favorites") }
+        XCTAssertTrue(app.staticTexts["2 selected"].exists)
+        app.buttons["Groups"].tap()
+        app.buttons["Remove from Path C"].tap()
+        wait(app) { !app.buttons["Remove from Path C"].exists }
         app.buttons["Disable"].tap()
         wait(app) { app.switches.matching(NSPredicate(format: "label BEGINSWITH %@", "Enable Path C")).firstMatch.value as? String == "0" }
         capture("sources-disabled-portrait")
@@ -35,8 +58,15 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.buttons["sources.select"].waitForExistence(timeout: 40))
         let toggle = app.switches.matching(NSPredicate(format: "label BEGINSWITH %@", "Enable Path C")).firstMatch
         XCTAssertTrue(toggle.waitForExistence(timeout: 10)); XCTAssertEqual(toggle.value as? String, "0")
-        XCTAssertTrue(app.staticTexts["Favorites"].firstMatch.exists)
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "Path C Controlled Source", "Favorites")).count, 2)
+        XCTAssertFalse(app.staticTexts["Path C"].exists)
         capture("sources-persisted-after-relaunch")
+        app.buttons["sources.select"].tap(); app.buttons["Select visible"].tap()
+        app.buttons["Export"].tap()
+        let cancelExport = app.buttons["Cancel"]
+        XCTAssertTrue(cancelExport.waitForExistence(timeout: 10))
+        capture("sources-system-export")
+        cancelExport.tap()
         app.terminate()
     }
 

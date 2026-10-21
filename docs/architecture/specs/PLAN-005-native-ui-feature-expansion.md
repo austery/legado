@@ -11,6 +11,19 @@ Inspected checkout: `6a968ccee`; locally available `origin/native-reader`: `1f0d
 
 Current native capabilities include explicit shelf admission/removal, durable resume, incremental multi-source search, exact candidate selection, chapter navigation, continuous reading and typography controls. Source import is embedded in search; details and the chapter list share one screen. Reading style is view state. Current native exports do not provide active-book source switching, discovery, bookmarks or whole-book downloads.
 
+## Delivery status (2026-10-21)
+
+The baseline and proposal above record the original 2026-10-19 planning snapshot.
+Everyday navigation/global typography (PR #30), explicit source switching (PR #31),
+and bounded offline reading/cache controls (PR #32) have since merged into `native-reader`.
+The current implementation baseline is `daa5ce0e5f96f36bc0bdac805d1f1cda4a1ca9a0`.
+
+The owner approved [SPEC-007](SPEC-007-native-source-management.md) on 2026-10-21:
+all text sources, filters, individual/batch enablement, group membership, reviewed imports
+with upstream selection/retention behavior, and selected export. Implementation and simulator
+acceptance are in progress. Discovery browsing and interactive login remain separate follow-ups;
+the upstream data fields alone do not establish native runtime support.
+
 ## Proposed next delivery: everyday native reading UI
 
 Make the existing working journey coherent before adding another shared-state operation.

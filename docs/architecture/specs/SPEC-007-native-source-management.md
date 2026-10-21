@@ -41,7 +41,7 @@ PR-head C1 passed. The first merged-head C1 failed before native test execution 
 3. Preview local JSON import before mutation: new identities, replacements, disabled entries and duplicate identities. Follow upstream defaults: select new identities and versions with a newer lastUpdateTime. Show timestamps as advisory, not proof of changed rules. Allow explicit replacement selection. Preserve existing custom order and, by default, local name, group, enabled and discovery-enabled settings; expose these retention choices in the preview. Preserve the current last-object-wins rule for duplicates only after exposing it in the preview. Parse/schema failures and cancelled previews make no persistent changes. Confirmed imports are atomic; if affected identities change after preview, require a refreshed preview.
 4. Export explicitly selected source configurations through the system file/share interface. Use the existing supported Legado source schema, including disabled state and groups; do not export runtime cookie jars, book data or reading history. Configuration fields such as configured headers remain source configuration and must not be silently stripped. Define supported-field round-trip behavior; do not promise byte-identical or unknown-field preservation without evidence.
 
-5. Add and remove group membership for individual or selected sources using upstream comma-separated group semantics, normalized and deduplicated. Groups are filters, not a second source registry.
+5. Add and remove group membership for individual or selected sources using upstream separator parsing and normalized comma-separated storage, normalized and deduplicated. Groups are filters, not a second source registry.
 
 Default layout: searchable source list, enabled/all/disabled and group filters, import, direct enable switches. Selection mode exposes batch enable/disable, group membership and export. Source details hold identity and configuration information. Source deletion, rule editing/debugging, login/browser interaction, subscription updates, discovery browsing and bulk network checks remain subsequent slices, not permanent exclusions from PLAN-005. Do not label unimplemented controls as working.
 
@@ -70,7 +70,7 @@ The owner confirmed Wanyuan Reader as the visual/interaction reference. Existing
 
 ## 6. Delivery sequence
 
-Implementation is authorized. Use an isolated task branch from the merged baseline. Update this specification first, implement the typed management boundary, list/toggle/filter/group UI, transactional import preview and selected export. Investigate simulator startup with retained diagnostics, and require passing product validation and required C1 before acceptance/publication. Keep the primary checkout and user data intact. Publish the verified task PR; merging requires applicable authorization.
+Implementation is authorized. Use an isolated task branch from the merged baseline. Update this specification first, implement the typed management boundary, list/toggle/filter/group UI, transactional import preview and selected export. Investigate simulator startup with retained diagnostics, and require passing product validation before PR publication. Required C1 must pass at the exact PR head before acceptance. Keep the primary checkout and user data intact. Publish the verified task PR; merging requires applicable authorization.
 
 ## 7. Status history
 

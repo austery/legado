@@ -22,7 +22,7 @@ struct SourceManagementView: View {
     let importFile: () -> Void
     @State private var query = ""
     @State private var status = "All"
-    @State private var group = "All groups"
+    @State private var group: String?
     @State private var selecting = false
     @State private var groupName = ""
     @State private var editingGroups = false
@@ -34,7 +34,7 @@ struct SourceManagementView: View {
     private var visible: [ManagedSource] {
         model.managedSources.filter { source in
             (status == "All" || source.enabled == (status == "Enabled")) &&
-            (group == "All groups" || source.groups.contains(group)) &&
+            (group.map { source.groups.contains($0) } ?? true) &&
             (query.isEmpty || source.name.localizedCaseInsensitiveContains(query) ||
              source.id.localizedCaseInsensitiveContains(query))
         }
@@ -48,26 +48,35 @@ struct SourceManagementView: View {
                     Spacer()
                     Button(selecting ? "Done" : "Select") { selecting.toggle() }
                         .accessibilityIdentifier("sources.select")
-                }
+                }.buttonStyle(.borderless)
                 Picker("Status", selection: $status) {
                     ForEach(["All", "Enabled", "Disabled"], id: \.self) { Text($0) }
                 }.pickerStyle(.segmented).accessibilityIdentifier("sources.status")
                 Picker("Group", selection: $group) {
-                    Text("All groups").tag("All groups")
-                    ForEach(groups, id: \.self) { Text($0).tag($0) }
+                    Text("All groups").tag(Optional<String>.none)
+                    ForEach(groups, id: \.self) { Text($0).tag(Optional($0)) }
                 }.accessibilityIdentifier("sources.groupFilter")
-                if let notice = model.importNotice { Text(notice).foregroundStyle(.secondary) }
+                if let details = model.importDetails {
+                    DisclosureGroup("Import details") {
+                        Text(details).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                }
+            } footer: {
+                if let notice = model.importNotice { Text(notice) }
             }
             if selecting {
                 Section("\(model.managedSelection.count) selected") {
-                    Button("Select visible") { model.managedSelection.formUnion(visible.map(\.id)) }
-                    Button("Clear selection") { model.managedSelection = [] }
                     HStack {
+                        Button("Select visible") { model.managedSelection.formUnion(visible.map(\.id)) }
+                        Spacer()
+                        Button("Clear selection") { model.managedSelection = [] }
+                    }.buttonStyle(.borderless)
+                    HStack(spacing: 12) {
                         Button("Enable") { model.setSourcesEnabled(Array(model.managedSelection), enabled: true) }
                         Button("Disable") { model.setSourcesEnabled(Array(model.managedSelection), enabled: false) }
                         Button("Groups") { editingGroups = true }
                         Button("Export") { model.exportSources(Array(model.managedSelection)) }
-                    }.disabled(model.managedSelection.isEmpty)
+                    }.buttonStyle(.bordered).disabled(model.managedSelection.isEmpty)
                 }
             }
             Section("Sources (\(visible.count))") {
@@ -98,11 +107,10 @@ struct SourceManagementView: View {
                 }
             }
         }
-        .buttonStyle(.borderless)
         .searchable(text: $query, prompt: "Source name or address")
         .disabled(model.busy || !model.initialized)
         .task { model.refreshManagedSources() }
-        .onChange(of: groups) { values in if !values.contains(group) { group = "All groups" } }
+        .onChange(of: groups) { values in if let selected = group, !values.contains(selected) { group = nil } }
         .sheet(isPresented: Binding(get: { model.sourceImportPreview != nil }, set: {
             if !$0 { model.cancelSourceImport() }
         })) { importPreview }
@@ -181,19 +189,39 @@ struct SourceManagementView: View {
     private var groupEditor: some View {
         NavigationStack {
             Form {
-                TextField("Group name", text: $groupName).accessibilityIdentifier("sources.groupName")
-                Button("Add to group") {
-                    model.changeSourceGroup(Array(model.managedSelection), group: groupName, add: true)
-                    editingGroups = false; editingDetailGroups = false
-                }.disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                ForEach(groups, id: \.self) { name in
-                    Button("Remove from \(name)") {
-                        model.changeSourceGroup(Array(model.managedSelection), group: name, add: false)
-                        editingGroups = false; editingDetailGroups = false
+                Section("New group") {
+                    TextField("Group name", text: $groupName).accessibilityIdentifier("sources.groupName")
+                }
+                Section("Existing groups") {
+                    ForEach(groups, id: \.self) { name in
+                        HStack {
+                            Text(name)
+                            Spacer()
+                            Button("Remove") { updateGroup(name, add: false) }
+                                .buttonStyle(.borderless).accessibilityLabel("Remove from \(name)")
+                        }
                     }
                 }
-            }.navigationTitle("Selected source groups")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { editingGroups = false; editingDetailGroups = false } } }
+                if let message = model.message { Text(message).foregroundStyle(.red) }
+            }
+            .navigationTitle("Source groups")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { editingGroups = false; editingDetailGroups = false }.disabled(model.busy)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add to group") { updateGroup(groupName, add: true) }
+                        .disabled(model.busy || groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .interactiveDismissDisabled(model.busy)
+        }
+    }
+
+    private func updateGroup(_ name: String, add: Bool) {
+        model.changeSourceGroup(Array(model.managedSelection), group: name, add: add) {
+            editingGroups = false; editingDetailGroups = false
         }
     }
 

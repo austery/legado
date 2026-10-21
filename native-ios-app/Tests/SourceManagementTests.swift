@@ -18,7 +18,7 @@ final class SourceManagementTests: XCTestCase {
         """
         {"bookSourceUrl":"\(id)","bookSourceName":"\(name)","lastUpdateTime":\(updated),
          "enabled":\(enabled),"enabledExplore":false,"bookSourceGroup":"\(group)","customOrder":42,
-         "header":"{\\"X-Test\\":\\"kept\\"}","searchUrl":"/search?key={{key}}","enableDangerousApi":true}
+         "header":"{\\"X-Test\\":\\"kept\\"}","searchUrl":"/search?key={{key}}","ruleSearch":{"bookList":"tag.article","name":"tag.a@text"},"enableDangerousApi":true}
         """
     }
     private func list(_ engine: ReaderEngine) async throws -> [ManagedSource] {
@@ -73,6 +73,7 @@ final class SourceManagementTests: XCTestCase {
             let enabledExplore: Bool
             let enableDangerousApi: Bool?
             let searchUrl: String?
+            let ruleSearch: String?
         }
         let object = try XCTUnwrap(JSONDecoder().decode([Exported].self, from: Data(text.utf8)).first)
         XCTAssertEqual(object.header, "{\"X-Test\":\"kept\"}")
@@ -80,6 +81,10 @@ final class SourceManagementTests: XCTestCase {
         XCTAssertEqual(object.enabledExplore, false)
         XCTAssertNotEqual(object.enableDangerousApi, true)
         XCTAssertEqual(object.searchUrl, "/search?key={{key}}")
+        let ruleJSON = try XCTUnwrap(object.ruleSearch)
+        let rules = try JSONDecoder().decode([String: String].self, from: Data(ruleJSON.utf8))
+        XCTAssertEqual(rules["bookList"], "tag.article")
+        XCTAssertEqual(rules["name"], "tag.a@text")
         let roundTrip = await call { engine.previewSourceImport(json: text, completion: $0) }
         let imported = try XCTUnwrap(roundTrip as? SourceImportPreview)
         XCTAssertEqual(imported.items.first?.kind, .existing)

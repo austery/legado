@@ -454,10 +454,13 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    func changeSourceGroup(_ ids: [String], group: String, add: Bool) {
-        perform(retry: { [weak self] in self?.changeSourceGroup(ids, group: group, add: add) }, start: {
+    func changeSourceGroup(_ ids: [String], group: String, add: Bool, onCommitted: (() -> Void)? = nil) {
+        perform(retry: { [weak self] in self?.changeSourceGroup(ids, group: group, add: add, onCommitted: onCommitted) }, start: {
             self.engine.changeSourceGroup(ids: ids, group: group, add: add, completion: $0)
-        }) { [weak self] reply in self?.acceptManagedSources(reply) }
+        }) { [weak self] reply in
+            self?.acceptManagedSources(reply)
+            onCommitted?()
+        }
     }
 
     func exportSources(_ ids: [String]) {

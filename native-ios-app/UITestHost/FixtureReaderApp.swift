@@ -11,6 +11,17 @@ struct FixtureReaderApp: App {
             UserDefaults.standard.set(true, forKey: "fixture.switchCommitted")
             return
         }
+        if ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] == "sources" {
+            let entry: String?
+            if let result = reply as? ManagedSourcesReply {
+                entry = "list:" + result.sources.map { $0.groups.joined(separator: ",") }.joined(separator: "|")
+            } else if let error = reply as? EngineFailure { entry = "error:" + error.code.name }
+            else { entry = nil }
+            if let entry {
+                let previous = UserDefaults.standard.string(forKey: "fixture.sourceReplies") ?? ""
+                UserDefaults.standard.set(String((previous + ";" + entry).suffix(2048)), forKey: "fixture.sourceReplies")
+            }
+        }
         apply(reply)
     })
     @State private var prepared = false
@@ -32,6 +43,10 @@ struct FixtureReaderApp: App {
                         Text("Fixture position").accessibilityIdentifier("fixture.position").accessibilityValue(positionStatus)
                         Text("Stored record").accessibilityIdentifier("fixture.stored").accessibilityValue(storedStatus)
                         Text("Switch committed").accessibilityIdentifier("fixture.switchCommit").accessibilityValue(switchCommitted ? "true" : "false")
+                        if scenario == "sources" {
+                            Text("Source replies").accessibilityIdentifier("fixture.sourceReplies")
+                                .accessibilityValue(UserDefaults.standard.string(forKey: "fixture.sourceReplies") ?? "none")
+                        }
                         Spacer()
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
                             Task { @MainActor in
@@ -84,6 +99,7 @@ struct FixtureReaderApp: App {
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.storageKey)
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.prefetchKey)
             UserDefaults.standard.removeObject(forKey: "fixture.switchCommitted")
+            UserDefaults.standard.removeObject(forKey: "fixture.sourceReplies")
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             for name in ["legado.db", "legado.db-wal", "legado.db-shm"] {
                 let url = documents.appendingPathComponent(name)
