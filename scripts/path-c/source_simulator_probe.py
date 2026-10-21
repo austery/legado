@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -19,8 +20,8 @@ def run(label: str, command: list[str], timeout: int = 30) -> str:
         reply = subprocess.run(command, capture_output=True, text=True, check=True, timeout=timeout)
         output = reply.stdout
         status = {"returncode": reply.returncode}
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
-        partial = error.stdout or ""
+    except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        partial = getattr(error, "stdout", None) or ""
         output = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
         status = {"error": str(error)}
         raise
@@ -32,6 +33,7 @@ def run(label: str, command: list[str], timeout: int = 30) -> str:
     return output
 
 
+print(json.dumps({key: os.environ.get(key) for key in ("ImageOS", "ImageVersion", "GITHUB_RUN_ID")}), flush=True)
 simulator: str | None = None
 try:
     run("commit", ["git", "rev-parse", "HEAD"])
