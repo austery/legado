@@ -98,6 +98,7 @@ struct SourceManagementView: View {
                 }
             }
         }
+        .buttonStyle(.borderless)
         .searchable(text: $query, prompt: "Source name or address")
         .disabled(model.busy || !model.initialized)
         .task { model.refreshManagedSources() }
