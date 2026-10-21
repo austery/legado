@@ -53,9 +53,15 @@ try:
     print("ISOLATED STARTUP PASSED (not C1 acceptance)", flush=True)
 except BaseException:
     if simulator and re.fullmatch(r"[A-Fa-f0-9-]{36}", simulator):
-        capture_startup_failure(simulator, OUTPUT / "startup-diagnostics.json")
-        print((OUTPUT / "startup-diagnostics.json").read_text(), flush=True)
-    run("processes-failure", ["ps", "-axo", "pid,ppid,state,%cpu,rss,comm"])
+        try:
+            capture_startup_failure(simulator, OUTPUT / "startup-diagnostics.json")
+            print((OUTPUT / "startup-diagnostics.json").read_text(), flush=True)
+        except Exception as error:
+            print(f"Startup diagnostic unavailable: {error}", flush=True)
+    try:
+        run("processes-failure", ["ps", "-axo", "pid,ppid,state,%cpu,rss,comm"])
+    except Exception as error:
+        print(f"Process diagnostic unavailable: {error}", flush=True)
     raise
 finally:
     if simulator and re.fullmatch(r"[A-Fa-f0-9-]{36}", simulator):
