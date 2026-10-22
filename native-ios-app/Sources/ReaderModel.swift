@@ -3,7 +3,7 @@ import CryptoKit
 import ReaderEngine
 import SwiftUI
 
-enum ReaderRoute { case shelf, search, sources, details, contents, reading, sourceSwitch }
+enum ReaderRoute { case shelf, search, sources, discovery, details, contents, reading, sourceSwitch }
 enum ReaderSearchScope: String, CaseIterable { case all, selected }
 
 @MainActor
@@ -271,6 +271,12 @@ final class ReaderModel: ObservableObject {
     private var searchCommandRequest: EngineRequest?
     private var searchGeneration = UUID()
     private let engine = ReaderEngine()
+    lazy var discovery = DiscoveryModel(engine: engine)
+    @Published private(set) var detailReturnRoute: ReaderRoute = .search
+    private var preservingDiscoveryContext: Bool {
+        detailReturnRoute == .discovery && !discovery.loading &&
+            (route == .discovery || route == .details || route == .contents || route == .reading)
+    }
     private var request: EngineRequest?
     private var generation = UUID()
     @Published private(set) var initialized = false
@@ -332,6 +338,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func openShelfBook(_ entry: ShelfBookSnapshot) {
+        detailReturnRoute = .search
         perform(retry: { [weak self] in self?.openShelfBook(entry) }, start: {
             self.engine.openShelfBook(sourceId: entry.book.sourceId, bookId: entry.book.id, completion: $0)
         }) { [weak self] reply in
@@ -454,6 +461,15 @@ final class ReaderModel: ObservableObject {
         }
     }
 
+    func setSourceDiscoveryEnabled(_ id: String, enabled: Bool) {
+        perform(retry: { [weak self] in self?.setSourceDiscoveryEnabled(id, enabled: enabled) }, start: {
+            self.engine.setSourceDiscoveryEnabled(ids: [id], enabled: enabled, completion: $0)
+        }) { [weak self] reply in
+            self?.acceptManagedSources(reply)
+            self?.discovery.reloadSources()
+        }
+    }
+
     func changeSourceGroup(_ ids: [String], group: String, add: Bool, onCommitted: (() -> Void)? = nil) {
         perform(retry: { [weak self] in self?.changeSourceGroup(ids, group: group, add: add, onCommitted: onCommitted) }, start: {
             self.engine.changeSourceGroup(ids: ids, group: group, add: add, completion: $0)
@@ -554,6 +570,8 @@ final class ReaderModel: ObservableObject {
     }
 
     func select(_ selected: BookSnapshot) {
+        if route == .discovery { detailReturnRoute = .discovery }
+        else if route == .search { detailReturnRoute = .search }
         guard eligibleSwitchCandidate(selected) else { return }
         perform(stage: .detail, retry: { [weak self] in self?.select(selected) }, start: {
             self.engine.loadBook(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
@@ -711,7 +729,9 @@ final class ReaderModel: ObservableObject {
     }
 
     func navigate(_ target: ReaderRoute, then action: (() -> Void)? = nil) {
-        cancel()
+        let preserve = (target == .discovery || target == .contents || target == .details || target == .reading) && preservingDiscoveryContext
+        cancel(preservingDiscovery: preserve)
+        if target == .shelf || target == .search || target == .sources { detailReturnRoute = .search }
         let token = generation
         busy = true
         finishReading { [weak self] in
@@ -721,15 +741,16 @@ final class ReaderModel: ObservableObject {
         }
     }
     func retry() { retryAction?() }
-    func cancel() {
+    func cancel(preservingDiscovery: Bool = false) {
         guard !committingSwitch else { return }
+        if !preservingDiscovery { discovery.retire() }
         retireSearch()
         generation = UUID(); request?.cancel(); request = nil
         busy = false; message = nil; retryAction = nil
     }
 
     private func perform(stage: ReplyStage = .operation, preservingReading: Bool = false, retry: @escaping () -> Void, failure: ((EngineFailure) -> Void)? = nil, start: @escaping (@escaping (EngineReply) -> Void) -> EngineRequest, success: @escaping (EngineReply) -> Void) {
-        cancel()
+        cancel(preservingDiscovery: preservingDiscoveryContext)
         let token = generation
         busy = true; retryAction = retry
         let beginRequest: () -> Void = { [weak self] in

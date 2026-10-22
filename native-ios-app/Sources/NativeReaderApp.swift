@@ -84,13 +84,14 @@ struct ReaderScreen: View {
                     }
                     if model.route == .shelf { shelf }
                     if model.route == .search { search }
+                    if model.route == .discovery { DiscoveryView(reader: model, model: model.discovery) }
                     if model.route == .sources { sources }
                     if model.route == .details { details }
                     if model.route == .contents { contents }
                     if model.route == .sourceSwitch { sourceSwitch }
                 }
                 if model.route == .reading { readingControls }
-                if model.switchingFrom == nil && (model.route == .shelf || model.route == .search || model.route == .sources) { libraryNavigation }
+                if model.switchingFrom == nil && (model.route == .shelf || model.route == .search || model.route == .sources || model.route == .discovery) { libraryNavigation }
 
             }
             .background(model.route == .reading ? paper : Color(uiColor: .systemGroupedBackground))
@@ -107,7 +108,7 @@ struct ReaderScreen: View {
                 }
                 if model.route == .details || model.route == .contents {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Button { model.navigate(.search) } label: { Label("Search results", systemImage: "magnifyingglass") }
+                        Button { model.navigate(model.detailReturnRoute) } label: { Label(model.detailReturnRoute == .discovery ? "Discovery results" : "Search results", systemImage: model.detailReturnRoute == .discovery ? "safari" : "magnifyingglass") }
                             .accessibilityIdentifier("navigation.searchResults").disabled(model.busy)
                     }
                 }
@@ -158,6 +159,7 @@ struct ReaderScreen: View {
         case .shelf: return "Library"
         case .search: return "Search"
         case .sources: return "Sources"
+        case .discovery: return "Discover"
         case .details: return "Book details"
         case .contents: return "Contents"
         case .reading: return model.content?.chapter.title ?? "Reader"
@@ -200,6 +202,7 @@ struct ReaderScreen: View {
         HStack {
             libraryButton("Library", icon: "books.vertical", route: .shelf)
             libraryButton("Search", icon: "magnifyingglass", route: .search)
+            libraryButton("Discover", icon: "safari", route: .discovery)
             libraryButton("Sources", icon: "square.stack.3d.up", route: .sources)
         }.padding(.vertical, 8).background(.regularMaterial)
     }

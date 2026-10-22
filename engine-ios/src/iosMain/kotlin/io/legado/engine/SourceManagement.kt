@@ -14,7 +14,7 @@ import platform.Foundation.NSUUID
 
 enum class SourceImportKind { NEW, NEWER, EXISTING }
 class ManagedSource internal constructor(val id: String, val name: String, val enabled: Boolean,
-    val groups: List<String>, val updatedAt: Long)
+    val groups: List<String>, val updatedAt: Long, val discoveryEnabled: Boolean, val hasDiscovery: Boolean)
 class ManagedSourcesReply internal constructor(val sources: List<ManagedSource>) : EngineReply()
 class SourceImportItem internal constructor(val source: ManagedSource, val kind: SourceImportKind,
     val selectedByDefault: Boolean, val duplicateCount: Int, val previousUpdatedAt: Long?)
@@ -44,6 +44,12 @@ internal class SourceManagement {
         val selectedIds = selected(ids).map { it.bookSourceUrl }.toSet()
         dao.enable(enabled, dao.allPart().filter { it.bookSourceUrl in selectedIds })
         SourceHelp.evictAll()
+        return list()
+    }
+
+    suspend fun enableDiscovery(ids: List<String>, enabled: Boolean): ManagedSourcesReply {
+        val selectedIds = selected(ids).map { it.bookSourceUrl }.toSet()
+        dao.enableExplore(enabled, dao.allPart().filter { it.bookSourceUrl in selectedIds })
         return list()
     }
 
@@ -118,5 +124,5 @@ internal class SourceManagement {
 
     private fun snapshot(source: BookSource) = ManagedSource(source.bookSourceUrl, source.bookSourceName,
         source.enabled, source.bookSourceGroup.orEmpty().split(AppPattern.splitGroupRegex).map { it.trim() }
-            .filter { it.isNotEmpty() }.distinct(), source.lastUpdateTime)
+            .filter { it.isNotEmpty() }.distinct(), source.lastUpdateTime, source.enabledExplore, !source.exploreUrl.isNullOrBlank())
 }

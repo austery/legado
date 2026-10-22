@@ -11,6 +11,7 @@ import io.legado.app.constant.registerNativeAndroidId
 import io.legado.app.data.registerIosAppDbAccessor
 import io.legado.app.data.registerIosDatabaseDriver
 import io.legado.app.data.entities.BaseSource
+import io.legado.app.help.registerNativeExploreKindsCacheProvider
 import io.legado.app.help.registerNativeFileCacheProvider
 import io.legado.app.help.registerNativeSourceCacheProvider
 import io.legado.app.help.book.BookHelpProviders
@@ -131,6 +132,7 @@ internal object EngineHost {
         registerNativeSourceHelpAccessor()
         registerNativeSourceCacheProvider()
         registerNativeFileCacheProvider()
+        registerNativeExploreKindsCacheProvider()
         registerNativeSourceProviders()
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()

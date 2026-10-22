@@ -1,6 +1,144 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor private func launchDiscovery(_ scenario: String = "discovery") -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = scenario
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let source = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.source.")).firstMatch
+        XCTAssertTrue(source.waitForExistence(timeout: 40))
+        return app
+    }
+    @MainActor private func openDiscoverySource(_ app: XCUIApplication) {
+        let source = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.source.")).firstMatch
+        source.tap()
+        XCTAssertTrue(app.buttons["discovery.category.Popular"].waitForExistence(timeout: 15))
+    }
+    @MainActor private func discoveryBook(_ app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.book.")).firstMatch
+    }
+
+    @MainActor func testDiscoveryBrowseDetailsTrialShelfReturnAndRelaunch() throws {
+        let app = launchDiscovery()
+        app.buttons["discovery.groupFilter"].tap()
+        XCTAssertTrue(app.buttons["Discovery"].waitForExistence(timeout: 5)); app.buttons["Discovery"].tap()
+        let filter = app.textFields["discovery.sourceFilter"]
+        filter.tap(); filter.typeText("missing-source")
+        wait(app) { app.staticTexts["No matching sources."].exists }
+        filter.tap(); filter.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 14))
+        filter.typeText("\n")
+        openDiscoverySource(app)
+        capture("discovery-categories-portrait")
+        app.buttons["discovery.category.Popular"].tap()
+        XCTAssertTrue(discoveryBook(app).waitForExistence(timeout: 15))
+        app.buttons["discovery.more"].tap()
+        wait(app) { app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.book.")).count == 2 }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height }
+        capture("discovery-books-landscape")
+        discoveryBook(app).tap()
+        XCTAssertTrue(app.buttons["details.read"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["details.add"].exists)
+        app.buttons["details.read"].tap()
+        XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
+        capture("discovery-unshelved-trial-reading")
+        app.buttons["reader.contents"].tap()
+        XCTAssertTrue(app.buttons["navigation.searchResults"].waitForExistence(timeout: 10))
+        app.buttons["navigation.searchResults"].tap()
+        XCTAssertTrue(app.staticTexts["End of category."].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.book.")).count, 2)
+        discoveryBook(app).tap()
+        XCTAssertTrue(app.buttons["details.add"].waitForExistence(timeout: 15)); app.buttons["details.add"].tap()
+        XCTAssertTrue(app.staticTexts["Added to shelf."].waitForExistence(timeout: 15))
+        app.buttons["details.read"].tap()
+        XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
+        capture("discovery-shelved-reading")
+        app.buttons["reader.contents"].tap()
+        XCTAssertTrue(app.buttons["navigation.searchResults"].waitForExistence(timeout: 10))
+        app.buttons["navigation.searchResults"].tap()
+        XCTAssertTrue(app.staticTexts["End of category."].waitForExistence(timeout: 10))
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Discovery first")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
+        capture("discovery-shelf-reopened")
+        app.terminate()
+    }
+
+    @MainActor func testDiscoveryRetryAndCrossEngineDisableEndVisibleLoading() throws {
+        let app = launchDiscovery("discovery-held")
+        openDiscoverySource(app)
+        app.buttons["discovery.category.Retry pages"].tap()
+        XCTAssertTrue(app.buttons["discovery.more"].waitForExistence(timeout: 15)); app.buttons["discovery.more"].tap()
+        XCTAssertTrue(app.buttons["discovery.retry"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.book.")).count, 1)
+        capture("discovery-failed-page-retains-first")
+        app.buttons["discovery.retry"].tap()
+        wait(app) { app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.book.")).count == 2 }
+        app.buttons["discovery.allCategories"].tap()
+        XCTAssertTrue(app.buttons["discovery.category.Held pages"].waitForExistence(timeout: 10))
+        app.buttons["discovery.category.Held pages"].tap()
+        XCTAssertTrue(app.buttons["discovery.more"].waitForExistence(timeout: 15)); app.buttons["discovery.more"].tap()
+        XCTAssertTrue(app.buttons["Stop browsing"].waitForExistence(timeout: 10))
+        app.buttons["fixture.invalidateDiscovery"].tap()
+        XCTAssertTrue(app.staticTexts["Browsing stopped. Results may be incomplete."].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Stop browsing"].exists)
+        XCTAssertFalse(app.buttons["discovery.more"].exists)
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "discovery.book.")).count, 1)
+        XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
+        capture("discovery-external-disable-terminal")
+        app.terminate()
+    }
+
+    @MainActor func testDiscoveryOptionsEmptyUnsupportedAndVisibilityPersist() throws {
+        let app = launchDiscovery()
+        openDiscoverySource(app)
+        let unsupported = app.otherElements["discovery.unsupported"]
+        if !unsupported.isHittable { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["This category needs controls that are not available in this native reader yet."].exists)
+        app.buttons["discovery.category.Empty"].tap()
+        XCTAssertTrue(app.staticTexts["No books in this category."].waitForExistence(timeout: 15))
+        app.buttons["discovery.allCategories"].tap()
+        XCTAssertTrue(app.buttons["discovery.category.Options"].waitForExistence(timeout: 10))
+        app.buttons["discovery.category.Options"].tap()
+        XCTAssertTrue(app.buttons["discovery.option.Order"].waitForExistence(timeout: 15))
+        app.buttons["discovery.option.Order"].tap(); app.buttons["New"].tap()
+        wait(app) { self.discoveryBook(app).label.contains("new") }
+        capture("discovery-native-option-new")
+        app.buttons["discovery.allCategories"].tap()
+        XCTAssertTrue(app.buttons["discovery.category.Dynamic options"].waitForExistence(timeout: 10))
+        app.buttons["discovery.category.Dynamic options"].tap()
+        XCTAssertTrue(app.buttons["discovery.retry"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["discovery.option.Order"].exists)
+        capture("discovery-dynamic-option-after-failure")
+        app.buttons["discovery.option.Order"].tap(); app.buttons["Working"].tap()
+        wait(app) { self.discoveryBook(app).exists && self.discoveryBook(app).label.contains("working") }
+        XCTAssertFalse(app.buttons["discovery.retry"].exists)
+        capture("discovery-dynamic-option-recovered")
+        app.buttons["Sources"].tap()
+        let source = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Discovery Fixture Source")).firstMatch
+        XCTAssertTrue(source.waitForExistence(timeout: 10)); source.tap()
+        let visible = app.switches["sources.discoveryEnabled"]
+        XCTAssertTrue(visible.waitForExistence(timeout: 10)); XCTAssertEqual(visible.value as? String, "1")
+        visible.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        wait(app) { visible.value as? String == "0" }
+        app.buttons["Done"].tap(); app.buttons["Discover"].tap()
+        XCTAssertTrue(app.buttons["discovery.allSources"].waitForExistence(timeout: 10))
+        app.buttons["discovery.allSources"].tap()
+        XCTAssertTrue(app.staticTexts["Hidden from Discover"].waitForExistence(timeout: 10))
+        app.terminate(); app.launchEnvironment["READER_UI_RESET"] = "0"; app.launch()
+        XCTAssertTrue(app.staticTexts["Hidden from Discover"].waitForExistence(timeout: 40))
+        XCTAssertFalse(app.staticTexts["Source is disabled"].exists)
+        capture("discovery-visibility-persisted")
+        app.terminate()
+    }
+
     @MainActor func testOtherEngineSourceChangeEndsVisibleSearch() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
