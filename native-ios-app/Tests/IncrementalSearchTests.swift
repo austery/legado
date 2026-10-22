@@ -54,6 +54,7 @@ final class IncrementalSearchTests: XCTestCase {
         model.query = "work"; model.search()
         try await waitUntil { model.results.count == 1 && model.searchRunning }
         _ = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/entered/slow")))
+        let retained = model.results.map(\.id)
         let engine = ReaderEngine(); defer { engine.close() }
         let initialized = await withCheckedContinuation { continuation in
             _ = engine.initialize { continuation.resume(returning: $0) }
@@ -65,7 +66,11 @@ final class IncrementalSearchTests: XCTestCase {
             }
         }
         XCTAssertTrue(changed is ManagedSourcesReply)
-        let retained = model.results.map(\.id)
+        try await waitUntil { !model.searchRunning }
+        XCTAssertTrue(model.searchIncomplete)
+        XCTAssertFalse(model.hasNextPage)
+        XCTAssertFalse(model.searchCommandPending)
+        XCTAssertEqual(model.results.map(\.id), retained)
         try await release(base)
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(model.results.map(\.id), retained)

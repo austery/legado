@@ -24,6 +24,7 @@ struct FixtureReaderApp: App {
         }
         apply(reply)
     })
+    @State private var searchFixtureBase: String?
     @State private var prepared = false
     @State private var failure: String?
     @State private var rejectingSave = false
@@ -46,6 +47,25 @@ struct FixtureReaderApp: App {
                         if scenario == "sources" {
                             Text("Source replies").accessibilityIdentifier("fixture.sourceReplies")
                                 .accessibilityValue(UserDefaults.standard.string(forKey: "fixture.sourceReplies") ?? "none")
+                        }
+                        if scenario == "search-invalidation" {
+                            Button("Disable from another engine") {
+                                Task { @MainActor in
+                                    guard let base = searchFixtureBase else { return }
+                                    let other = ReaderEngine(); defer { other.close() }
+                                    let ready = await withCheckedContinuation { continuation in
+                                        _ = other.initialize { continuation.resume(returning: $0) }
+                                    }
+                                    guard ready is EngineReady else { failure = "Other engine failed to initialize"; return }
+                                    let changed = await withCheckedContinuation { continuation in
+                                        _ = other.setSourcesEnabled(ids: [base], enabled: false) {
+                                            continuation.resume(returning: $0)
+                                        }
+                                    }
+                                    guard changed is ManagedSourcesReply else { failure = "Source mutation failed"; return }
+                                    _ = try? await URLSession.shared.data(from: URL(string: base + "/control/release/search")!)
+                                }
+                            }.accessibilityIdentifier("fixture.invalidateSearch")
                         }
                         Spacer()
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
@@ -127,6 +147,16 @@ struct FixtureReaderApp: App {
         model.importFile(file); try await settle()
         if scenario == "sources" { model.navigate(.sources); try await settle(); return }
         model.confirmSourceImport(); try await settle()
+        if scenario == "search-invalidation" {
+            searchFixtureBase = base
+            _ = try await URLSession.shared.data(from: URL(string: base + "/control/hold/search")!)
+            model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search()
+            let (entered, _) = try await URLSession.shared.data(from: URL(string: base + "/control/entered/search")!)
+            guard String(decoding: entered, as: UTF8.self) == "entered" else {
+                throw NSError(domain: "FixtureSetup", code: 5)
+            }
+            return
+        }
         model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle()
         guard let book = model.results.first else { throw NSError(domain: "FixtureSetup", code: 2) }
         model.select(book); try await settle()

@@ -102,6 +102,28 @@ final class SourceManagementTests: XCTestCase {
         XCTAssertEqual(restoredObject, object)
     }
 
+    func testReviewSelectedImportIgnoresUnselectedConflict() async throws {
+        let first = try await engine(); let second = try await engine()
+        defer { first.close(); second.close() }
+        let prefix = "https://selection-\(UUID().uuidString).invalid"
+        let a = prefix + "/a", b = prefix + "/b"
+        _ = await call { first.importSources(json: "[\(source(a)),\(source(b))]", completion: $0) }
+        let reply = await call { first.previewSourceImport(
+            json: "[\(source(a, updated: 2)),\(source(b, updated: 2))]", completion: $0) }
+        let preview = try XCTUnwrap(reply as? SourceImportPreview)
+        _ = await call { second.setSourcesEnabled(ids: [b], enabled: false, completion: $0) }
+        let result = await call { first.commitSourceImport(token: preview.token, ids: [a],
+            keepName: true, keepGroups: true, keepEnabled: true, completion: $0) }
+        XCTAssertEqual((result as? SourceImportCommitted)?.count, 1)
+        let current = try await list(second)
+        let selected = try XCTUnwrap(current.first { $0.id == a })
+        let unselected = try XCTUnwrap(current.first { $0.id == b })
+        XCTAssertEqual(selected.updatedAt, 2)
+        XCTAssertTrue(selected.enabled)
+        XCTAssertEqual(unselected.updatedAt, 1)
+        XCTAssertFalse(unselected.enabled)
+    }
+
     func testStaleConfirmationRejectsChangesFromAnotherEngine() async throws {
         let first = try await engine(); let second = try await engine()
         defer { first.close(); second.close() }

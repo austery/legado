@@ -105,7 +105,7 @@ internal class SourceManagement {
                 }
             }
         }
-        dao.importReviewed(plan.expected, replacements)
+        dao.importReviewed(plan.expected.filterKeys { it in selection }, replacements)
         plans.clear()
         SourceHelp.evictAll()
         return SourceImportCommitted(replacements.size)

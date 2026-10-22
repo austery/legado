@@ -1,6 +1,24 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testOtherEngineSourceChangeEndsVisibleSearch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "search-invalidation"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        XCTAssertTrue(app.buttons["Stop"].waitForExistence(timeout: 40))
+        capture("search-before-external-source-change")
+        app.buttons["fixture.invalidateSearch"].tap()
+        let terminal = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Incomplete search")).firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Stop"].exists)
+        XCTAssertTrue(app.staticTexts["Results may be incomplete. A discovered candidate does not guarantee readable chapters."].exists)
+        XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
+        capture("search-after-external-source-change")
+        app.terminate()
+    }
+
     @MainActor func testSourceImportGroupsDisableAndRelaunch() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"

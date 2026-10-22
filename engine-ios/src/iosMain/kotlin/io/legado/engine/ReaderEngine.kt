@@ -669,5 +669,5 @@ private object ReadingSessions {
 /** Process-wide retirement blocks late results from other engine sessions after source mutations. */
 private object SourceSearches {
     val sessions = newConcurrentMap<String, NativeSearchSession>()
-    fun retireAll() { sessions.values.toList().forEach { it.retire() } }
+    fun retireAll() { sessions.values.toList().forEach { it.invalidateSources() } }
 }
