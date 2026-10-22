@@ -2,6 +2,7 @@ package io.legado.engine
 
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.image.IosImageOps
+import io.legado.app.help.source.exploreKinds
 import io.legado.app.help.source.SourceNetworkProvider
 import io.legado.app.model.analyzeRule.AnalyzeRuleCore
 import io.legado.app.model.script.JsBindings
@@ -24,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertNull
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -188,6 +190,122 @@ class EngineOperationNativeTest {
         }
     }
 
+    @Test
+    fun topLevelCategoryScriptsKeepCaughtAndUncaughtInteractionFailures() = runBlocking {
+        registerNativeJsEngines(IosImageOps)
+        EngineHost.registerInteractionProviders()
+        for (script in listOf(
+            "java.startBrowser('https://fixture.invalid','Verify'); '[]';",
+            "try { java.startBrowser('https://fixture.invalid','Verify'); } catch (error) {} '[]';",
+        )) {
+            val source = BookSource(bookSourceUrl = "https://category-${platform.Foundation.NSUUID().UUIDString}.invalid",
+                bookSourceName = "Top-level category context", exploreUrl = "@js:" + script)
+            EngineHost.withOperation {
+                source.exploreKinds()
+                assertEquals(EngineErrorCode.INTERACTION_REQUIRED, EngineHost.interactionFailure()?.code)
+            }
+            assertNull(NativeJsEngine.currentContext())
+            EngineHost.withOperation { assertNull(EngineHost.interactionFailure()) }
+        }
+    }
+
+    @Test
+    fun topLevelContextEntryRestoresBorrowedScopeAfterNestedFailure() = runBlocking {
+        registerNativeJsEngines(IosImageOps)
+        assertNull(NativeJsEngine.currentContext())
+        EngineHost.withOperation {
+            val operation = currentCoroutineContext()[EngineOperation]
+            NativeJsEngine.runScriptWithContext {
+                val outer = NativeJsEngine.currentContextNonNull()
+                assertSame(operation, outer.coroutineContext?.get(EngineOperation))
+                val inner = EngineOperation()
+                val innerContext = outer.coroutineContext!! + inner
+                assertFailsWith<IllegalArgumentException> {
+                    NativeJsEngine.runScriptWithContext(innerContext) {
+                        assertSame(outer, NativeJsEngine.currentContextNonNull())
+                        assertSame(inner, outer.coroutineContext?.get(EngineOperation))
+                        throw IllegalArgumentException("Controlled nested failure")
+                    }
+                }
+                assertSame(operation, outer.coroutineContext?.get(EngineOperation))
+            }
+        }
+        assertNull(NativeJsEngine.currentContext(), "Temporary entry scope must be released")
+        assertFailsWith<IllegalArgumentException> {
+            NativeJsEngine.runScriptWithContext(currentCoroutineContext()) {
+                NativeJsEngine.currentContextNonNull()
+                throw IllegalArgumentException("Controlled outer failure")
+            }
+        }
+        assertNull(NativeJsEngine.currentContext(), "Failure must also release the entry scope")
+    }
+
+    @Test
+    fun concurrentTopLevelSourceOperationsKeepTheirFailuresSeparate() = runBlocking {
+        withTimeout(15_000) {
+            registerNativeJsEngines(IosImageOps)
+            EngineHost.registerInteractionProviders()
+            val ready = CompletableDeferred<Unit>()
+            val rejected = CompletableDeferred<Unit>()
+            newSingleThreadContext("top-level-rejection").use { firstThread ->
+                newSingleThreadContext("top-level-success").use { secondThread ->
+                    val first = async(firstThread) {
+                        EngineHost.withOperation {
+                            ready.await()
+                            evaluateTopLevel("try { java.startBrowser('https://fixture.invalid','Verify'); } catch (error) {} 'after';")
+                            rejected.complete(Unit)
+                            EngineHost.interactionFailure()
+                        }
+                    }
+                    val second = async(secondThread) {
+                        EngineHost.withOperation {
+                            ready.complete(Unit); rejected.await()
+                            assertEquals("survives", evaluateTopLevel("'survives';"))
+                            EngineHost.interactionFailure()
+                        }
+                    }
+                    assertEquals(EngineErrorCode.INTERACTION_REQUIRED, first.await()?.code)
+                    assertNull(second.await())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun topLevelCancellationReachesCooperativeHostAndKeepsPeerAlive() = runBlocking {
+        withTimeout(15_000) {
+            registerNativeJsEngines(IosImageOps)
+            EngineHost.registerInteractionProviders()
+            supervisorScope {
+                val cancelled = CompletableDeferred<Unit>()
+                val afterCancellation = CompletableDeferred<Unit>()
+                newSingleThreadContext("top-level-cancelled").use { firstThread ->
+                    newSingleThreadContext("top-level-peer").use { secondThread ->
+                        val first = async(firstThread) {
+                            EngineHost.withOperation {
+                                val cookie = CancellingCookie(currentCoroutineContext().job, cancelled, afterCancellation)
+                                evaluateTopLevel("try { cookie.getCookie('cancel'); } catch (error) {} cookie.getCookie('after');", cookie)
+                            }
+                        }
+                        val second = async(secondThread) {
+                            cancelled.await()
+                            EngineHost.withOperation { evaluateTopLevel("'peer survives';") }
+                        }
+                        assertFailsWith<CancellationException> { first.await() }
+                        assertFalse(afterCancellation.isCompleted, "Cancelled context must prevent the host helper from performing its protected work")
+                        assertEquals("peer survives", second.await())
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun evaluateTopLevel(script: String, cookie: SourceNetworkProvider? = null): String? =
+        NativeJsEngine.runScriptWithContext {
+            val source = BookSource(bookSourceUrl = "https://fixture.invalid", bookSourceName = "Top-level fixture")
+            source.evalJS(script) { if (cookie != null) this["cookie"] = cookie } as? String
+        }
+
     private class NestedSourceCookie(library: String?) : SourceNetworkProvider {
         private val source = BookSource(bookSourceUrl = "https://fixture.invalid",
             bookSourceName = "Nested source fixture", jsLib = library)
@@ -228,8 +346,15 @@ class EngineOperationNativeTest {
     private class CancellingCookie(
         private val operationJob: Job,
         private val cancellationReached: CompletableDeferred<Unit>,
+        private val afterCancellation: CompletableDeferred<Unit>? = null,
     ) : SourceNetworkProvider {
         override fun getCookie(tag: String): String {
+            if (tag == "after") {
+                // Host helpers cooperate with cancellation through the supplied script context.
+                NativeJsEngine.currentContextNonNull().ensureActive()
+                afterCancellation?.complete(Unit)
+                return "after"
+            }
             operationJob.cancel(CancellationException("Controlled source cancellation"))
             cancellationReached.complete(Unit)
             return ""

@@ -592,37 +592,25 @@ object NativeJsEngine : JsEngine {
     /** 当前线程的 JS scope (可空), 供桥接层 (NativeJsPropertyBridge) 登记嵌套 handle。 */
     internal fun currentScope(): NativeJsScope? = threadLocalScope.value
 
-    /**
-     * 在当前 JS 执行上下文上设 coroutineContext 后执行 block (不创建新 scope)。
-     *
-     * 对应 quickjs 的 runScriptWithContext(context, block)。
-     */
+    /** Bind top-level source scripts too; nested calls borrow and restore their existing scope. */
     override fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): T {
-        val scope = threadLocalScope.value
-        val prevCtx = scope?.coroutineContext
-        if (scope != null) scope.coroutineContext = context
+        val previousScope = threadLocalScope.value
+        val scope = previousScope ?: (createStandaloneScope() as NativeJsScope)
+        val previousContext = scope.coroutineContext
+        threadLocalScope.value = scope
+        scope.coroutineContext = context
         return try {
             block()
         } finally {
-            if (scope != null) scope.coroutineContext = prevCtx
+            scope.coroutineContext = previousContext
+            threadLocalScope.value = previousScope
+            if (previousScope == null) scope.close()
         }
     }
 
-    /**
-     * suspend 版本, 取当前协程上下文传给 scope (对齐 JVM runScriptWithContext(block)):
-     * kotlin.coroutines.coroutineContext 在 suspend 函数内可取当前协程上下文;
-     * minusKey(ContinuationInterceptor) 不把调度器存进 scope (与 JVM 端实现一致)。
-     */
-    override suspend fun <T> runScriptWithContext(block: () -> T): T {
-        val scope = threadLocalScope.value
-        val prevCtx = scope?.coroutineContext
-        scope?.coroutineContext = coroutineContext.minusKey(ContinuationInterceptor)
-        return try {
-            block()
-        } finally {
-            scope?.coroutineContext = prevCtx
-        }
-    }
+    /** Keep the calling operation/cancellation context without retaining its dispatcher in JS. */
+    override suspend fun <T> runScriptWithContext(block: () -> T): T =
+        runScriptWithContext(coroutineContext.minusKey(ContinuationInterceptor), block)
 
     // ============ private helper: JS eval / 异常处理 ============
 
