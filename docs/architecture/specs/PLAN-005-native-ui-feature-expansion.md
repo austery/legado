@@ -16,12 +16,16 @@ At the original planning baseline, native capabilities included explicit shelf a
 The baseline and proposal above record the original 2026-10-19 planning snapshot.
 Everyday navigation/global typography (PR #30), explicit source switching (PR #31),
 and bounded offline reading/cache controls (PR #32) have since merged into `native-reader`.
-The current implementation baseline is `daa5ce0e5f96f36bc0bdac805d1f1cda4a1ca9a0`.
+Source management (PR #33) is also merged. The current implementation baseline is
+`68f6ab619452dc21c853a1cc3ae38b7085f680f7`.
 
 The owner approved [SPEC-007](SPEC-007-native-source-management.md) on 2026-10-21:
 all text sources, filters, individual/batch enablement, group membership, reviewed imports
 with upstream selection/retention behavior, and selected export. Implementation and local simulator
-acceptance have passed; publication and required C1 are tracked on the task PR. Discovery browsing and interactive login remain separate follow-ups;
+acceptance and final-head/merged-head complete C1 passed. The owner now approved
+[SPEC-008](SPEC-008-native-discovery.md): source/category browsing, pagination, existing
+book/reading flows and cross-engine lifecycle acceptance. This is the next active goal;
+create a reviewed PR but do not merge. Interactive login remains a separate follow-up;
 the upstream data fields alone do not establish native runtime support.
 
 ## Proposed next delivery: everyday native reading UI
