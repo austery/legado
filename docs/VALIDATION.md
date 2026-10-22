@@ -61,8 +61,9 @@ CI does not independently enforce reviewer identity, reviewed SHA or design budg
 For dependency/upstream upgrades, follow ADR-002's isolated comparison and recovery
 requirements. A code revert does not establish data-format rollback safety.
 The historical seven-file C1 extraction inventory in `engine-ios/README.md` is not
-a current cumulative patch budget. A current critical-dependency/acceptance matrix,
-maintenance-cost baseline and H1/H2 workflow remain separate follow-up decisions.
+a current cumulative patch budget. The [maintenance record](MAINTENANCE.md) maps critical dependencies to acceptance
+and recovery limits. Use the [H1/H2 contract](../.github/ISSUE_TEMPLATE/03-bounded-slice.md)
+for owner-approved slices; it adds no automatic merge authorization.
 
 Physical iPad touch/layout comfort, live providers, signing/distribution and system
 permissions require their own applicable evidence and authorization. Synthetic
