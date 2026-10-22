@@ -740,7 +740,7 @@ object NativeJsExtensionsBridge {
                 // java.post(url, bodyBytes, headers)
                 val headerMap = parseHeaderArg(args.getOrNull(2))
                 val body = args.getDataArgOrNull(1) as? ByteArray ?: ByteArray(0)
-                qjs_NewFloat64(ctx, registerObject(obj.post(args.getString(0), body, headerMap)).toDouble())
+                qjs_NewFloat64(ctx, NativeJsPropertyBridge.registerScopedHandle(obj.post(args.getString(0), body, headerMap)).toDouble())
             }
 
             // ============ Connection.Response 对象方法 (700-799, java.get/head/post 返回值) ============

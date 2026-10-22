@@ -50,3 +50,13 @@ The isolated checkout belongs to this synchronization task. Its recovery base is
 ## Deferred scope and limitations
 
 PR27 F03/F04/F05/F06/F07/F09 and PR19 F15/F16 remain historical follow-ups; do not infer closure from this merge. Reassess only findings reached by the new changes. No live-provider, rendered Compose, full asynchronous ScreenModel lifecycle, physical-device, Android/OHOS or desktop playback acceptance is claimed. Publication and CI do not authorize merging the PR into native-reader.
+
+## L35-F01 review repair
+
+The external v1 review identified successful binary POST responses registered in the global handle table without scope ownership. Three real Native/QuickJS/loopback regressions reproduced retained HttpResponse objects after evaluation cleanup, direct scope close, and closing concurrent scopes. This is dynamic handle-retention evidence, not an RSS growth measurement.
+
+Only method 312 now uses the existing NativeJsPropertyBridge.registerScopedHandle mechanism. No global clear, response wrapper redesign, or old request dispatch changes. Repeated analyzer evaluations check immediate release; direct scope tests prove response usability across evaluations before close; two independently executing scopes prove closing a peer does not invalidate the live response and both handles are gone after their owners close. The tests reside in existing required Native suites.
+
+Historical unscoped GET/HEAD/text POST registration (methods 309–311) remains a separate follow-up, L35-F02: assess scope ownership and compatibility before repairing those old paths. This bounded fix does not claim that all registry leaks are resolved. Review and final exact-head validation evidence are maintained in PR35.
+
+Local repair validation: Native 121 tests passed (data 69, core 8, engine 44), zero failures/errors/skips. The same three added regressions failed on the original registration with retained HttpResponse objects. Exact revised-head C1 evidence is recorded in the PR after publication.

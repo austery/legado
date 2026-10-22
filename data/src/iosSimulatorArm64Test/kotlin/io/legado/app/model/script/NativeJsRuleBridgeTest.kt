@@ -144,6 +144,51 @@ class NativeJsRuleBridgeTest {
         }
     }
 
+    @Test
+    fun repeatedBinaryResponsesAreReleasedAfterEachAnalyzerEvaluation() {
+        registerNativeJsEngines(IosImageOps)
+        val analyzer = AnalyzeRuleCore()
+        val handles = mutableListOf<Long>()
+        try {
+            repeat(12) {
+                val handle = (analyzer.evalJS("""
+                    var response = java.post('http://127.0.0.1:18769/binary-echo', [0,128,255], {});
+                    if (response.bodyAsBytes().length !== 3) throw new Error('Response unusable');
+                    String(response.__h);
+                """.trimIndent()) as String).toLong()
+                handles.add(handle)
+                kotlin.test.assertNull(NativeJsExtensionsBridge.getObject(handle),
+                    "Evaluation must release its successful binary response")
+            }
+        } finally {
+            analyzer.close()
+            handles.forEach { NativeJsExtensionsBridge.unregisterObject(it) }
+        }
+    }
+
+    @Test
+    fun binaryResponseSurvivesWithinScopeAndIsReleasedOnClose() {
+        registerNativeJsEngines(IosImageOps)
+        val analyzer = AnalyzeRuleCore()
+        val scope = NativeJsEngine.getRuntimeScope(JsBindings().apply { this["java"] = analyzer })
+        var handle: Long? = null
+        try {
+            handle = (NativeJsEngine.eval("""
+                var response = java.post('http://127.0.0.1:18769/binary-echo', [255], {});
+                String(response.__h);
+            """.trimIndent(), scope, null) as String).toLong()
+            kotlin.test.assertNotNull(NativeJsExtensionsBridge.getObject(handle))
+            assertEquals("255", NativeJsEngine.eval(
+                "String(response.bodyAsBytes()[0] & 255)", scope, null))
+        } finally {
+            scope.close()
+            analyzer.close()
+        }
+        try {
+            kotlin.test.assertNull(NativeJsExtensionsBridge.getObject(kotlin.test.assertNotNull(handle)))
+        } finally { handle?.let { NativeJsExtensionsBridge.unregisterObject(it) } }
+    }
+
     private fun withAnalyzer(block: AnalyzeRuleCore.() -> Unit) {
         registerNativeJsEngines(IosImageOps)
         val analyzer = AnalyzeRuleCore()
