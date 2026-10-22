@@ -48,7 +48,7 @@ struct FixtureReaderApp: App {
                             Text("Source replies").accessibilityIdentifier("fixture.sourceReplies")
                                 .accessibilityValue(UserDefaults.standard.string(forKey: "fixture.sourceReplies") ?? "none")
                         }
-                        if scenario == "search-invalidation" {
+                        if scenario == "search-invalidation" || scenario == "discovery-held" {
                             Button("Disable from another engine") {
                                 Task { @MainActor in
                                     guard let base = searchFixtureBase else { return }
@@ -63,9 +63,9 @@ struct FixtureReaderApp: App {
                                         }
                                     }
                                     guard changed is ManagedSourcesReply else { failure = "Source mutation failed"; return }
-                                    _ = try? await URLSession.shared.data(from: URL(string: base + "/control/release/search")!)
+                                    _ = try? await URLSession.shared.data(from: URL(string: base + (scenario == "discovery-held" ? "/control/release/discovery" : "/control/release/search"))!)
                                 }
-                            }.accessibilityIdentifier("fixture.invalidateSearch")
+                            }.accessibilityIdentifier(scenario == "discovery-held" ? "fixture.invalidateDiscovery" : "fixture.invalidateSearch")
                         }
                         Spacer()
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
@@ -131,8 +131,12 @@ struct FixtureReaderApp: App {
         if scenario == "sources", ProcessInfo.processInfo.environment["READER_UI_RESET"] != "1" {
             model.navigate(.sources); try await settle(); return
         }
+        if scenario.hasPrefix("discovery"), ProcessInfo.processInfo.environment["READER_UI_RESET"] != "1" {
+            model.navigate(.discovery); try await settle(); return
+        }
         let base = "http://127.0.0.1:18769/runs/ui-\(UUID().uuidString)"
-        let (data, _) = try await URLSession.shared.data(from: URL(string: base + "/sources.json")!)
+        let endpoint = scenario.hasPrefix("discovery") ? "/discover/sources.json" : "/sources.json"
+        let (data, _) = try await URLSession.shared.data(from: URL(string: base + endpoint)!)
         var json = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
         if scenario == "offline" {
@@ -147,6 +151,13 @@ struct FixtureReaderApp: App {
         model.importFile(file); try await settle()
         if scenario == "sources" { model.navigate(.sources); try await settle(); return }
         model.confirmSourceImport(); try await settle()
+        if scenario.hasPrefix("discovery") {
+            searchFixtureBase = base
+            if scenario == "discovery-held" {
+                _ = try await URLSession.shared.data(from: URL(string: base + "/control/hold/discovery")!)
+            }
+            model.navigate(.discovery); try await settle(); return
+        }
         if scenario == "search-invalidation" {
             searchFixtureBase = base
             _ = try await URLSession.shared.data(from: URL(string: base + "/control/hold/search")!)

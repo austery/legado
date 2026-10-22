@@ -66,6 +66,7 @@ class ReaderEngine {
     private val chapters = mutableMapOf<Pair<String, String>, List<BookChapter>>()
     private var initialized = false
     private val closed = atomic(false)
+    private val activeDiscovery = atomic<NativeDiscoverySession?>(null)
     private val activeSearch = atomic<NativeSearchSession?>(null)
     private val ownedSearches = newConcurrentMap<String, NativeSearchSession>()
     private val sessionId = NSUUID().UUIDString
@@ -213,6 +214,70 @@ class ReaderEngine {
         completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         SourceSearches.retireAll()
         sourceManagement.enable(ids, enabled)
+    }
+
+    fun setSourceDiscoveryEnabled(ids: List<String>, enabled: Boolean,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion, interruptCache = false) {
+        DiscoverySessions.invalidateAll()
+        sourceManagement.enableDiscovery(ids, enabled)
+    }
+
+    fun startDiscovery(sourceId: String, completion: (EngineReply) -> Unit): EngineRequest {
+        activeDiscovery.getAndSet(null)?.retire()
+        if (closed.value || !initialized) return request(completion, false) {
+            EngineFailure(EngineErrorCode.INVALID_INPUT, "Initialize this engine session before discovery")
+        }
+        val discovery = NativeDiscoverySession(NSUUID().UUIDString, sourceId, scope,
+            resolveSource = {
+                EngineHost.gate.withLock {
+                    val current = source(sourceId)
+                    if (!current.enabledExplore) throw UnsupportedOperationException("Discovery is hidden for this source")
+                    if (current.exploreUrl.isNullOrBlank()) throw UnsupportedOperationException("This source has no discovery categories")
+                    current.copy()
+                }
+            },
+            registerBooks = { incoming -> EngineHost.gate.withLock {
+                incoming.forEach { candidate -> books.getOrPut(candidate.origin to candidate.bookUrl) { candidate } }
+            } },
+            failure = { failure(it as? Exception ?: Exception(it.message, it)) }, completion = completion)
+        DiscoverySessions.sessions[discovery.id] = discovery
+        discovery.onRetired { DiscoverySessions.sessions.remove(discovery.id) }
+        activeDiscovery.getAndSet(discovery)?.retire()
+        if (closed.value) discovery.retire()
+        return discovery.start()
+    }
+
+    fun selectDiscoveryCategory(sessionId: String, categoryId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        discoveryCommand(sessionId, DiscoveryCommand.SELECT, categoryId = categoryId, completion = completion)
+    fun selectDiscoveryOption(sessionId: String, name: String, values: List<String>, completion: (EngineReply) -> Unit): EngineRequest =
+        discoveryCommand(sessionId, DiscoveryCommand.OPTION, option = name, values = values, completion = completion)
+    fun loadMoreDiscovery(sessionId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        discoveryCommand(sessionId, DiscoveryCommand.MORE, completion = completion)
+    fun refreshDiscovery(sessionId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        discoveryCommand(sessionId, DiscoveryCommand.REFRESH, completion = completion)
+    fun retryDiscovery(sessionId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        discoveryCommand(sessionId, DiscoveryCommand.RETRY, completion = completion)
+    fun cancelDiscovery(sessionId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        discoveryCommand(sessionId, DiscoveryCommand.CANCEL, completion = completion)
+
+    private fun discoveryCommand(sessionId: String, kind: DiscoveryCommand, categoryId: String = "",
+        option: String = "", values: List<String> = emptyList(), completion: (EngineReply) -> Unit): EngineRequest {
+        val selected = values.toList()
+        val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val operation = currentCoroutineContext().job
+            val reply = try {
+                val current = activeDiscovery.value
+                if (current == null || current.id != sessionId)
+                    EngineFailure(EngineErrorCode.CANCELLED, "Discovery session is no longer active")
+                else current.command(kind, categoryId, option, selected)
+            } catch (cancelled: CancellationException) {
+                EngineFailure(EngineErrorCode.CANCELLED, "Discovery command cancelled")
+            } catch (error: Exception) { failure(error) }
+            withContext(NonCancellable + Dispatchers.Main) {
+                completion(if (operation.isCancelled) EngineFailure(EngineErrorCode.CANCELLED, "Discovery command cancelled") else reply)
+            }
+        }
+        return EngineRequest(job)
     }
 
     fun changeSourceGroup(ids: List<String>, group: String, add: Boolean,
@@ -529,6 +594,7 @@ class ReaderEngine {
         closed.value = true
         offlineCache.cancel()
         activeSearch.getAndSet(null)?.retire()
+        activeDiscovery.getAndSet(null)?.retire()
         scope.cancel()
         ReadingSessions.scope.launch(start = CoroutineStart.UNDISPATCHED) {
             EngineHost.gate.withLock {
@@ -669,5 +735,8 @@ private object ReadingSessions {
 /** Process-wide retirement blocks late results from other engine sessions after source mutations. */
 private object SourceSearches {
     val sessions = newConcurrentMap<String, NativeSearchSession>()
-    fun retireAll() { sessions.values.toList().forEach { it.invalidateSources() } }
+    fun retireAll() {
+        DiscoverySessions.invalidateAll()
+        sessions.values.toList().forEach { it.invalidateSources() }
+    }
 }

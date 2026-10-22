@@ -229,6 +229,10 @@ struct SourceManagementView: View {
         NavigationStack {
             Form {
                 LabeledContent("Name", value: source.name)
+                Toggle("Show in Discover", isOn: Binding(get: { source.discoveryEnabled }, set: {
+                    model.setSourceDiscoveryEnabled(source.id, enabled: $0)
+                })).disabled(model.busy).accessibilityIdentifier("sources.discoveryEnabled")
+                if !source.hasDiscovery { Text("This source has no discovery categories.").font(.caption).foregroundStyle(.secondary) }
                 LabeledContent("Identity") { Text(source.id).textSelection(.enabled) }
                 LabeledContent("Groups", value: source.groups.joined(separator: ", "))
                 Toggle("Enabled", isOn: Binding(get: { source.enabled }, set: {

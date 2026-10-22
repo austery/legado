@@ -1,7 +1,8 @@
 """Owned loopback gates for native reader integration tests."""
 from threading import Event, Lock
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 from c2_fixture_server import C2Handler
+from discovery_fixture import discovery_response
 
 
 class BoundaryHandler(C2Handler):
@@ -59,6 +60,35 @@ class BoundaryHandler(C2Handler):
                 if gate:
                     gate[2].set()
             return
+        if route.startswith('/discover/'):
+            parameters = parse_qs(urlsplit(self.path).query)
+            kind = route.rsplit('/', 1)[-1]
+            held = kind in ('held', 'option-held') and parameters.get('page') == ['2']
+            if kind == 'option-held' and parameters.get('order') == ['new']:
+                held = False
+            gate_key = 'categories' if kind == 'categories' else 'discovery'
+            with self.lock:
+                gate = self.gates.get(run_prefix + '/' + gate_key) if held or kind == 'categories' else None
+            try:
+                if gate:
+                    gate[0].set()
+                    if not gate[1].wait(20):
+                        self.send_error(504)
+                        return
+                base = f'http://127.0.0.1:{self.server.server_port}' + run_prefix
+                result = discovery_response(base, route, urlsplit(self.path).query)
+                if result is not None:
+                    status, body = result
+                    if status == 200:
+                        self.reply(body)
+                    else:
+                        self.send_error(status)
+                    return
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            finally:
+                if gate:
+                    gate[2].set()
         prefix, _, endpoint = path.partition('/control/')
         if endpoint:
             action, key = endpoint.split('/')

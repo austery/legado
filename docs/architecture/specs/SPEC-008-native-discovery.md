@@ -4,16 +4,20 @@ title: Native Discovery and Category Browsing
 status: In Progress
 priority: P1 - Core Feature
 creationDate: 2026-10-21
-lastUpdateDate: 2026-10-21
+lastUpdateDate: 2026-10-22
 owner: User (AI-Assisted)
 relatedSpecs: [PLAN-005, SPEC-004, SPEC-007]
 ---
 
 # SPEC-008: Native Discovery and Category Browsing
 
-Owner-approved on2026-10-21: implement the confirmed discovery proposal, update Specs first,
+Owner-approved on 2026-10-21: implement the confirmed discovery proposal, update Specs first,
 validate in the simulator, run complete C1, independently review and create one task PR.
-Continue this as one goal until verified merge readiness. **Do not merge.**
+Continue this as one goal until verified merge readiness.
+On 2026-10-22 the owner authorized repairing the identified upstream Native JS context boundary
+first, then merging this delivery after complete gates and independent review. This supersedes
+the original do-not-merge instruction for this task; it does not authorize unrelated core changes
+or upstream communication.
 Baseline: `68f6ab619452dc21c853a1cc3ae38b7085f680f7` (merged PR33).
 
 ## 1. Product outcome
@@ -42,7 +46,9 @@ or nonworking controls. Bookmarks and in-book text search remain the next candid
    KMP probe must characterize these forms before feature development relies on them.
 4. Reuse WebBook.getBookListAwait(isSearch=false), BookListPager and upstream URL option parsing
    for ordinary category browsing. Support native selection for upstream enumerated URL options
-   when exposed; reset the listing on category/source/option replacement. No independent parser.
+   when exposed; reset the listing on category/source/option replacement. Publish resolved options
+   before request completion: a failed first request must retain choices needed to recover, and an
+   obsolete URL resolver must not restore a replaced category's filters. No independent parser.
    Dynamic forms outside the existing enumerated rule-option model remain explicitly unsupported.
 5. Refresh, load more/end-of-list, retry and cancellation work. A failed later page preserves
    loaded books and the failed page/cursor; retry cannot skip it. Preserve continuation URLs,
@@ -78,7 +84,7 @@ script-button representation, malformed-vs-empty behavior, URL options, discover
 normal/continuation pagination and duplicate-only stopping. Include cancellation/cache behavior
 where upstream catches errors. These are bounded observations, not promises about arbitrary
 community sources. Record any unsupported native host interaction explicitly. No core-rule fixes
-or upstream messages are authorized by this scope; apply ADR-002 if the core fails reproducibly.
+or upstream messages are authorized beyond the bounded exception below; apply ADR-002 otherwise.
 
 ## 5. Acceptance
 
@@ -107,3 +113,17 @@ Controlled simulator sources do not certify live community sources or a physical
 Use the approved complete local automatic C1 profile; hosted startup diagnosis remains independent.
 Preserve the primary checkout, user data, unrelated tasks and shared caches. Record exact owned
 simulator UUIDs and remove them after retaining each run's evidence. Keep the active PR checkout.
+
+## 7. Owner-approved Native context exception (2026-10-22)
+
+A real category-script browser rejection became RULE instead of INTERACTION_REQUIRED because
+Native runScriptWithContext did not propagate its coroutine context when no thread-local JS scope
+existed. After diagnosis and the ADR-002 human-assessment boundary, the owner authorized fixing
+this upstream Native context entry before merging the delivery. Establish a temporary owned scope
+only for a missing entry scope; preserve/restore borrowed scopes, nested contexts, operation-local
+failures and cancellation. Do not replace category parsing, source-rule semantics or data formats.
+Protect caught/uncaught rejection, nested restoration, concurrent operation isolation and cooperative cancellation
+in host helpers with real Native regressions, retaining all product assertions and C1 gates.
+The implementation is shared Native code; iOS simulator evidence does not establish OHOS acceptance.
+Merge requires complete exact-head C1, simulator acceptance and final independent review, followed
+by bounded finish-branch cleanup.

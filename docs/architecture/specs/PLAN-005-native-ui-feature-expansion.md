@@ -25,7 +25,8 @@ with upstream selection/retention behavior, and selected export. Implementation 
 acceptance and final-head/merged-head complete C1 passed. The owner now approved
 [SPEC-008](SPEC-008-native-discovery.md): source/category browsing, pagination, existing
 book/reading flows and cross-engine lifecycle acceptance. This is the next active goal;
-create a reviewed PR but do not merge. Interactive login remains a separate follow-up;
+create a reviewed PR. On 2026-10-22 the owner authorized the bounded Native JS context
+repair first and merge after all gates pass. Interactive login remains a separate follow-up;
 the upstream data fields alone do not establish native runtime support.
 
 ## Proposed next delivery: everyday native reading UI
