@@ -24,7 +24,7 @@ Keep this section current. Record dated transitions in comments.
 
 - Development session and approved source requirement:
 - PR and exact base/head SHAs:
-- Risk: Door / Radius, consumers, failure propagation and unknowns:
+- Risk: Door (Two-way = demonstrated recovery of code and written state; One-way = irreversible or impractical recovery; Unknown = insufficient evidence) / Radius (Leaf = contained component; Branch = named related consumers with demonstrated containment; Trunk = shared or cross-subsystem behavior). Record consumers, failure propagation and unknowns:
 - Independent reviewer, reviewed base/head, verdict and report:
 - Findings: stable ID → blocking/nonblocking → disposition → evidence:
 - Local validation, exact-head required CI, and unrun lanes:

@@ -79,7 +79,8 @@ and resume DAOs share Book/storage state with original clients. These consumers
 make runtime, identity and persistence changes cross-module risks. See
 [ADR-002](architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md).
 
-For each future integration, retain B/U0/U1/H, conflicts, compatibility repair
+For each future integration, retain B (product base), U0 (previously integrated
+upstream), U1 (candidate upstream) and H (tested integration head), conflicts, compatibility repair
 commits, changed shared contracts, new adaptation decisions and deferred findings.
 Record unavailable time/conflict measurements as unknown, not zero. Compare these
 at H2; no retrospective effort estimate or arbitrary file-count budget is claimed.
