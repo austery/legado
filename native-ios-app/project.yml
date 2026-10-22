@@ -17,8 +17,22 @@ settings:
     INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to local reader validation fixtures.
     READER_ENGINE_PLATFORM: iosSimulatorArm64
     READER_ENGINE_PLATFORM[sdk=iphoneos*]: iosArm64
+targetTemplates:
+  ReaderOrientations:
+    info:
+      properties:
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
 targets:
   NativeReader:
+    templates: [ReaderOrientations]
     type: application
     platform: iOS
     sources: [Sources]
@@ -68,15 +82,6 @@ targets:
             www.b5200.net:
               NSExceptionAllowsInsecureHTTPLoads: true
         UIRequiresFullScreen: false
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
-        UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.legado.pathc.nativereader

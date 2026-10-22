@@ -1,9 +1,12 @@
 include: project.yml
 targets:
   NativeReaderFixture:
+    templates: [ReaderOrientations]
     type: application
     platform: iOS
     sources: [Sources, UITestHost]
+    info:
+      path: UITestHost/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.legado.pathc.ui-fixture
