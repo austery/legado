@@ -4,6 +4,21 @@ import CryptoKit
 
 @MainActor
 final class OfflineCacheTests: XCTestCase {
+    func testDisablingSourcePreservesCachedReadingAndRejectsMissingText() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, chapters, cached) = try await fixture(engine)
+        let disabled = await call { engine.setSourcesEnabled(ids: [book.sourceId], enabled: false, completion: $0) }
+        XCTAssertTrue(disabled is ManagedSourcesReply)
+        let read = await call { engine.loadChapter(sourceId: book.sourceId, bookId: book.id,
+            chapterId: chapters[0].id, cacheOnly: false, completion: $0) }
+        XCTAssertEqual((read as? ContentReply)?.text, cached.text)
+        XCTAssertEqual((read as? ContentReply)?.fromCache, true)
+        let missing = await call { engine.loadChapter(sourceId: book.sourceId, bookId: book.id,
+            chapterId: chapters[1].id, cacheOnly: false, completion: $0) }
+        XCTAssertEqual((missing as? EngineFailure)?.code, .cacheUnavailable)
+        XCTAssertTrue((missing as? EngineFailure)?.message.contains("disabled") == true)
+    }
+
     func testImmediateCancellationAndClosedEngineDeliverExactlyOneTerminalResult() async throws {
         let engine = ReaderEngine(); defer { engine.close() }
         let (book, chapters, _) = try await fixture(engine)
@@ -206,8 +221,8 @@ final class OfflineCacheTests: XCTestCase {
         XCTAssertEqual(states.filter { $0.availability == .available }.count, 1)
     }
 
-    func testForegroundReadingAndRemovalRetireHeldCacheWork() async throws {
-        for remove in [false, true] {
+    func testForegroundAndSourceChangesRetireHeldCacheWork() async throws {
+        for operation in ["read", "remove", "disable"] {
             let engine = ReaderEngine(); defer { engine.close() }
             let (book, chapters, _) = try await fixture(engine)
             _ = try await control(book.sourceId, "/control/hold/chapter")
@@ -220,10 +235,13 @@ final class OfflineCacheTests: XCTestCase {
             }
             let entered = try await control(book.sourceId, "/control/entered/chapter")
             XCTAssertEqual(entered, "entered")
-            // Both foreground operations must complete before the held background response is released.
-            if remove {
+            // Each foreground action must complete before the held background response is released.
+            if operation == "remove" {
                 let removed = await call { engine.removeFromShelf(sourceId: book.sourceId, bookId: book.id, completion: $0) }
                 XCTAssertTrue(removed is ShelfRemoved)
+            } else if operation == "disable" {
+                let changed = await call { engine.setSourcesEnabled(ids: [book.sourceId], enabled: false, completion: $0) }
+                XCTAssertTrue(changed is ManagedSourcesReply)
             } else {
                 let visible = await call { engine.loadChapter(sourceId: book.sourceId, bookId: book.id,
                     chapterId: chapters[2].id, cacheOnly: false, completion: $0) }

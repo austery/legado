@@ -34,7 +34,7 @@ final class ReaderBoundaryTests: XCTestCase {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
         try Data(json.utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        model.importFile(file); try await settle(model)
+        model.importFile(file); try await settle(model); model.confirmFixtureImport(); try await settle(model)
         model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search()
         try await settle(model)
         return (base, try XCTUnwrap(model.results.first))

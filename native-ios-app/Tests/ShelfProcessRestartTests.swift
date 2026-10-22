@@ -46,7 +46,7 @@ final class ShelfProcessRestartTests: XCTestCase {
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(run + ".json")
         try Data(json.utf8).write(to: file)
-        model.importFile(file); try await settle(model)
+        model.importFile(file); try await settle(model); model.confirmFixtureImport(); try await settle(model)
         model.searchScope = .selected; model.selectedSourceIDs = [base]; model.query = "Path"; model.search(); try await settle(model)
         model.select(try XCTUnwrap(model.results.first)); try await settle(model)
         model.addCurrentBook(); try await settle(model)
@@ -83,7 +83,7 @@ final class ShelfProcessRestartTests: XCTestCase {
         let manifest = Manifest(processID: getpid(), sourceID: book.sourceId, bookID: book.id,
             chapters: model.chapters.map(\.id), readingChapter: readingChapter, paragraphOffset: Int32(offset))
         try Data(json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false").utf8).write(to: file)
-        model.importFile(file); try await settle(model)
+        model.importFile(file); try await settle(model); model.confirmFixtureImport(); try await settle(model)
         // XCTest reinstalls the host between phases; handoff must be on disk before that migration.
         try JSONEncoder().encode(manifest).write(to: manifestURL, options: .atomic)
         print("SPEC003 prepare PID=\(getpid()) book=\(book.id)")

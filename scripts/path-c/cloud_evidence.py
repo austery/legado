@@ -8,6 +8,7 @@ root = Path('ci-results')
 for name in ['checkout-and-tree.txt', 'commit.txt', 'xcode-version.txt', 'cache.txt',
              'cache-sizes.txt', 'runtimes.json', 'devicetypes.json', 'full.json', 'restart.json', 'rerun.json',
              'simulator.txt', 'disk-final.txt', 'sizes-kib.txt', 'resources-error.log',
+             'native-product/startup-diagnostics.json', 'kotlin-native/startup-diagnostics.json',
              'native-product/scope.json', 'native-product/commit.txt',
              'native-product/simulator.txt', 'native-product/summary.json',
              'native-product/project.log', 'native-product/build.log',

@@ -218,30 +218,7 @@ struct ReaderScreen: View {
     }
 
     private var sources: some View {
-        List {
-            Section {
-                Text("Import Legado source files to find and read books.").foregroundStyle(.secondary)
-                if !model.initialized && !model.busy { Button("Initialize reader") { model.start() } }
-                Button("Import Legado JSON") { importing = true }
-                    .disabled(model.busy || !model.initialized).accessibilityIdentifier("sources.import")
-                Button("Refresh sources") { model.refreshSources() }.disabled(model.busy || !model.initialized)
-                if let notice = model.importNotice { Text(notice).foregroundStyle(.secondary) }
-                if let details = model.importDetails {
-                    DisclosureGroup("Import details") {
-                        Text(details).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                }
-            }
-            Section("Enabled text sources (\(model.sources.count))") {
-                if model.sources.isEmpty { Text("No enabled text sources. Import a source file to begin.") }
-                ForEach(model.sources, id: \.id) { source in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(source.name).font(.headline)
-                        Text(source.id).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    }.padding(.vertical, 4)
-                }
-            }
-        }
+        SourceManagementView(model: model, importFile: { importing = true })
     }
 
     private var search: some View {

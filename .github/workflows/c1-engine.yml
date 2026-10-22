@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: c1-engine-${{ inputs.execution || 'cloud' }}-${{ github.event.pull_request.number || github.ref }}
+  group: c1-engine-${{ inputs.execution || 'local' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -47,16 +47,18 @@ jobs:
           fi
           echo "All C1 regression suites passed."
 
+  # Automatic PR/push validation uses the complete local profile while hosted
+  # simulator responsiveness is unresolved. Manual cloud diagnosis stays available.
   engine:
     name: C1 builds and regular regressions
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ fromJSON(inputs.execution != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
+    runs-on: ${{ fromJSON((inputs.execution || 'local') != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
     timeout-minutes: 90
     defaults:
       run:
         shell: bash
     env:
-      DEVELOPER_DIR: ${{ inputs.execution != 'local' && '/Applications/Xcode_27.0.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
+      DEVELOPER_DIR: ${{ (inputs.execution || 'local') != 'local' && '/Applications/Xcode_27.0.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - name: Isolate build caches
         run: |
@@ -71,13 +73,13 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Preflight hosted ARM64 environment
-        if: inputs.execution != 'local'
+        if: (inputs.execution || 'local') != 'local'
         env:
           C1_RUNNER_ENVIRONMENT: ${{ runner.environment }}
           C1_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bash scripts/path-c/cloud_preflight.sh
       - name: Define reusable toolchain cache keys
-        if: inputs.execution != 'local'
+        if: (inputs.execution || 'local') != 'local'
         id: cache-keys
         env:
           FINGERPRINT: ${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle.properties') }}
@@ -86,7 +88,7 @@ jobs:
           echo "gradle=c1-cloud-gradle-arm64-xcode27-v2-$FINGERPRINT" >> "$GITHUB_OUTPUT"
           echo "native=c1-cloud-native-arm64-xcode27-v2-$FINGERPRINT" >> "$GITHUB_OUTPUT"
       - name: Restore Gradle dependencies and task cache
-        if: inputs.execution != 'local' && inputs.cloud_cache != 'cold'
+        if: (inputs.execution || 'local') != 'local' && inputs.cloud_cache != 'cold'
         id: gradle-cache
         uses: actions/cache/restore@v4
         with:
@@ -96,14 +98,14 @@ jobs:
             ${{ env.GRADLE_USER_HOME }}/wrapper
           key: ${{ steps.cache-keys.outputs.gradle }}
       - name: Restore Kotlin Native toolchain
-        if: inputs.execution != 'local' && inputs.cloud_cache != 'cold'
+        if: (inputs.execution || 'local') != 'local' && inputs.cloud_cache != 'cold'
         id: native-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.KONAN_DATA_DIR }}
           key: ${{ steps.cache-keys.outputs.native }}
       - name: Record and validate cloud cache state
-        if: inputs.execution != 'local'
+        if: (inputs.execution || 'local') != 'local'
         env:
           CACHE_MODE: ${{ inputs.cloud_cache || 'auto' }}
           GRADLE_HIT: ${{ steps.gradle-cache.outputs.cache-hit }}
@@ -134,7 +136,7 @@ jobs:
           cache-disabled: true # Explicit hosted cache layers; persistent local caches are untouched.
           cache-read-only: ${{ github.event_name == 'pull_request' }}
       - name: Start hosted resource sampler
-        if: inputs.execution != 'local'
+        if: (inputs.execution || 'local') != 'local'
         run: |
           # Aggregate process RSS is sampled, not an exact physical-memory peak.
           nohup python3 -u scripts/path-c/cloud_resources.py > ci-results/resources.jsonl 2> ci-results/resources-error.log < /dev/null &
@@ -155,7 +157,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/c1-xcodegen/xcodegen.zip" -d "$RUNNER_TEMP/c1-xcodegen"
           echo "$RUNNER_TEMP/c1-xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Record hosted command versions
-        if: inputs.execution != 'local'
+        if: (inputs.execution || 'local') != 'local'
         run: |
           python3 --version
           git --version
@@ -177,7 +179,7 @@ jobs:
       - name: Require executed upstream URL regressions
         run: python3 scripts/path-c/verify_url_tests.py
       - name: Run Kotlin Native regression suites
-        run: python3 scripts/path-c/kotlin_native_ci.py --output ci-results/kotlin-native ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
+        run: python3 scripts/path-c/kotlin_native_ci.py --output ci-results/kotlin-native ${{ (inputs.execution || 'local') != 'local' && '--runtime-version 27.0' || '' }}
       - name: Build Swift harness
         run: |
           xcodegen generate --spec engine-ios/harness/project.yml
@@ -187,17 +189,17 @@ jobs:
             -derivedDataPath engine-ios/harness/build ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee ci-results/harness-build.log
       - name: Run network, restart cache and fresh network regressions
-        run: python3 scripts/path-c/ci_harness.py --output ci-results ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
+        run: python3 scripts/path-c/ci_harness.py --output ci-results ${{ (inputs.execution || 'local') != 'local' && '--runtime-version 27.0' || '' }}
       - name: Run native Swift product regressions
-        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ inputs.execution != 'local' && '--runtime-version 27.0' || '' }}
+        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ (inputs.execution || 'local') != 'local' && '--runtime-version 27.0' || '' }}
       - name: Stop hosted resource sampler
-        if: always() && inputs.execution != 'local'
+        if: always() && (inputs.execution || 'local') != 'local'
         run: |
           if [[ -f "$RUNNER_TEMP/c1-resource-sampler.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/c1-resource-sampler.pid")" || true
           fi
       - name: Measure bounded cache layers and evidence
-        if: always() && inputs.execution != 'local'
+        if: always() && (inputs.execution || 'local') != 'local'
         id: cloud-size
         run: |
           mkdir -p ci-results "$GRADLE_USER_HOME/caches/modules-2" \
@@ -216,7 +218,7 @@ jobs:
             echo '::warning::Cache layers exceed the bounded save policy; no new cache saved.'
           fi
       - name: Save bounded Gradle cache
-        if: success() && inputs.execution != 'local' && steps.gradle-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
+        if: success() && (inputs.execution || 'local') != 'local' && steps.gradle-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -225,16 +227,16 @@ jobs:
             ${{ env.GRADLE_USER_HOME }}/wrapper
           key: ${{ steps.cache-keys.outputs.gradle }}
       - name: Save bounded Kotlin Native cache
-        if: success() && inputs.execution != 'local' && steps.native-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
+        if: success() && (inputs.execution || 'local') != 'local' && steps.native-cache.outputs.cache-hit != 'true' && steps.cloud-size.outputs.save == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.KONAN_DATA_DIR }}
           key: ${{ steps.cache-keys.outputs.native }}
       - name: Print hosted evidence to Actions logs
-        if: always() && inputs.execution != 'local'
+        if: always() && (inputs.execution || 'local') != 'local'
         run: python3 scripts/path-c/cloud_evidence.py
       - name: Upload validation evidence
-        if: always() && inputs.execution == 'local'
+        if: always() && (inputs.execution || 'local') == 'local'
         uses: actions/upload-artifact@v6
         with:
           name: c1-results-${{ github.run_id }}-${{ github.run_attempt }}

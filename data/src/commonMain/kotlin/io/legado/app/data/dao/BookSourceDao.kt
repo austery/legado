@@ -1,5 +1,7 @@
 package io.legado.app.data.dao
 
+import io.legado.app.constant.AppPattern
+
 import androidx.room3.Dao
 import androidx.room3.Delete
 import androidx.room3.Insert
@@ -17,6 +19,27 @@ import kotlinx.coroutines.flow.map
 
 @Dao
 interface BookSourceDao {
+
+    /** Compare and replace in one Room transaction; a stale preview never overwrites edits. */
+    @Transaction
+    suspend fun importReviewed(expected: Map<String, BookSource?>, replacements: List<BookSource>) {
+        for ((id, previous) in expected) {
+            if (getBookSource(id) != previous) throw SourceImportConflict()
+        }
+        insert(*replacements.toTypedArray())
+    }
+
+    /** Group changes preserve concurrent rule/configuration edits and commit as a batch. */
+    @Transaction
+    suspend fun changeMembership(ids: List<String>, group: String, add: Boolean) {
+        for (id in ids) {
+            val source = getBookSource(id) ?: throw SourceImportConflict()
+            val groups = source.bookSourceGroup.orEmpty().split(AppPattern.splitGroupRegex).map { it.trim() }
+                .filter { it.isNotEmpty() }.toMutableSet()
+            if (add) groups.add(group) else groups.remove(group)
+            upGroup(id, groups.joinToString(","))
+        }
+    }
 
     @Query("select * from book_sources_part order by customOrder asc")
     fun flowAll(): Flow<List<BookSourcePart>>
@@ -305,3 +328,5 @@ fun flowSearch(searchKey: String, enabled: Boolean? = null): Flow<List<BookSourc
         }.flowOn(IoDispatcher)
     }
 }
+
+class SourceImportConflict : Exception("Sources changed; refresh the import preview or source list")

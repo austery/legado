@@ -11,6 +11,8 @@ import xml.etree.ElementTree as ET
 from ci_harness import delete_owned_simulator, simctl
 from native_product_ci import fixtures
 
+from simulator_diagnostics import capture_startup_failure
+
 ROOT = Path(__file__).resolve().parents[2]
 MODULES = ("data", "core", "engine-ios")
 REQUIRED_DATA_SUITES = (
@@ -68,7 +70,11 @@ def main() -> None:
     try:
         (output / "simulator.txt").write_text(simulator + "\n")
         simctl("boot", simulator)
-        subprocess.run(["xcrun", "simctl", "bootstatus", simulator, "-b"], check=True, timeout=180)
+        try:
+            subprocess.run(["xcrun", "simctl", "bootstatus", simulator, "-b"], check=True, timeout=180)
+        except (OSError, subprocess.SubprocessError):
+            capture_startup_failure(simulator, output / "startup-diagnostics.json")
+            raise
         command = ["./gradlew", "--no-daemon", "--no-watch-fs", "--build-cache", "--max-workers=2",
                    "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8",
                    *[f":{module}:iosSimulatorArm64Test" for module in MODULES]]

@@ -79,7 +79,7 @@ class BoundaryHandler(C2Handler):
             return
         parts = path.split('/')
         prefix = '/'.join(parts[:3])
-        key = {'/book/1': 'detail', '/toc/1': 'toc', '/chapter/2': 'chapter'}.get(path[len(prefix):])
+        key = {'/search': 'search', '/book/1': 'detail', '/toc/1': 'toc', '/chapter/2': 'chapter'}.get(path[len(prefix):])
         with self.lock:
             gate = self.gates.get(prefix + '/' + str(key))
         try:

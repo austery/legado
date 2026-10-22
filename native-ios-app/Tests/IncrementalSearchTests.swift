@@ -35,6 +35,8 @@ final class IncrementalSearchTests: XCTestCase {
         try JSONEncoder().encode(sources).write(to: file)
         model.importFile(file)
         try await waitUntil { !model.busy }
+        model.confirmFixtureImport()
+        try await waitUntil { !model.busy }
         XCTAssertNil(model.message)
         let releaseURL = try XCTUnwrap(URL(string: base + "/release"))
         addTeardownBlock { _ = try? await URLSession.shared.data(from: releaseURL) }
@@ -43,6 +45,38 @@ final class IncrementalSearchTests: XCTestCase {
 
     private func release(_ base: String) async throws {
         _ = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/release")))
+    }
+
+    func testAnotherEngineDisablingHeldSourceRetiresLateSearchPublication() async throws {
+        let (model, base) = try await setup(["fast", "slow"])
+        defer { model.cancel() }
+        model.searchScope = .selected; model.selectedSourceIDs = [base + "/fast", base + "/slow"]
+        model.query = "work"; model.search()
+        try await waitUntil { model.results.count == 1 && model.searchRunning }
+        _ = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/entered/slow")))
+        let retained = model.results.map(\.id)
+        let engine = ReaderEngine(); defer { engine.close() }
+        let initialized = await withCheckedContinuation { continuation in
+            _ = engine.initialize { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(initialized is EngineReady)
+        let changed = await withCheckedContinuation { continuation in
+            _ = engine.setSourcesEnabled(ids: [base + "/slow"], enabled: false) {
+                continuation.resume(returning: $0)
+            }
+        }
+        XCTAssertTrue(changed is ManagedSourcesReply)
+        try await waitUntil { !model.searchRunning }
+        XCTAssertTrue(model.searchIncomplete)
+        XCTAssertFalse(model.hasNextPage)
+        XCTAssertFalse(model.searchCommandPending)
+        XCTAssertEqual(model.results.map(\.id), retained)
+        try await release(base)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(model.results.map(\.id), retained)
+        XCTAssertFalse(model.results.contains { $0.sourceId == base + "/slow" })
+        XCTAssertFalse(model.searchRunning)
+        XCTAssertTrue(model.searchIncomplete)
     }
 
     func testDefaultAllSourcesShowsFastCandidatesAndAllowsExactSelectionWhilePeerIsHeld() async throws {

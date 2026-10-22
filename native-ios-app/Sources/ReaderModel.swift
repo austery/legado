@@ -217,6 +217,15 @@ final class ReaderModel: ObservableObject {
         }
         return saver
     }()
+    @Published var managedSources: [ManagedSource] = []
+    @Published var managedSelection: Set<String> = []
+    private var sourceImportJSON: String?
+    @Published var sourceImportPreview: SourceImportPreview?
+    @Published var sourceImportSelection: Set<String> = []
+    @Published var importKeepName = true
+    @Published var importKeepGroups = true
+    @Published var importKeepEnabled = true
+    @Published var sourceExportJSON: String?
     @Published var sources: [SourceSnapshot] = []
     @Published var searchScope: ReaderSearchScope = .all {
         didSet { if searchScope != oldValue { sourceChanged() } }
@@ -283,12 +292,13 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    func refreshSources(thenShelf: Bool = false) {
-        perform(retry: { [weak self] in self?.refreshSources(thenShelf: thenShelf) }, start: { self.engine.listSources(completion: $0) }) { [weak self] reply in
+    func refreshSources(thenShelf: Bool = false, thenManaged: Bool = false) {
+        perform(retry: { [weak self] in self?.refreshSources(thenShelf: thenShelf, thenManaged: thenManaged) }, start: { self.engine.listSources(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? SourcesReply else { return }
             self.sources = reply.sources
             self.selectedSourceIDs.formIntersection(self.sources.map(\.id))
             if thenShelf { self.refreshShelf() }
+            else if thenManaged { self.refreshManagedSources() }
         }
     }
 
@@ -380,13 +390,85 @@ final class ReaderModel: ObservableObject {
     }
 
     private func importJSON(_ json: String) {
+        sourceImportJSON = json
         importNotice = nil
-        perform(retry: { [weak self] in self?.importJSON(json) }, start: { self.engine.importSources(json: json, completion: $0) }) { [weak self] reply in
-            guard let self, let reply = reply as? SourcesReply else { return }
-            self.importNotice = "Imported \(reply.sources.count) sources."
-            self.clearSearch(); self.chapters = []; self.book = nil; self.content = nil
-            self.route = .sources
-            self.refreshSources()
+        perform(retry: { [weak self] in self?.importJSON(json) }, start: {
+            self.engine.previewSourceImport(json: json, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let preview = reply as? SourceImportPreview else { return }
+            self.sourceImportSelection = Set(preview.items.filter(\.selectedByDefault).map { $0.source.id })
+            self.importKeepName = true; self.importKeepGroups = true; self.importKeepEnabled = true
+            self.sourceImportPreview = preview
+        }
+    }
+
+    func refreshSourceImportPreview() {
+        guard let json = sourceImportJSON else { return }
+        importJSON(json)
+    }
+
+    func cancelSourceImport() {
+        sourceImportJSON = nil
+        sourceImportPreview = nil
+        sourceImportSelection = []
+        engine.cancelSourceImport { _ in }
+    }
+
+    func confirmSourceImport() {
+        guard let preview = sourceImportPreview, !sourceImportSelection.isEmpty else { return }
+        let ids = Array(sourceImportSelection)
+        perform(retry: { [weak self] in self?.confirmSourceImport() }, start: {
+            self.engine.commitSourceImport(token: preview.token, ids: ids,
+                keepName: self.importKeepName, keepGroups: self.importKeepGroups,
+                keepEnabled: self.importKeepEnabled, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let committed = reply as? SourceImportCommitted else { return }
+            self.sourceImportPreview = nil; self.sourceImportSelection = []
+            self.importNotice = "Imported \(committed.count) sources."
+            self.chapters = []; self.book = nil; self.content = nil; self.route = .sources
+            self.clearSearch()
+            self.refreshSources(thenManaged: true)
+        }
+    }
+
+    func refreshManagedSources() {
+        guard initialized else { return }
+        perform(preservingReading: true, retry: { [weak self] in self?.refreshManagedSources() }, start: {
+            self.engine.listManagedSources(completion: $0)
+        }) { [weak self] reply in self?.acceptManagedSources(reply) }
+    }
+
+    private func acceptManagedSources(_ reply: EngineReply) {
+        guard let result = reply as? ManagedSourcesReply else { return }
+        managedSources = result.sources
+        managedSelection.formIntersection(result.sources.map(\.id))
+    }
+
+    func setSourcesEnabled(_ ids: [String], enabled: Bool) {
+        perform(retry: { [weak self] in self?.setSourcesEnabled(ids, enabled: enabled) }, start: {
+            self.engine.setSourcesEnabled(ids: ids, enabled: enabled, completion: $0)
+        }) { [weak self] reply in
+            guard let self else { return }
+            self.acceptManagedSources(reply)
+            self.retireSearch(); self.clearSearch(); self.refreshSources(thenManaged: true)
+        }
+    }
+
+    func changeSourceGroup(_ ids: [String], group: String, add: Bool, onCommitted: (() -> Void)? = nil) {
+        perform(retry: { [weak self] in self?.changeSourceGroup(ids, group: group, add: add, onCommitted: onCommitted) }, start: {
+            self.engine.changeSourceGroup(ids: ids, group: group, add: add, completion: $0)
+        }) { [weak self] reply in
+            self?.acceptManagedSources(reply)
+            onCommitted?()
+        }
+    }
+
+    func exportSources(_ ids: [String]) {
+        perform(preservingReading: true, retry: { [weak self] in self?.exportSources(ids) }, start: {
+            self.engine.exportSources(ids: ids, completion: $0)
+        }) { [weak self] reply in
+            guard let result = reply as? SourceExportReply else { return }
+            self?.sourceExportJSON = result.json
         }
     }
 
@@ -646,11 +728,11 @@ final class ReaderModel: ObservableObject {
         busy = false; message = nil; retryAction = nil
     }
 
-    private func perform(stage: ReplyStage = .operation, retry: @escaping () -> Void, failure: ((EngineFailure) -> Void)? = nil, start: @escaping (@escaping (EngineReply) -> Void) -> EngineRequest, success: @escaping (EngineReply) -> Void) {
+    private func perform(stage: ReplyStage = .operation, preservingReading: Bool = false, retry: @escaping () -> Void, failure: ((EngineFailure) -> Void)? = nil, start: @escaping (@escaping (EngineReply) -> Void) -> EngineRequest, success: @escaping (EngineReply) -> Void) {
         cancel()
         let token = generation
         busy = true; retryAction = retry
-        finishReading { [weak self] in
+        let beginRequest: () -> Void = { [weak self] in
             guard let self, self.generation == token else { return }
             self.request = start { [weak self] reply in
                 guard let self else { return }
@@ -669,5 +751,7 @@ final class ReaderModel: ObservableObject {
                 }
             }
         }
+        if preservingReading { beginRequest() }
+        else { finishReading(then: beginRequest) }
     }
 }

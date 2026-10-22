@@ -118,8 +118,8 @@ regressions execute JavaScript through `AnalyzeRuleCore` and the real Native
 bridge, including signed/unsigned cipher arrays, native-returned bytes, hex,
 Base64, Unicode and error recovery.
 
-The cloud job runs the network/cache harness and ordinary Swift suite via
-`native_product_ci.py`, without process tests. A parallel local job checks out the
+The regular job runs the network/cache harness and ordinary Swift suite via
+`native_product_ci.py`, without process tests. A second local job checks out the
 same PR head, builds its own simulator engine and fresh Swift test host, and runs
 `native_product_ci.py --process-tests-only --runtime-version 27.0`. This mode runs
 all four interruption boundaries and the offline shelf restart without repeating
@@ -129,8 +129,11 @@ the ordinary Swift suite or starting its fixtures. The existing
 The required `C1 engine regression` check depends on both jobs and fails unless
 both report success; failure, cancellation, missing results and skipped jobs never
 pass. Fork PRs cannot execute either job and therefore cannot satisfy the gate.
-A manual `execution=local` run moves the regular job locally too; process tests
-always remain local. An offline local runner leaves required validation pending.
+Automatic PR/push validation uses the complete local profile for the regular job
+as approved on 2026-10-21. Manual dispatch keeps both `execution=local` and
+`execution=cloud` (dispatch default) for explicit validation/hosted diagnosis; process
+tests always remain local. The hosted simulator issue is unresolved. An offline
+local runner leaves required validation pending.
 Both jobs retain invocation-owned simulator cleanup. Local process logs and
 xcresults are uploaded even after failure. No timeout or assertion is relaxed.
 Process checks honor the selected Xcode; each successful verification phase

@@ -71,6 +71,7 @@ class ReaderEngine {
     private val sessionId = NSUUID().UUIDString
     private val preparedSwitches = mutableMapOf<String, PreparedSourceSwitch>()
     private val committedSwitches = mutableMapOf<String, CommittedSourceSwitch>()
+    private val sourceManagement = SourceManagement()
     private val offlineCache = OfflineCache(scope) { source, book ->
         ReadingSessions.tokens.values.filter { it.sourceId == source && it.bookId == book }
             .map { it.chapter.url }.toSet()
@@ -196,7 +197,7 @@ class ReaderEngine {
         if (!sources.all { it.bookSourceUrl.isNotBlank() && it.bookSourceName.isNotBlank() })
             throw InvalidInput("Each source requires a nonempty identity and name")
         val unique = sources.associateBy { it.bookSourceUrl }.values.toList()
-        activeSearch.getAndSet(null)?.retire()
+        SourceSearches.retireAll()
         AppDbProviders.get().bookSourceDao.insert(*unique.toTypedArray())
         // Invalidate session entities whose source rules were replaced.
         val ids = unique.map { it.bookSourceUrl }.toSet()
@@ -204,6 +205,39 @@ class ReaderEngine {
         chapters.keys.removeAll { it.first in ids }
         SourcesReply(unique.map { SourceSnapshot(it.bookSourceUrl, it.bookSourceName, it.enabled) })
     }
+
+    fun listManagedSources(completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) { sourceManagement.list() }
+
+    fun setSourcesEnabled(ids: List<String>, enabled: Boolean,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        SourceSearches.retireAll()
+        sourceManagement.enable(ids, enabled)
+    }
+
+    fun changeSourceGroup(ids: List<String>, group: String, add: Boolean,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion, interruptCache = false) {
+        sourceManagement.group(ids, group, add)
+    }
+
+    fun previewSourceImport(json: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) { sourceManagement.preview(json) }
+
+    fun cancelSourceImport(completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) { sourceManagement.cancelPreview(); EngineReady() }
+
+    fun commitSourceImport(token: String, ids: List<String>, keepName: Boolean,
+        keepGroups: Boolean, keepEnabled: Boolean, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        SourceSearches.retireAll()
+        val result = sourceManagement.commit(token, ids, keepName, keepGroups, keepEnabled)
+        val changed = ids.toSet()
+        books.keys.removeAll { it.first in changed }
+        chapters.keys.removeAll { it.first in changed }
+        result
+    }
+
+    fun exportSources(ids: List<String>, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) { sourceManagement.export(ids) }
 
     fun listShelf(completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         ShelfReply(shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.listBooks() }.map { shelfSnapshot(it) })
@@ -274,7 +308,8 @@ class ReaderEngine {
             failure = { error -> failure(error as? Exception ?: Exception(error.message, error)) },
             completion = completion)
         ownedSearches[search.id] = search
-        search.onRetired { ownedSearches.remove(search.id) }
+        SourceSearches.sessions[search.id] = search
+        search.onRetired { ownedSearches.remove(search.id); SourceSearches.sessions.remove(search.id) }
         activeSearch.getAndSet(search)?.retire()
         if (closed.value) search.retire()
         return search.start()
@@ -567,7 +602,8 @@ class ReaderEngine {
             .filterIsInstance<EngineHostRejection>().firstOrNull()?.let { return it.failure }
         val code = when (error) {
             is CacheUnavailable -> EngineErrorCode.CACHE_UNAVAILABLE
-            is StaleReading -> EngineErrorCode.STALE_UPDATE
+            is StaleReading, is io.legado.app.data.dao.SourceImportConflict -> EngineErrorCode.STALE_UPDATE
+            is IllegalArgumentException -> EngineErrorCode.INVALID_INPUT
             is NativeResumeException -> when (error.failure) {
                 NativeResumeFailure.INVALID_POSITION -> EngineErrorCode.INVALID_INPUT
                 NativeResumeFailure.IDENTITY_CONFLICT -> EngineErrorCode.IDENTITY_CONFLICT
@@ -628,4 +664,10 @@ private object ReadingSessions {
     fun invalidate(sourceId: String, bookId: String) {
         tokens.entries.removeAll { it.value.sourceId == sourceId && it.value.bookId == bookId }
     }
+}
+
+/** Process-wide retirement blocks late results from other engine sessions after source mutations. */
+private object SourceSearches {
+    val sessions = newConcurrentMap<String, NativeSearchSession>()
+    fun retireAll() { sessions.values.toList().forEach { it.invalidateSources() } }
 }

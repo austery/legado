@@ -34,6 +34,7 @@ private class NativeSourceState(val id: String, val name: String) {
     var status = SearchSourceStatus.PENDING
     var failure: EngineFailure? = null
 }
+private enum class SearchLifetime { ACTIVE, RETIRED, INVALIDATED }
 internal enum class SearchCommand { LOAD_MORE, RETRY, RESTART, CANCEL }
 private sealed interface SearchEvent {
     data class Sources(val sources: List<BookSource>) : SearchEvent
@@ -55,7 +56,7 @@ internal class NativeSearchSession(
     private val failure: (Throwable) -> EngineFailure,
     private val completion: (EngineReply) -> Unit,
 ) {
-    private val active = atomic(true)
+    private val lifetime = atomic(SearchLifetime.ACTIVE)
     private val owner = SupervisorJob(parentScope.coroutineContext.job)
     private val scope = CoroutineScope(parentScope.coroutineContext + owner)
     private val events = Channel<SearchEvent>(Channel.UNLIMITED)
@@ -102,10 +103,11 @@ internal class NativeSearchSession(
     })
 
     fun start(): EngineRequest {
-        scope.launch {
+        // Enter the cleanup boundary even if source invalidation cancels before dispatch.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
                 for (event in events) {
-                    if (!active.value) break
+                    if (lifetime.value != SearchLifetime.ACTIVE) break
                     consume(event)
                 }
             } catch (error: CancellationException) {
@@ -118,9 +120,16 @@ internal class NativeSearchSession(
                     deliver(failure(error))
                 }
             } finally {
-                active.value = false
+                lifetime.compareAndSet(SearchLifetime.ACTIVE, SearchLifetime.RETIRED)
                 owner.cancel()
-                withContext(NonCancellable) { startupJob?.cancelAndJoin(); model.closeAndJoin() }
+                withContext(NonCancellable) {
+                    startupJob?.cancelAndJoin()
+                    model.closeAndJoin()
+                    if (lifetime.value == SearchLifetime.INVALIDATED) {
+                        markCancelled()
+                        publish(invalidated = true)
+                    }
+                }
                 events.close()
                 while (true) {
                     val pending = events.tryReceive().getOrNull() ?: break
@@ -138,14 +147,19 @@ internal class NativeSearchSession(
     }
 
     fun retire() {
-        active.value = false
+        lifetime.value = SearchLifetime.RETIRED
         owner.cancel()
+    }
+
+    /** Stop publication immediately; the event consumer sends one final immutable snapshot. */
+    fun invalidateSources() {
+        if (lifetime.compareAndSet(SearchLifetime.ACTIVE, SearchLifetime.INVALIDATED)) owner.cancel()
     }
 
     fun onRetired(action: () -> Unit) { owner.invokeOnCompletion { action() } }
 
     suspend fun command(kind: SearchCommand, sourceId: String): EngineReply {
-        if (!active.value) {
+        if (lifetime.value != SearchLifetime.ACTIVE) {
             if (kind == SearchCommand.CANCEL) owner.join()
             return EngineFailure(EngineErrorCode.CANCELLED, "Search session is no longer active")
         }
@@ -158,7 +172,7 @@ internal class NativeSearchSession(
         return try { reply.await() } finally { retirement.dispose() }
     }
 
-    private fun enqueue(event: SearchEvent) { if (active.value) events.trySend(event) }
+    private fun enqueue(event: SearchEvent) { if (lifetime.value == SearchLifetime.ACTIVE) events.trySend(event) }
 
     private suspend fun consume(event: SearchEvent) {
         when (event) {
@@ -230,12 +244,9 @@ internal class NativeSearchSession(
                 SearchCommand.CANCEL -> {
                     startupJob?.cancelAndJoin()
                     model.closeAndJoin()
-                    states.values.filter { it.status == SearchSourceStatus.PENDING || it.status == SearchSourceStatus.RUNNING }
-                        .forEach { it.status = SearchSourceStatus.CANCELLED }
-                    states.values.forEach { it.hasNextPage = false }
-                    phase = SearchPhase.CANCELLED
+                    markCancelled()
                     publish()
-                    active.value = false
+                    lifetime.compareAndSet(SearchLifetime.ACTIVE, SearchLifetime.RETIRED)
                 }
                 SearchCommand.LOAD_MORE -> {
                     if (phase == SearchPhase.SEARCHING) {
@@ -278,7 +289,14 @@ internal class NativeSearchSession(
         catch (error: Throwable) { event.reply.complete(failure(error)) }
     }
 
-    private suspend fun publish() {
+    private fun markCancelled() {
+        states.values.filter { it.status == SearchSourceStatus.PENDING || it.status == SearchSourceStatus.RUNNING }
+            .forEach { it.status = SearchSourceStatus.CANCELLED }
+        states.values.forEach { it.hasNextPage = false }
+        phase = SearchPhase.CANCELLED
+    }
+
+    private suspend fun publish(invalidated: Boolean = false) {
         if (phase != SearchPhase.CANCELLED) {
             phase = if (states.values.any { it.status == SearchSourceStatus.PENDING || it.status == SearchSourceStatus.RUNNING })
                 SearchPhase.SEARCHING else SearchPhase.IDLE
@@ -296,11 +314,16 @@ internal class NativeSearchSession(
             values.first().book.author, values.toList(), values.map { it.book.sourceId }.distinct().size) }
         val sourceSnapshots = states.values.map { SearchSourceSnapshot(it.id, it.name, it.page, it.hasNextPage, it.status, it.failure, it.generation) }
         deliver(SearchUpdate(id, ++revision, phase, works, sourceSnapshots,
-            phase != SearchPhase.CANCELLED && sourceSnapshots.any { it.hasNextPage && it.status != SearchSourceStatus.FAILED }))
+            phase != SearchPhase.CANCELLED && sourceSnapshots.any { it.hasNextPage && it.status != SearchSourceStatus.FAILED }), invalidated)
     }
 
-    private suspend fun deliver(reply: EngineReply) {
-        withContext(Dispatchers.Main) { if (active.value) completion(reply) }
+    private suspend fun deliver(reply: EngineReply, invalidated: Boolean = false) {
+        withContext(Dispatchers.Main) {
+            val shouldDeliver = if (invalidated)
+                lifetime.compareAndSet(SearchLifetime.INVALIDATED, SearchLifetime.RETIRED)
+            else lifetime.value == SearchLifetime.ACTIVE
+            if (shouldDeliver) completion(reply)
+        }
     }
 }
 
