@@ -69,6 +69,81 @@ class NativeJsRuleBridgeTest {
         assertEquals(true, evalJS("java.decompressBytes([1,2,3], 'gzip') === null"))
     }
 
+    @Test
+    fun binaryPostRoundTripsEveryByteThroughNativeHttp() = withAnalyzer {
+        val expected = (0..255).joinToString(",")
+        assertEquals(expected, evalJS("""
+            var bytes = Array.from({length:256}, function(_, i) { return i; });
+            java.post('http://127.0.0.1:18769/binary-echo', bytes,
+                {'Content-Type':'application/octet-stream'}).bodyAsBytes()
+                .map(function(b) { return b & 255; }).join(',');
+        """.trimIndent()))
+        assertEquals("你好 🌍", evalJS("""
+            java.post('http://127.0.0.1:18769/binary-echo', '你好 🌍',
+                {'Content-Type':'text/plain; charset=UTF-8'}).body();
+        """.trimIndent()))
+    }
+
+    @Test
+    fun binaryPostDispatchPreservesEveryByteAndHeaders() {
+        registerNativeJsEngines(IosImageOps)
+        val analyzer = PostCaptureAnalyzer()
+        try {
+            val expected = ByteArray(256) { it.toByte() }
+            for (body in listOf(
+                "Array.from({length:256}, function(_,i) { return i; })",
+                "Array.from({length:256}, function(_,i) { return i > 127 ? i - 256 : i; })",
+                "java.base64DecodeToByteArray('AAECA3+A/v8=')",
+                "[]"
+            )) {
+                analyzer.evalJS("try { java.post('https://example.invalid/upload', $body, {'X-Probe':'bytes'}); } catch(e) {}")
+                val bytes = when (body) {
+                    "[]" -> byteArrayOf()
+                    "java.base64DecodeToByteArray('AAECA3+A/v8=')" -> byteArrayOf(0, 1, 2, 3, 127, -128, -2, -1)
+                    else -> expected
+                }
+                kotlin.test.assertContentEquals(bytes, analyzer.bytes, body)
+                assertEquals("https://example.invalid/upload", analyzer.url)
+                assertEquals(mapOf("X-Probe" to "bytes"), analyzer.headers)
+                analyzer.bytes = null
+            }
+        } finally { analyzer.close() }
+    }
+
+    @Test
+    fun stringPostStillUsesTextOverloadAfterBinaryDispatch() {
+        registerNativeJsEngines(IosImageOps)
+        val analyzer = PostCaptureAnalyzer()
+        try {
+            analyzer.evalJS("try { java.post('https://example.invalid/upload', [255], {}); } catch(e) {}")
+            analyzer.evalJS("try { java.post('https://example.invalid/upload', '你好 🌍', '{}'); } catch(e) {}")
+            assertEquals("你好 🌍", analyzer.text)
+            kotlin.test.assertContentEquals(byteArrayOf(-1), analyzer.bytes)
+        } finally { analyzer.close() }
+    }
+
+    // Capture the real QuickJS dispatch boundary without contacting an external service.
+    private class PostCaptureAnalyzer : AnalyzeRuleCore() {
+        var bytes: ByteArray? = null
+        var text: String? = null
+        var url: String? = null
+        var headers: Map<String, String>? = null
+
+        override fun post(urlStr: String, body: ByteArray, headers: Map<String, String>): org.jsoup.Connection.Response {
+            this.bytes = body
+            this.url = urlStr
+            this.headers = headers
+            error("Captured binary request")
+        }
+
+        override fun post(urlStr: String, body: String, headers: Map<String, String>): org.jsoup.Connection.Response {
+            this.text = body
+            this.url = urlStr
+            this.headers = headers
+            error("Captured text request")
+        }
+    }
+
     private fun withAnalyzer(block: AnalyzeRuleCore.() -> Unit) {
         registerNativeJsEngines(IosImageOps)
         val analyzer = AnalyzeRuleCore()

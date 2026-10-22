@@ -77,8 +77,6 @@ class AudioSpectrum(private val sampleRate: Int) {
     private val bandStart = IntArray(BAND_COUNT)
     private val bandEnd = IntArray(BAND_COUNT)
 
-    private val bands = DoubleArray(BAND_COUNT)
-
     private val frame = Frame()
 
     init {
@@ -104,7 +102,8 @@ class AudioSpectrum(private val sampleRate: Int) {
         ring.fill(0.0)
         writeIndex = 0
         filled = 0
-        bands.fill(0.0)
+        frame.bands.fill(0.0)
+        frame.lowBand = 0.0
     }
 
     fun pushSample(mono: Double) {
@@ -133,7 +132,7 @@ class AudioSpectrum(private val sampleRate: Int) {
             for (k in bandStart[i] until bandEnd[i]) {
                 sum += sqrt(re[k] * re[k] + im[k] * im[k])
             }
-            bands[i] = sum / (bandEnd[i] - bandStart[i])
+            frame.bands[i] = sum / (bandEnd[i] - bandStart[i])
         }
         frame.lowBand = lowEnergy
         return frame

@@ -1009,13 +1009,13 @@ private fun LrcLine.bodyChars(): Int = text.indexOf('\n').let { if (it < 0) text
  * 终点是 [bodyChars] (正文末尾), 译文不参与填充。
  * 末行既无下一行时间戳、也无字时长时, 根据本行字符节奏预估终点, 确保播放完毕时末尾字符能被点亮。
  */
-private fun LrcLine.fillSamples(nextTimeMs: Int?): List<LrcWord> {
+internal fun LrcLine.fillSamples(nextTimeMs: Int?): List<LrcWord> {
     if (words.isEmpty()) return emptyList()
     val end = bodyChars()
     val lastWord = words.last()
     if (lastWord.charIndex >= end) return words
     val closingTimeMs = when {
-        lastWord.endMs > lastWord.timeMs -> lastWord.endMs
+        lastWord.endMs >= 0 -> lastWord.endMs
         nextTimeMs != null -> nextTimeMs.coerceAtLeast(lastWord.timeMs)
         else -> {
             val remainingChars = end - lastWord.charIndex
@@ -1037,13 +1037,16 @@ private fun LrcLine.fillSamples(nextTimeMs: Int?): List<LrcWord> {
  * 填充区间是当前采样自己的 [LrcWord.endMs] (字有明确结束时刻); 没有这个数据时才填到下一采样点。
  * 填满后到下一字开唱之前保持不动 —— 字间停顿不该继续往前推。
  */
-private fun MeasuredLrcLine.charProgressAt(positionMs: Int): Float {
+private fun MeasuredLrcLine.charProgressAt(positionMs: Int): Float = words.charProgressAt(positionMs)
+
+internal fun List<LrcWord>.charProgressAt(positionMs: Int): Float {
+    val words = this
     var i = -1
     while (i + 1 <= words.lastIndex && words[i + 1].timeMs <= positionMs) i++
     if (i < 0) return 0f
     val from = words[i]
     val to = words.getOrNull(i + 1) ?: return from.charIndex.toFloat()
-    val fillEnd = if (from.endMs > from.timeMs) from.endMs else to.timeMs
+    val fillEnd = if (from.endMs >= 0) from.endMs else to.timeMs
     val span = fillEnd - from.timeMs
     if (span <= 0) return to.charIndex.toFloat()
     val t = ((positionMs - from.timeMs).toFloat() / span).coerceIn(0f, 1f)

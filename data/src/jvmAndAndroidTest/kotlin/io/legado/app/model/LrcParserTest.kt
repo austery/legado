@@ -101,4 +101,12 @@ class LrcParserTest {
         val lines = LrcParser.parse(listOf(qrc, "[00:09.55]俱乐部")).lines
         assertEquals("The club\n俱乐部", lines.single().text)
     }
+    @Test
+    fun positiveQrcOffsetClampsStartAndEndIndependently() {
+        val line = LrcParser.parse(listOf("[offset:200]\n[100,200]A(100,200)")).lines.single()
+        assertEquals(0, line.timeMs)
+        assertEquals(0, line.words.single().timeMs)
+        assertEquals(100, line.words.single().endMs)
+    }
+
 }

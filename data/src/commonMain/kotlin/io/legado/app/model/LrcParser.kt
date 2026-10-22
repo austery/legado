@@ -161,8 +161,9 @@ object LrcParser {
             val words = mutableListOf<LrcWord>()
             var last = 0
             for (tag in QRC_WORD.findAll(body)) {
-                val start = (tag.groupValues[1].toInt() - offsetMs).coerceAtLeast(0)
-                words.add(LrcWord(start, plain.length, start + tag.groupValues[2].toInt()))
+                val shiftedStart = tag.groupValues[1].toInt() - offsetMs
+                val shiftedEnd = shiftedStart + tag.groupValues[2].toInt()
+                words.add(LrcWord(shiftedStart.coerceAtLeast(0), plain.length, shiftedEnd.coerceAtLeast(0)))
                 plain.append(body, last, tag.range.first)
                 last = tag.range.last + 1
             }
