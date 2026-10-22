@@ -75,6 +75,8 @@ final class IncrementalSearchTests: XCTestCase {
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(model.results.map(\.id), retained)
         XCTAssertFalse(model.results.contains { $0.sourceId == base + "/slow" })
+        XCTAssertFalse(model.searchRunning)
+        XCTAssertTrue(model.searchIncomplete)
     }
 
     func testDefaultAllSourcesShowsFastCandidatesAndAllowsExactSelectionWhilePeerIsHeld() async throws {

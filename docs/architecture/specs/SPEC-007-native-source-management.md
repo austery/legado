@@ -60,9 +60,9 @@ The owner confirmed Wanyuan Reader as the visual/interaction reference. Existing
 - [x] Enabled/disabled list, filters and batch selection remain usable in portrait and landscape.
 - [x] Group additions/removals survive relaunch; filters and selection remain consistent after membership changes.
 - [x] Enable state survives process relaunch; search includes only enabled text sources.
-- [x] Disable a source with a held request: no late search/cache publication, saved reading position unchanged.
+- [x] Disable a source with a held request: no late search/cache publication, saved reading position unchanged. Cross-engine changes visibly terminate search and preserve completed candidates.
 - [x] A disabled source's verified cached chapter opens offline; missing text gives an actionable disabled-source error.
-- [x] Preview/cancel, malformed input, duplicate identities, explicit replacement and stale confirmation obey their contracts.
+- [x] Preview/cancel, malformed input, duplicate identities, explicit replacement and selected-source stale confirmation obey their contracts; concurrent unselected changes do not invalidate selection.
 - [x] Injected persistence failure leaves the pre-import source set unchanged.
 - [x] Export/reimport preserves supported rules, identity, enabled state and groups without runtime session data.
 - [x] Existing source switching, offline caching, protected clearing, resume and global typography regressions remain green.
@@ -82,9 +82,13 @@ Implementation is authorized. Use an isolated task branch from the merged baseli
 ## 8. Local acceptance
 
 Implementation and simulator evidence are recorded in [the acceptance report](../../evidence/2026-10-21-source-management/acceptance.md).
-The final local product run passed 60 tests, actual iPad UI passed 10 journeys,
-all four process-interruption boundaries passed, and offline restart passed.
-Required C1 remains an explicit PR gate; these local results do not claim hosted CI success.
+The review follow-up passed 61 real Swift/KMP product tests and 11 actual iPad UI
+journeys, including visible cross-engine search termination and selected-only import
+conflict checks. Independent reviews of implementation commit `559995773` found no
+actionable defects. The acceptance report distinguishes local build provenance from
+the final-head gate. Required C1 must execute the final sources, including all four
+process-interruption boundaries and offline restart; historical runs do not substitute
+for this gate. Hosted simulator startup responsiveness remains unresolved.
 
 ## 9. Approved CI execution policy (2026-10-21)
 
