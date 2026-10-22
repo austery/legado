@@ -1,0 +1,309 @@
+package io.legado.app.ui.book.audio
+
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import io.legado.app.model.AudioPlayShared
+import io.legado.app.model.audio.AudioSpectrum
+import io.legado.app.ui.compose.platform.LocalOverlayTopInset
+import io.legado.app.ui.compose.theme.LocalEInk
+import kotlin.math.exp
+import kotlin.time.TimeSource
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+
+// ==================== 页面边缘光效 ====================
+
+/** 波浪曲线沿边的采样点数 (越多越平滑) */
+private const val SAMPLES = 32
+
+/** 向内衰减的层数: 每层是同一波浪曲线向内缩进, 叠加出渐变 (层间是平行曲线, 不是台阶) */
+private const val LAYERS = 6
+
+/** 各层不透明度 (从贴边向内递减, 长度必须等于 [LAYERS]) */
+private val LAYER_ALPHA = floatArrayOf(0.85f, 0.62f, 0.42f, 0.26f, 0.14f, 0.06f)
+
+/** 整圈颜色渐变的色标数 (越多过渡越顺) */
+private const val COLOR_STOPS = 24
+
+/** 光带厚度基准 (各点在此基础上按频段起伏) */
+private val GLOW_BASE_THICKNESS = 17.dp
+
+/** 强度上限 (贴边处的不透明度) */
+private const val GLOW_MAX_ALPHA = 0.85f
+
+/** 各点厚度起伏: 频段 0 → 0.7 倍, 频段 1 → 1.3 倍 */
+private const val THICKNESS_MIN_SCALE = 0.7f
+private const val THICKNESS_MAX_SCALE = 1.3f
+
+/** 颜色沿边缘流动一周的时间 (ms) */
+private const val FLOW_PERIOD_MS = 16_000L
+
+/** 慢层 (段落响度) 的时间常数 (ms): 比歌词辉光的快层慢一个数量级 */
+private const val SLOW_ATTACK_MS = 900f
+private const val SLOW_RELEASE_MS = 1400f
+
+/** 整体淡出时间常数 (ms): 比点亮慢, 但要在两秒内收干净 */
+private const val FADE_OUT_MS = 380f
+
+/** 整体淡入时间常数 (ms): 起播时快速亮起 */
+private const val FADE_IN_MS = 120f
+
+/** 淡出到这个值以下直接归零 (避免指数衰减留下永远擦不干净的薄光) */
+private const val FADE_STOP_THRESHOLD = 0.02f
+
+/** 低于此不透明度不画 (省掉无意义的绘制调用) */
+private const val ALPHA_EPS = 0.004f
+
+private val glowClockStart = TimeSource.Monotonic.markNow()
+
+/** 单调时钟 (ms): 与播放位置无关, 只用来判断能量管道是否还在供数 */
+private fun glowNowMs(): Int = glowClockStart.elapsedNow().inWholeMilliseconds.toInt()
+
+/**
+ * 音频播放页的边缘光效: 四周一圈随频谱起伏、颜色沿边缘流动的光带。
+ *
+ * - 沿边缘各段的亮度与厚度由多频段幅度 ([AudioPlayShared.audioBands]) 分别决定 ——
+ *   低频、人声、高频点亮不同位置, 所以边缘高度参差、不是整圈一起明暗。
+ * - 整圈底亮度再叠一层慢平滑 (段落渐强), 时间常数比歌词辉光的快层慢一个数量级,
+ *   两者不会同涨同落。
+ * - 颜色按四路封面主色沿边缘环向插值, 相位随时间推进 → 整圈颜色缓慢流动 (约 16 秒一周)。
+ * - 每段是一条从贴边向内淡出的连续渐变 (中段减半再归零), 没有层与层的接缝;
+ *   段间高度与颜色都按频段/相位插值, 不出现柱子状的硬边。
+ * - 四边同等对待 (不单独削弱顶边)。
+ * - 绘制期只读运行态: 按 Compose 阶段约定, 绘制期读快照状态只失效重绘, 不触发重组。
+ * - 静音段 (暂停/停止/缓冲断供) 显示值衰减到 0 后转低频轮询, 不空转帧循环。
+ * - E-Ink 不绘制 (项目惯例: 墨水屏不做动效)。
+ * - 顶部光带从 [LocalOverlayTopInset] 之下起画: 桌面窗口控制条是 native 层,
+ *   恒压在 Compose 画布之上, 不让开会在顶部断一截。
+ *
+ * @param colors 四路封面主色 (契约: 至少四路, 由 [rememberAudioCoverPalette] 或
+ *   [rememberFallbackGlowColors] 给出)
+ */
+@Composable
+internal fun AudioPlayEdgeGlow(
+    colors: List<Color>,
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val eInk = LocalEInk.current
+    if (eInk) return
+    // 快层: 与歌词辉光同一套曲线 (整体亮度); 慢层: 段落渐强
+    val fast = remember { AudioEnergyEnvelope() }
+    val slow = remember {
+        AudioEnergyEnvelope(attackMs = SLOW_ATTACK_MS, releaseMs = SLOW_RELEASE_MS)
+    }
+    // 多频段驱动: 非状态数组, 靠帧时钟建立绘制依赖
+    val bands = remember { FloatArray(AudioSpectrum.BAND_COUNT) }
+    // 复用同一条路径: 每帧重建 24 条原生路径会成为主要分配源
+    val path = remember { Path() }
+    // 帧时钟 (ns→ms): 只在动画推进时更新, 绘制期读它即建立逐帧重绘依赖, 也用作颜色流动相位
+    var frameClockMs by remember { mutableLongStateOf(0L) }
+    val density = LocalDensity.current
+    val baseThicknessPx = with(density) { GLOW_BASE_THICKNESS.toPx() }
+    val topInsetPx = with(density) { LocalOverlayTopInset.current.toPx() }
+
+    // 观察播放侧单值能量: 只写运行态, 不参与组合
+    LaunchedEffect(Unit) {
+        AudioPlayShared.audioEnergy.collect {
+            fast.energy = it
+            fast.energyAtMs = glowNowMs()
+        }
+    }
+    // 整体淡入淡出: 形状保留最后一帧, 由这条曲线把整圈慢慢压下去
+    var fade by remember { mutableFloatStateOf(0f) }
+    // 观察多频段幅度: 只在有真实频谱时覆盖 —— 暂停清零时保留最后一帧的形状
+    LaunchedEffect(Unit) {
+        AudioPlayShared.audioBands.collect { values ->
+            // 全零 = 暂停/停止时播放侧的清零通知, 保留上一帧形状交给 fade 收
+            if (values.none { it > 0f }) return@collect
+            for (i in bands.indices) {
+                bands[i] = values.getOrElse(i) { 0f }
+            }
+        }
+    }
+
+    // 帧循环: 有信号才逐帧推进; 完全淡出后转低频轮询 (播放中) 或直接停帧 (暂停)
+    LaunchedEffect(isPlaying) {
+        var lastFrameNs = 0L
+        while (isActive) {
+            // 暂停时目标恒为 0: 显示包络自行收干净, 不依赖播放侧清零
+            val target = if (isPlaying) fast.decayedEnergy(glowNowMs()) else 0f
+            val rest = target <= AudioEnergyEnvelope.SILENT_THRESHOLD &&
+                fast.smoothEnergy <= AudioEnergyEnvelope.SILENT_THRESHOLD &&
+                fade <= FADE_STOP_THRESHOLD
+            if (rest) {
+                if (!isPlaying) return@LaunchedEffect
+                // 播放中的静音段: 低频轮询即可 (省电); 恢复时从当前帧重新计时
+                lastFrameNs = 0L
+                delay(AudioEnergyEnvelope.IDLE_POLL_MS)
+                continue
+            }
+            withFrameNanos { frameNs ->
+                val dtMs = if (lastFrameNs == 0L) 16f
+                else ((frameNs - lastFrameNs) / 1_000_000f).coerceIn(1f, 100f)
+                lastFrameNs = frameNs
+                fast.advance(dtMs, target)
+                slow.advance(dtMs, target)
+                // 起播快速亮起, 暂停/停止按慢时间常数收回
+                val fadeTarget = if (target > AudioEnergyEnvelope.SILENT_THRESHOLD) 1f else 0f
+                val tau = if (fadeTarget > fade) FADE_IN_MS else FADE_OUT_MS
+                fade += (fadeTarget - fade) * (1f - exp(-dtMs / tau))
+                // 指数衰减永远逼近而不等于 0: 过阈值直接归零, 否则会一直留一层极薄的光
+                if (fadeTarget <= 0f && fade < FADE_STOP_THRESHOLD) fade = 0f
+                frameClockMs = frameNs / 1_000_000L
+            }
+        }
+    }
+
+    Spacer(
+        modifier.drawBehind {
+            val slowEnergy = slow.smoothEnergy.coerceIn(0f, 1f)
+            // 读帧时钟只为建立绘制依赖 (颜色流动与频谱起伏都要求逐帧重绘), 不参与业务判断
+            val clockMs = frameClockMs
+            val visible = fade.coerceIn(0f, 1f)
+            if (visible <= 0.01f) return@drawBehind
+            drawEdgeGlow(
+                colors = colors,
+                bands = bands,
+                slowEnergy = slowEnergy,
+                baseThicknessPx = baseThicknessPx,
+                topInsetPx = topInsetPx,
+                phase = (clockMs % FLOW_PERIOD_MS) / FLOW_PERIOD_MS.toFloat(),
+                fade = visible,
+                path = path,
+            )
+        }
+    )
+}
+
+/**
+ * 边缘光带本体 (纯绘制, 无状态)。
+ *
+ * @param bands 各频段 0~1 驱动值, 沿边缘环向排布
+ * @param slowEnergy 慢层能量 (段落渐强, 影响亮度与厚度)
+ * @param phase 颜色流动相位 0~1
+ */
+private fun DrawScope.drawEdgeGlow(
+    colors: List<Color>,
+    bands: FloatArray,
+    slowEnergy: Float,
+    baseThicknessPx: Float,
+    topInsetPx: Float,
+    phase: Float,
+    fade: Float,
+    path: Path,
+) {
+    val w = size.width
+    val h = size.height
+    val slowGain = 0.55f + 0.45f * slowEnergy
+    // 亮度只跟慢层走: 快层在暂停瞬间会被播放侧清零, 直接拿它调制亮度会当场掉一半 (跳一下)
+    val energyGain = 0.62f + 0.38f * slowEnergy
+
+    fun colorAt(pos: Float): Color {
+        // 沿环插值四路色, 相位让颜色持续流动 (pos 与 phase 均非负, 取模一次即落回 0~1)
+        val t = ((pos + phase) % 1f) * colors.size
+        val index = t.toInt().coerceIn(0, colors.size - 1)
+        val frac = t - index
+        return lerpColor(colors[index], colors[(index + 1) % colors.size], frac)
+    }
+
+    fun bandAt(ring: Float): Float {
+        // 环位置 → 频段值 (相邻段线性插值, 曲线连续); ring 非负, 取模一次即落回 0~段数
+        val t = (ring * bands.size) % bands.size
+        val i = t.toInt()
+        val frac = t - i
+        val a = bands[i % bands.size]
+        val b = bands[(i + 1) % bands.size]
+        return a + (b - a) * frac
+    }
+
+    // 淡出线性作用在厚度上 (不经过幂曲线)
+    fun depthAt(ring: Float): Float = baseThicknessPx *
+        (THICKNESS_MIN_SCALE + (THICKNESS_MAX_SCALE - THICKNESS_MIN_SCALE) * bandAt(ring)) *
+        slowGain * fade
+
+    // 颜色: 整圈一个扫描渐变, 相位让颜色沿边缘流动 (四边共用同一渐变, 角落自然衔接)
+    val colorStops = List(COLOR_STOPS) { i -> colorAt(i / COLOR_STOPS.toFloat()) }
+    val brush = Brush.sweepGradient(colorStops, center = Offset(w / 2f, h / 2f))
+
+    /**
+     * 一条边的波浪带: 外沿贴边, 内沿按频段起伏成连续曲线, 填充整圈颜色渐变。
+     *
+     * @param vertical true=左右两边 (沿 y 采样), false=上下两边 (沿 x 采样)
+     * @param atZero true=贴 0 侧 (左/上), false=贴远侧 (右/下)
+     * @param ringStart 该边在环上的起点 (0=左中, 0.25=上中, 0.5=右中, 0.75=下中)
+     */
+    fun wavyEdge(
+        vertical: Boolean,
+        atZero: Boolean,
+        fixed: Float,
+        from: Float,
+        to: Float,
+        ringStart: Float,
+        ratio: Float,
+        alpha: Float,
+    ) {
+        val span = to - from
+        path.rewind()
+        for (i in 0..SAMPLES) {
+            val t = i / SAMPLES.toFloat()
+            val along = from + span * t
+            val depth = depthAt(ringStart + t * 0.25f) * ratio
+            val x = if (vertical) (if (atZero) depth else fixed - depth) else along
+            val y = if (vertical) along else (if (atZero) fixed + depth else fixed - depth)
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        // 回到贴边闭合
+        if (vertical) {
+            path.lineTo(fixed, to)
+            path.lineTo(fixed, from)
+        } else {
+            path.lineTo(to, fixed)
+            path.lineTo(from, fixed)
+        }
+        path.close()
+        drawPath(path, brush, alpha = alpha)
+    }
+
+    // 从最外层 (最浅) 到最内层 (最亮) 依次覆盖: 叠加出向内衰减, 层间是平行曲线不是台阶
+    for (layer in LAYERS - 1 downTo 0) {
+        val ratio = (layer + 1f) / LAYERS
+        // 淡出线性乘在亮度上: 不能并进 band 再走 0.6 次幂, 那样小数值会被放大
+        // (0.02 的淡出值开 0.6 次幂后还剩约 0.096, 看起来永远擦不干净)
+        val alpha = GLOW_MAX_ALPHA * LAYER_ALPHA[layer] * energyGain * fade
+        if (alpha <= ALPHA_EPS) continue
+        // 左 / 右
+        wavyEdge(true, atZero = true, fixed = 0f, from = topInsetPx, to = h, ringStart = 0.75f, ratio, alpha)
+        wavyEdge(true, atZero = false, fixed = w, from = topInsetPx, to = h, ringStart = 0.25f, ratio, alpha)
+        // 上 / 下
+        wavyEdge(false, atZero = true, fixed = topInsetPx, from = 0f, to = w, ringStart = 0f, ratio, alpha)
+        wavyEdge(false, atZero = false, fixed = h, from = 0f, to = w, ringStart = 0.5f, ratio, alpha)
+    }
+}
+
+/** 线性插值两个颜色 */
+private fun lerpColor(from: Color, to: Color, fraction: Float): Color {
+    val f = fraction.coerceIn(0f, 1f)
+    return Color(
+        red = from.red + (to.red - from.red) * f,
+        green = from.green + (to.green - from.green) * f,
+        blue = from.blue + (to.blue - from.blue) * f,
+        alpha = from.alpha + (to.alpha - from.alpha) * f,
+    )
+}

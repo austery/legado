@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
 import io.legado.app.model.AudioPlayShared
+import io.legado.app.model.audio.AudioPulseEnvelope
 import io.legado.app.model.audio.AudioEnergyMeter
 import io.legado.app.model.audio.AudioLoudnessMeter
 import io.legado.app.model.audio.AudioSpectrum
@@ -30,6 +31,7 @@ class EnergyAudioBufferSink : TeeAudioProcessor.AudioBufferSink {
     private var loudness: AudioLoudnessMeter? = null
     private var spectrum: AudioSpectrum? = null
     private var energyMeter = AudioEnergyMeter()
+    private val bandMeter = AudioPulseEnvelope(AudioSpectrum.BAND_COUNT)
     private var pendingFrames = 0
     private var sampleRate = 44100
     private var channels = 2
@@ -42,8 +44,9 @@ class EnergyAudioBufferSink : TeeAudioProcessor.AudioBufferSink {
         loudness = AudioLoudnessMeter(sampleRate)
         spectrum = AudioSpectrum(sampleRate)
         energyMeter.reset()
+        bandMeter.reset()
         pendingFrames = 0
-        AudioPlayShared.audioEnergy.value = 0f
+        AudioPlayShared.publishLevelOnly(0f)
     }
 
     override fun handleBuffer(buffer: ByteBuffer) {
@@ -64,8 +67,11 @@ class EnergyAudioBufferSink : TeeAudioProcessor.AudioBufferSink {
         while (pendingFrames >= HOP_FRAMES) {
             pendingFrames -= HOP_FRAMES
             val lkfs = loudness.momentaryLkfs()
-            val lowBand = spectrum.analyzeLowBand() ?: 0.0
-            AudioPlayShared.audioEnergy.value = energyMeter.pushFrame(hopMs / speed, lkfs, lowBand)
+            val frame = spectrum.analyze()
+            val dtMs = hopMs / speed
+            val energy = energyMeter.pushFrame(dtMs, lkfs, frame?.lowBand ?: 0.0)
+            // 各段独立起伏: 边缘光效按频段分开驱动, 不与上面那条合成曲线同涨同落
+            AudioPlayShared.publishVisual(energy, frame?.let { bandMeter.push(dtMs, it.bands) })
         }
     }
 
