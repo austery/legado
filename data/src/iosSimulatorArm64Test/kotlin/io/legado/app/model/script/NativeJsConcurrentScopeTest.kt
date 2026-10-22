@@ -71,6 +71,57 @@ class NativeJsConcurrentScopeTest {
     }
 
     @Test
+    fun binaryResponseSurvivesPeerScopeCloseAndBothHandlesAreReleased() = runBlocking {
+        registerNativeJsEngines(IosImageOps)
+        val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val closed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val host = object : SourceNetworkProvider {
+            override fun getCookie(tag: String): String {
+                ready.complete(Unit)
+                runBlocking { kotlinx.coroutines.withTimeout(15000) { closed.await() } }
+                return "released-peer"
+            }
+            override fun replaceCookie(tag: String, cookie: String) = error("Unused")
+            override fun removeCookie(tag: String) = error("Unused")
+        }
+        newSingleThreadContext("binary-response-owner").use { firstThread ->
+            newSingleThreadContext("binary-response-peer").use { secondThread ->
+                val first = async(firstThread) {
+                    val analyzer = io.legado.app.model.analyzeRule.AnalyzeRuleCore()
+                    val scope = NativeJsEngine.getRuntimeScope(JsBindings().apply {
+                        this["java"] = analyzer
+                        this["cookie"] = host
+                    })
+                    try {
+                        NativeJsEngine.eval("""
+                            var response = java.post('http://127.0.0.1:18769/binary-echo', [128,255], {});
+                            cookie.getCookie('wait-for-peer-close');
+                            response.bodyAsBytes().map(function(b) { return b & 255; }).join(',') + ':' + response.__h;
+                        """.trimIndent(), scope, null) as String
+                    } finally { scope.close(); analyzer.close() }
+                }
+                val second = async(secondThread) {
+                    kotlinx.coroutines.withTimeout(15000) { ready.await() }
+                    val analyzer = io.legado.app.model.analyzeRule.AnalyzeRuleCore()
+                    val scope = NativeJsEngine.getRuntimeScope(JsBindings().apply { this["java"] = analyzer })
+                    try {
+                        NativeJsEngine.eval("""
+                            var response = java.post('http://127.0.0.1:18769/binary-echo', [1], {});
+                            String(response.__h);
+                        """.trimIndent(), scope, null) as String
+                    } finally { scope.close(); analyzer.close(); closed.complete(Unit) }
+                }
+                val result = first.await().split(':')
+                val handles = listOf(result.last().toLong(), second.await().toLong())
+                try {
+                    assertEquals("128,255", result.first(), "Peer cleanup must not invalidate a live response")
+                    handles.forEach { kotlin.test.assertNull(NativeJsExtensionsBridge.getObject(it)) }
+                } finally { handles.forEach { NativeJsExtensionsBridge.unregisterObject(it) } }
+            }
+        }
+    }
+
+    @Test
     fun nestedScriptRestoresOuterContext() = verifyNestedContext(false)
 
     @Test

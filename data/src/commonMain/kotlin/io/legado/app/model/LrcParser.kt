@@ -3,8 +3,14 @@ package io.legado.app.model
 /** 一行歌词; [timeMs] 为 -1 表示无时间戳行 (排序后位于最前)。[words] 为空表示这行没有逐字时间。 */
 data class LrcLine(val timeMs: Int, val text: String, val words: List<LrcWord> = emptyList())
 
-/** 逐字进度采样点: [timeMs] 时该行唱到正文的第 [charIndex] 个字符。 */
-data class LrcWord(val timeMs: Int, val charIndex: Int)
+/**
+ * 逐字进度采样点: [timeMs] 时该行唱到正文的第 [charIndex] 个字符。
+ *
+ * [endMs] 是这段文字填满的时刻, 也就是下一个字的开唱时刻之前的落点: 字与字之间的停顿靠它
+ * 维持满格不动, 而不是被提前推进。为 -1 表示数据源只给了起点 (Enhanced LRC 只有字标签),
+ * 此时按下一采样点的 [timeMs] 匀速填满。
+ */
+data class LrcWord(val timeMs: Int, val charIndex: Int, val endMs: Int = -1)
 
 /**
  * 一份歌词的时间轴。
@@ -68,7 +74,11 @@ class Lrc(val lines: List<LrcLine>, val raw: String? = null) {
 /**
  * 解析书源 lrc 规则返回的歌词数据。
  *
- * 输入是一个 NativeArray<String>,每个元素本身是一段多行 LRC 文本:
+ * 首份歌词支持两种语法, 按行首自动识别:
+ * - LRC / Enhanced LRC: `[mm:ss.xx]` 行时间戳, 行内 `<mm:ss.xxx>` 是字标签;
+ * - QRC (QQ 音乐逐字): `[起始毫秒,持续毫秒]` 行头, 行内 `字(起始毫秒,持续毫秒)` 逐字给出时长。
+ *
+ * 输入是一个 NativeArray<String>,每个元素本身是一段多行歌词文本:
  * - 第 0 个元素:每个时间戳行作为新条目加入 (time -> text), 无时间戳的行作为 (-1, line) 加入(显示在最前)
  * - 后续元素:按时间戳对齐后把文本以换行附加到已有条目上(用于多语种叠加,常见于网易云双语歌词)
  *
@@ -83,22 +93,100 @@ object LrcParser {
 
     private const val OFFSET_TAG = "offset:"
 
+    /** QRC 行头: `[起始毫秒,持续毫秒]`。 */
+    private val QRC_HEAD = Regex("""^\[(\d+),(\d+)\]""")
+
+    /** QRC 字标签: 紧跟在该段文字之后, 两个数分别是这段的起始毫秒与持续毫秒。 */
+    private val QRC_WORD = Regex("""\((\d+),(\d+)\)""")
+
     fun parse(content: List<*>): Lrc {
         if (content.isEmpty()) return Lrc(emptyList())
+        val main = content[0] as String
+        val mainIsQrc = isQrc(main)
         val lines = mutableListOf<LrcLine>()
         // 首份歌词建立时间轴; 部分歌词源时间戳乱序(如网易云), 加完统一排序
-        forEachEntry(content[0] as String) { timeMs, text, words ->
-            lines.add(LrcLine(timeMs, text, words))
-        }
-        lines.sortBy { it.timeMs }
-        // 后续歌词只把文本叠加到已有条目上(多语种), 不引入新时间戳
-        for (i in 1 until content.size) {
-            forEachEntry(content[i] as String) { timeMs, text, _ ->
-                if (timeMs >= 0 && text.isNotBlank()) lines.mergeAt(timeMs, text)
+        if (mainIsQrc) {
+            lines.addAll(parseQrc(main))
+        } else {
+            forEachEntry(main) { timeMs, text, words ->
+                lines.add(LrcLine(timeMs, text, words))
             }
         }
-        // 原文只留首份: 系统侧整段吃一份就够, 叠加的多语种是同一时间戳的重复行
-        return Lrc(lines, content[0] as String)
+        lines.sortBy { it.timeMs }
+        // 后续歌词只把文本叠加到已有条目上(多语种), 不引入新时间戳。
+        // 每份自己识别格式: 逐字歌词的译文常常也是逐字格式, 按纯 LRC 读会整段丢掉
+        for (i in 1 until content.size) {
+            val extra = content[i] as String
+            if (isQrc(extra)) {
+                for (line in parseQrc(extra)) {
+                    if (line.timeMs >= 0 && line.text.isNotBlank()) {
+                        lines.mergeAt(line.timeMs, line.text)
+                    }
+                }
+            } else {
+                forEachEntry(extra) { timeMs, text, _ ->
+                    if (timeMs >= 0 && text.isNotBlank()) lines.mergeAt(timeMs, text)
+                }
+            }
+        }
+        // 原文只留首份: 系统侧整段吃一份就够, 叠加的多语种是同一时间戳的重复行。
+        // QRC 原文系统侧读不懂, 换成等价的逐行 LRC 交给它
+        return Lrc(lines, if (mainIsQrc) lines.toLrcText() else main)
+    }
+
+    /** 行首是 `[起始毫秒,持续毫秒]` 即 QRC; LRC 的行首时间戳永远是 `mm:ss` 形式, 两者不会撞。 */
+    private fun isQrc(text: String): Boolean =
+        text.lineSequence().any { QRC_HEAD.containsMatchIn(it.trim()) }
+
+    /**
+     * 解析 QRC: 行头给整行, 行内每段文字后面的 `(起始,持续)` 给这一段自己的时长。
+     *
+     * 时间戳是绝对毫秒 (与行头同一时间轴)。文字里可以出现半角括号 (如 `((1440,160)Jay`
+     * 表示正文是一个左括号), 所以按标签位置切片取文字, 而不是拿 `[^\(]*` 去卡正文。
+     * `[offset:+500]` 与纯 LRC 同义: 平移其后各行的时间 (正值表示提前)。
+     */
+    private fun parseQrc(text: String): List<LrcLine> {
+        val lines = mutableListOf<LrcLine>()
+        var offsetMs = 0
+        for (rawLine in text.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.length < 3) continue
+            if (line[0] == '[' && line.startsWith(OFFSET_TAG, 1, ignoreCase = true)) {
+                offsetMs = parseOffset(line, 1 + OFFSET_TAG.length, line.indexOf(']'))
+                continue
+            }
+            val head = QRC_HEAD.find(line) ?: continue
+            val body = line.substring(head.range.last + 1)
+            val plain = StringBuilder(body.length)
+            val words = mutableListOf<LrcWord>()
+            var last = 0
+            for (tag in QRC_WORD.findAll(body)) {
+                val shiftedStart = tag.groupValues[1].toInt() - offsetMs
+                val shiftedEnd = shiftedStart + tag.groupValues[2].toInt()
+                words.add(LrcWord(shiftedStart.coerceAtLeast(0), plain.length, shiftedEnd.coerceAtLeast(0)))
+                plain.append(body, last, tag.range.first)
+                last = tag.range.last + 1
+            }
+            plain.append(body, last, body.length)
+            val lineStart = (head.groupValues[1].toInt() - offsetMs).coerceAtLeast(0)
+            lines.add(LrcLine(lineStart, plain.toString(), words))
+        }
+        return lines
+    }
+
+    /** 把时间轴转成逐行 LRC: 多语种叠加在同一时间戳上的几行拆成独立行, 系统侧按行读。 */
+    private fun List<LrcLine>.toLrcText(): String =
+        filter { it.timeMs >= 0 }
+            .flatMap { line -> line.text.split('\n').map { part -> line.timeMs to part } }
+            .joinToString("\r\n") { (timeMs, part) -> "[${mmss(timeMs)}]$part" }
+
+    private fun mmss(ms: Int): String {
+        val min = ms / 60_000
+        val sec = (ms % 60_000) / 1000
+        val milli = ms % 1000
+        return "${min.toString().padStart(2, '0')}:" +
+            "${sec.toString().padStart(2, '0')}." +
+            milli.toString().padStart(3, '0')
     }
 
     /**

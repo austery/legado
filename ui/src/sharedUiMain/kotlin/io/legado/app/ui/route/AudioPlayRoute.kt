@@ -37,7 +37,6 @@ import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.showSourceLogin
-import io.legado.app.help.toast.Toasters
 import io.legado.app.model.AudioPlayShared
 import io.legado.app.model.audioCoverFallback
 import io.legado.app.ui.about.AppLogDialog
@@ -79,7 +78,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.add_to_bookshelf
-import legado.ui.generated.resources.audio_energy_glow_restart
 import legado.ui.generated.resources.check_add_bookshelf
 import legado.ui.generated.resources.no
 import legado.ui.generated.resources.yes
@@ -328,9 +326,11 @@ fun AudioPlayRoute(
     // 各项显隐取自页面状态; 依赖书源的动作在点击时取当前书源 (对照原版菜单展开/选中时求值)
     val pref = PreferenceProviders.get()
     var glowEnabled by remember {
-        mutableStateOf(pref.getBoolean(PreferKey.audioEnergyGlow, true))
+        mutableStateOf(pref.getBoolean(PreferKey.audioEnergyGlow, PreferKey.audioGlowDefault))
     }
-    val glowRestartHint = stringResource(Res.string.audio_energy_glow_restart)
+    var edgeGlowEnabled by remember {
+        mutableStateOf(pref.getBoolean(PreferKey.audioEdgeGlow, PreferKey.audioGlowDefault))
+    }
     val overflowActions = AudioPlayOverflowActions(
         hasLogin = state.hasLogin,
         showGlowToggle = PlatformCapabilityProviders.get().audioEnergyGlowSupported,
@@ -338,7 +338,14 @@ fun AudioPlayRoute(
         onToggleGlow = {
             glowEnabled = !glowEnabled
             pref.putBoolean(PreferKey.audioEnergyGlow, glowEnabled)
-            Toasters.get().toast(glowRestartHint)
+            // 采样旁路常挂, offload 由播放侧按开关即时切换, 不需要重起播
+            AudioPlayShared.syncAudioOffload()
+        },
+        edgeGlowEnabled = edgeGlowEnabled,
+        onToggleEdgeGlow = {
+            edgeGlowEnabled = !edgeGlowEnabled
+            pref.putBoolean(PreferKey.audioEdgeGlow, edgeGlowEnabled)
+            AudioPlayShared.syncAudioOffload()
         },
         onLogin = {
             // 统一登录入口: URL 登录桌面端直开登录窗口 (2026-08-07);

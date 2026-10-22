@@ -2,6 +2,7 @@
 
 package io.legado.app.model
 
+import io.legado.app.model.audio.AudioPulseEnvelope
 import io.legado.app.model.audio.AudioEnergyMeter
 import io.legado.app.model.audio.AudioLoudnessMeter
 import io.legado.app.model.audio.AudioSpectrum
@@ -67,6 +68,7 @@ object IosAudioEnergyTap {
         var loudness: AudioLoudnessMeter? = null
         var spectrum: AudioSpectrum? = null
         val energyMeter = AudioEnergyMeter()
+        val bandMeter = AudioPulseEnvelope(AudioSpectrum.BAND_COUNT)
 
         var sampleRate: Double = 44100.0
         var channels: Int = 2
@@ -123,7 +125,7 @@ object IosAudioEnergyTap {
     fun detach() {
         attachedItem?.let { it.audioMix = null }
         attachedItem = null
-        AudioPlayShared.audioEnergy.value = 0f
+        AudioPlayShared.publishLevelOnly(0f)
     }
 }
 
@@ -148,7 +150,7 @@ private fun onTapFinalize(tap: MTAudioProcessingTapRef?) {
     // 终结的是这个 tap 自己的运行态, 不碰其他 tap (每个 tap 自持自己的 StableRef)
     state?.handle?.dispose()
     state?.handle = null
-    AudioPlayShared.audioEnergy.value = 0f
+    AudioPlayShared.publishLevelOnly(0f)
 }
 
 private fun onTapPrepare(
@@ -168,6 +170,7 @@ private fun onTapPrepare(
     state.loudness = AudioLoudnessMeter(state.sampleRate.toInt())
     state.spectrum = AudioSpectrum(state.sampleRate.toInt())
     state.energyMeter.reset()
+    state.bandMeter.reset()
 }
 
 private fun onTapUnprepare(tap: MTAudioProcessingTapRef?) {
@@ -202,9 +205,11 @@ private fun onTapProcess(
 
     analyzePcm(state, loudness, spectrum, bufferListInOut, frames)
     val dtMs = frames.toDouble() / state.sampleRate * 1000.0
-    val lowBand = spectrum.analyzeLowBand() ?: 0.0
-    AudioPlayShared.audioEnergy.value =
-        state.energyMeter.pushFrame(dtMs, loudness.momentaryLkfs(), lowBand)
+    // 窗口未满时仍推能量 (低频段计 0), 只有频段值要等首帧 FFT 出来
+    val frame = spectrum.analyze()
+    val energy = state.energyMeter.pushFrame(dtMs, loudness.momentaryLkfs(), frame?.lowBand ?: 0.0)
+    // 各段独立起伏: 边缘光效按频段分开驱动
+    AudioPlayShared.publishVisual(energy, frame?.let { state.bandMeter.push(dtMs, it.bands) })
 }
 
 /** 按 ASBD 描述的采样格式把多声道混成单声道后喂给响度计与频谱 */

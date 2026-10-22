@@ -13,6 +13,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences
 import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.R
 import io.legado.app.base.BaseService
@@ -28,6 +29,7 @@ import io.legado.app.help.media.MediaPlaybackLock
 import io.legado.app.help.media.MediaNotificationHost
 import io.legado.app.help.media.MediaPlaybackNotification
 import io.legado.app.model.AudioPlay
+import io.legado.app.model.AudioPlayShared
 import io.legado.app.model.BookCover
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.getMediaItem
@@ -100,6 +102,15 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
          * AVRCP 没有歌词字段, 车机屏幕那行字来自 MediaSession metadata 的 TITLE, 所以"车载歌词"
          * 就是让歌词顶掉标题 —— 也正因为会顶掉, 它必须由用户开关控制。
          */
+        /**
+         * 按两个辉光开关同步 offload 策略 (开关切换后调用, 无需重起播)。
+         *
+         * 采样旁路常挂, offload 是运行时参数: 都关时省电, 任一开启时关掉以拿到 PCM。
+         */
+        private fun syncAudioOffload() {
+            instance?.exoPlayer?.applyOffloadPolicy()
+        }
+
         @JvmStatic
         fun publishLyricLine(line: String?) {
             val service = instance ?: return
@@ -147,7 +158,9 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
     }
     private val noisyReceiver = BecomingNoisyReceiver { pauseSession() }
     private val exoPlayer: ExoPlayer by lazy {
+        // 采样旁路在构建期固定挂上 (与 offload 互斥), offload 由 applyOffloadPolicy 按开关决定
         ExoPlayerHelper.createHttpExoPlayer(this, audioOnly = true)
+            .also { player -> player.applyOffloadPolicy() }
     }
 
     override val controller: AudioPlayController by lazy { ExoPlayerAudioPlayController(exoPlayer) }
@@ -215,6 +228,7 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
                 IntentAction.play -> session.play()
                 IntentAction.loadPlayUrl -> session.loadPlayUrl()
                 IntentAction.stopPlay -> session.stopPlay()
+                IntentAction.syncAudioOffload -> syncAudioOffload()
                 IntentAction.pause -> pauseSession()
                 IntentAction.resume -> resumeSession()
                 IntentAction.prev -> AudioPlay.prev()
@@ -547,4 +561,29 @@ class AudioPlayService : BaseService(), AudioPlaySessionHost {
     override fun startForegroundNotification() {
         notificationHost.startForeground(this)
     }
+}
+
+/**
+ * 按“是否需要 PCM 采样”设定解码省电策略: 需要时关 offload, 不需要时开 offload 省电。
+ *
+ * 旁路与 offload 官方互斥 (offload 模式不参与音频处理), 所以两者状态必须一致。
+ * 另外还要求设备支持“变速场景下的 offload”(速度切换是常规操作), 不支持时该请求被
+ * 采媒库静默忽略 —— 即“都关才省电”只在这种设备上真实生效。
+ */
+private fun ExoPlayer.applyOffloadPolicy() {
+    val mode = if (AudioPlayShared.needsAudioPcm()) {
+        AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED
+    } else {
+        AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED
+    }
+    val current = trackSelectionParameters
+    if (current.audioOffloadPreferences.audioOffloadMode == mode) return
+    trackSelectionParameters = current.buildUpon()
+        .setAudioOffloadPreferences(
+            AudioOffloadPreferences.Builder()
+                .setAudioOffloadMode(mode)
+                .setIsSpeedChangeSupportRequired(true)
+                .build()
+        )
+        .build()
 }

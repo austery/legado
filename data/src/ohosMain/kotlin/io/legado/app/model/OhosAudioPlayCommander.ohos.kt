@@ -481,7 +481,7 @@ private class OhosAvAudioPlayController : AudioPlayController, OhosNativeBridge.
         cachedBufferedMs = 0L
         energyMark = null
         energyMeter.reset()
-        AudioPlayShared.audioEnergy.value = 0f
+        AudioPlayShared.publishLevelOnly(0f)
         state = AudioPlayController.STATE_IDLE
     }
 
@@ -584,10 +584,11 @@ private class OhosAvAudioPlayController : AudioPlayController, OhosNativeBridge.
         energyMark = TimeSource.Monotonic.markNow()
         // 鸿蒙只给整体电平（线性幅度, 量纲待实机确认）: 换算成分贝后进统一响度模型
         val linear = level.coerceAtLeast(0.0)
-        AudioPlayShared.audioEnergy.value = energyMeter.pushLevel(
+        val energy = energyMeter.pushLevel(
             dtMs.coerceIn(1.0, AMPLITUDE_MAX_DT_MS),
             AudioEnergyMeter.linearToDb(linear),
         )
+        AudioPlayShared.publishLevelOnly(energy)
     }
 
     private companion object {
