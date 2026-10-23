@@ -12,6 +12,24 @@ the JDK 17 build-logic toolchain, the Gradle wrapper, Android SDK for project
 configuration, Python 3.9+ and XcodeGen. Exact CI versions and setup are in the
 workflow. See [engine reproduction](../engine-ios/README.md#reproduce).
 
+C1 first runs lightweight scope/static checks on a hosted runner. An explicit
+allowlist in [`c1_scope.py`](../scripts/path-c/c1_scope.py) recognizes explanatory
+documents: named READMEs/agent guidance, this entry, the maintenance record and
+architecture Markdown. Other paths, including test/fixture/build/workflow changes,
+require full regression even when mixed with documents. Complete pinned PR and
+push diffs include both sides of renames/deletions; missing comparison evidence
+requires regression. Manual dispatch always requests full validation.
+
+Documentation-only changes run routing/gate unit checks, diff whitespace, changed
+inline repository links/anchors and Markdown fences, plus inbound references to
+affected documents. Static checks do not execute fenced examples or certify remote
+links, images, generated diagrams, machine-local paths, reference-style links or
+semantic truth; AI review supplies semantic and evidence-boundary assessment.
+Both heavy jobs are skipped for this mode. The required aggregate passes only when
+the scope/static job succeeds and both jobs are skipped as expected; its result
+explicitly says runtime regression was not applicable. Classification/static-check
+failure, unknown mode, untrusted fork or unexpected job outcomes cannot pass.
+
 Automatic PR/push C1 currently uses the repository's local runner. Manual cloud
 execution is diagnostic; the process-interruption job still requires the local
 runner. Hosted simulator responsiveness remains unresolved. An offline local
@@ -35,7 +53,9 @@ as environment blockers; they are not passing acceptance evidence.
 | Native product behavior | Ordinary `native_product_ci.py` suites | Real bridge/storage and selected UI-facing assertions; not daily reading comfort or complete device acceptance. |
 | Durable save, interruption or offline restart | Separate workflow `native-process` job using the product driver's process-only mode | Synthetic process interruption, not physical power loss or all platform lifecycle behavior. |
 
-The required aggregate `C1 engine regression` accepts only success from both jobs.
+For full-regression mode, the required aggregate `C1 engine regression` accepts
+only success from both heavy jobs plus the scope/static job. The documented
+docs-only case above is the sole deliberate skipped-job exception.
 The URI and Native XML validators reject missing execution, failures and skips;
 the Native validator also requires named suites. The product runner compares
 executed counts with tests discovered in the candidate source. It cannot detect
