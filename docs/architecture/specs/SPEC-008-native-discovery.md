@@ -1,15 +1,33 @@
 ---
 specId: SPEC-008
 title: Native Discovery and Category Browsing
-status: In Progress
+status: Merged (simulator acceptance)
 priority: P1 - Core Feature
 creationDate: 2026-10-21
-lastUpdateDate: 2026-10-22
+lastUpdateDate: 2026-10-23
 owner: User (AI-Assisted)
 relatedSpecs: [PLAN-005, SPEC-004, SPEC-007]
 ---
 
 # SPEC-008: Native Discovery and Category Browsing
+
+## Merged closeout (2026-10-23 documentation reconciliation)
+
+[PR #34](https://github.com/austery/legado/pull/34) merged on 2026-10-22 as
+`0ec7c618250e1c4acce8a8143053ccad9ec0798f`. Final independent Standards and Spec
+reviews at `370350783ccc5c3e7c8b1345b127110df3fbb7dd` reported no actionable findings.
+Retained acceptance records cover 115 Native tests, 75 Swift product tests and
+14 actual-control iPad simulator journeys with inspected portrait/landscape and
+failure/recovery screenshots. These are historical results, not reruns for this update.
+[PR-head C1](https://github.com/austery/legado/actions/runs/39762037786) passed at
+that reviewed head; [merged-head C1](https://github.com/austery/legado/actions/runs/39763533497)
+passed separately at the merge SHA, each with both constituent jobs and aggregate successful.
+The task checkout and invocation-owned simulator/build resources were released.
+No live-community-source, physical-device or OHOS acceptance is claimed.
+
+The authorization and baseline below describe this completed delivery, not current
+work or new merge permission. The section 5 checklist records its scoped historical
+acceptance; physical-device evaluation remains separate.
 
 Owner-approved on 2026-10-21: implement the confirmed discovery proposal, update Specs first,
 validate in the simulator, run complete C1, independently review and create one task PR.
@@ -86,22 +104,23 @@ where upstream catches errors. These are bounded observations, not promises abou
 community sources. Record any unsupported native host interaction explicitly. No core-rule fixes
 or upstream messages are authorized beyond the bounded exception below; apply ADR-002 otherwise.
 
-## 5. Acceptance
+## 5. Acceptance at the merged delivery
 
-- [ ] Eligible source listing, source/group filters and independent discovery visibility persist.
-- [ ] String/JSON/JS categories, headings, malformed categories, empty and unsupported actions have
+- [x] Eligible source listing, source/group filters and independent discovery visibility persist.
+- [x] String/JSON/JS categories, headings, malformed categories, empty and unsupported actions have
       distinct useful UI states; no error stack trace or action script is followed as a URL.
-- [ ] Real discovery uses ruleExplore, including upstream enumerated options, ordinary pages,
+- [x] Real discovery uses ruleExplore, including upstream enumerated options, ordinary pages,
       continuation URLs, duplicate-only stopping and exact-identity result registration.
-- [ ] Failure/retry preserves earlier pages and retries the same cursor; refresh resets intentionally.
-- [ ] Held source/category/option replacement and cancellation block late publication.
-- [ ] Another engine's source disable/import produces visible terminal state and cannot restore
+- [x] Failure/retry preserves earlier pages and retries the same cursor; refresh resets intentionally.
+- [x] Held source/category/option replacement and cancellation block late publication.
+- [x] Another engine's source disable/import produces visible terminal state and cannot restore
       stale categories/results/cache entries, including identical source ID/category URL updates.
-- [ ] Details/catalog/trial-read/add-to-shelf/return/relaunch preserve exact source identity and
+- [x] Details/catalog/trial-read/add-to-shelf/return/relaunch preserve exact source identity and
       existing shelf/progress; browsing does not implicitly admit a book.
-- [ ] Actual iPad portrait/landscape UI journeys and screenshots cover principal and failure states.
-- [ ] All existing native reading/search/source/switch/cache/global-preference tests remain green.
-- [ ] Complete automatic C1 at the final PR head passes both original jobs and required aggregate;
+- [x] Actual UI controls on an iPad simulator, in portrait/landscape, and inspected screenshots
+      cover principal and failure states. Physical-iPad comfort and live-source acceptance remain unverified.
+- [x] All existing native reading/search/source/switch/cache/global-preference tests remain green.
+- [x] Complete automatic C1 at the final PR head passes both original jobs and required aggregate;
       no assertion, skip gate, timeout or required check is weakened. Publish one reviewed PR.
 
 ## 6. Deferred slices and evidence boundaries

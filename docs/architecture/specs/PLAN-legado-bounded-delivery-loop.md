@@ -1,7 +1,7 @@
 # Bounded development and upgrade loop
 
 Date: 2026-10-22
-Status: Approved by Lei on 2026-10-22; implementation in progress
+Status: Scoped delivery complete; owner H2 accepted 2026-10-23 (reconciled 2026-10-23)
 Goal owner: Lei
 
 ## Outcome
@@ -13,7 +13,25 @@ to an owner understanding check, without creating a second maintenance project.
 Preserve upstream runtime reuse, our native reading experience, and sustainable
 maintenance. This plan does not finalize the wording of the north-star draft.
 
-## Observed starting point
+## Completed delivery (2026-10-23)
+
+[PR #36](https://github.com/austery/legado/pull/36) landed L0, the maintenance and
+critical-dependency baseline, and the H1/H2 Issue template as
+`c6b61c38fee4d32d69cfe333ed7cc69edc247b96`. Its independent review is recorded in
+that PR; [Issue #38](https://github.com/austery/legado/issues/38) retains a separate
+nonblocking UI-validation routing follow-up, not an unlanded L0 prerequisite.
+
+[Issue #41](https://github.com/austery/legado/issues/41) records the approved real
+pilot: upstream integration delivered in [PR #42](https://github.com/austery/legado/pull/42),
+merged as `61562bc558d76d901a854f79136d28e9077a2781`. It records H1, bounded adaptation
+decisions, independent review, local validation, successful exact-head PR and
+merged-head C1, explicit merge approval and owner H2 acceptance on 2026-10-23.
+The slice is closed; physical-device, live-provider and distribution evidence remain
+outside it. No new deterministic check was added: the existing C1 gate was retained;
+no automation expansion is proposed by this reconciliation. Final north-star wording
+and acceptable recurring maintenance effort remain a separate owner decision.
+
+## Historical observed starting point (2026-10-22)
 
 - Product baseline: `0240d065e305b054927a12e6ab8386ad3992abd2`.
 - Integrated upstream: `c66940d6a91916fa5fdf43a4dfe9ae63e2b7ea8b`, verified as an ancestor.
@@ -37,8 +55,9 @@ repair only supported issues, and check its exact-head required CI. Merge only w
 applicable explicit authorization; verify merged-head results separately. Do not
 restart or reconfigure a runner to accelerate completion.
 
-Done: the entry is on the product branch, its links resolve, review findings are
-closed and PR/merged-head validation states are recorded without conflation.
+Completion criterion: the entry is on the product branch, its links resolve, blocking
+review findings are closed and PR/merged-head validation states are recorded without
+conflation. Nonblocking follow-ups remain explicitly tracked (Issue #38).
 
 ### 1. Establish one maintainable baseline
 
@@ -115,19 +134,19 @@ Lei confirmed: establish the current baseline, then H1/H2, then select a real pi
 Every merge still requires his explicit approval. This authorizes baseline/template
 implementation, not an unselected upgrade or an agent-authored H2 acceptance.
 
-## Current progress
+## Current progress (2026-10-23)
 
 - [x] Goal created and existing CI/PR state inspected.
 - [x] Draft plan and raw baseline comparison prepared.
 - [x] Owner confirms this plan.
-- [ ] L0 independently reviewed and landed with evidence.
-- [ ] Maintenance and critical-dependency baseline reconciled.
-- [ ] H1/H2 Issue contract published.
-- [ ] Real pilot selected and H1 approved.
-- [ ] Pilot reviewed, validated and merged with authority.
-- [ ] Owner H2 recorded; goal completion checked.
+- [x] L0 independently reviewed and landed with evidence.
+- [x] Maintenance and critical-dependency baseline reconciled.
+- [x] H1/H2 Issue contract published.
+- [x] Real pilot selected and H1 approved.
+- [x] Pilot reviewed, validated and merged with authority.
+- [x] Owner H2 recorded; goal completion checked.
 
-## Additional read-only evidence while approval is pending
+## Historical read-only evidence while approval was pending (2026-10-22)
 
 At L0 head `e5d2ac218856671d679aae852aa15c65a51735f9`, version catalog
 entries are Kotlin 2.3.20, KSP 2.3.11, Compose Multiplatform 1.11.1, Room 3.0.1,

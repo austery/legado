@@ -2,6 +2,8 @@
 
 Snapshot: 2026-10-22. This record describes evidence and acceptance boundaries;
 counts are not automatic merge thresholds. Merge requires Lei's explicit approval.
+Status reconciled: 2026-10-23. The fixed B/U comparison and declared versions below
+remain the original snapshot; no counts have been recalculated for the latest head.
 
 ## Fixed comparison
 
@@ -13,7 +15,8 @@ counts are not automatic merge thresholds. Merge requires Lei's explicit approva
   228 entries: 145 additions, 81 modifications and two renames. Rename destinations
   count once. Generated build output and untracked local material are excluded.
 - The seven-file C1 extraction list in `engine-ios/README.md` is historical, not
-  this cumulative baseline. This comparison excludes the current documentation PR.
+  this cumulative baseline. This comparison excludes the documentation changes
+  subsequently merged in PR #36 and later integration work.
 
 ### Reproduce the categorized inventory
 
@@ -127,16 +130,27 @@ Do not close an item using only an unchanged blob, a file-count trend or green C
 Reassess affected consumers when a pilot reaches their contract; avoid expanding a
 native text-reader task into unrelated original-client repairs.
 
-## Current limits and next pilot
+## Current limits and completed pilot
 
-L0 PR 36 is pending review/merge; this record does not assert its landing or new
-runtime acceptance. Hosted simulator responsiveness, physical-device reading comfort,
-live sources and broad original-client/platform acceptance remain separate evidence.
+[L0 PR #36](https://github.com/austery/legado/pull/36) merged as
+`c6b61c38fee4d32d69cfe333ed7cc69edc247b96`, including this maintenance baseline and
+the H1/H2 Issue contract. Its UI-validation routing follow-up is tracked in
+[Issue #38](https://github.com/austery/legado/issues/38).
 
-Candidate pilot: reproduce and, if confirmed, remove the previously observed SwiftUI
-"Publishing changes from within view updates" warning in the native reading journey.
-First pin a current reproducer; a historical warning alone is not a current bug.
-Proposed budget: existing Swift presentation state only, zero schema, dependencies,
-provider changes or new persistent structures. If no warning reproduces, stop and
-choose another owner-approved real task; do not make a speculative repair.
-This is a candidate, not functional H1 approval or permission to merge.
+The approved real pilot was upstream integration, not the earlier speculative
+SwiftUI warning repair. [Issue #41](https://github.com/austery/legado/issues/41)
+records H1, scoped compatibility decisions, validation/review, explicit merge
+authorization and owner-accepted H2; it is closed.
+[PR #42](https://github.com/austery/legado/pull/42) merged as
+`61562bc558d76d901a854f79136d28e9077a2781`, integrating KMP upstream
+`d31c0a270e7c8610e9679dbbda5a6bee06927952`.
+[PR C1](https://github.com/austery/legado/actions/runs/39945338204) and
+[merged C1](https://github.com/austery/legado/actions/runs/39946619743) passed separately.
+See [integration decisions and recovery limits](evidence/2026-10-22-upstream-d31c0a2.md).
+These new revisions do not replace the old B/U pair in the inventory above.
+
+Hosted simulator responsiveness, physical-device reading comfort, live sources,
+distribution and broad original-client/platform acceptance remain separate evidence.
+The historical publishing-during-view-update warning is not claimed fixed by this
+pilot. It remains a candidate for a separately approved task with a fresh reproducer;
+no speculative UI repair or new pilot is authorized here.

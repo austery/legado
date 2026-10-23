@@ -320,8 +320,11 @@ retry, acknowledged shelf return and same-chapter/paragraph reopening, including
 process relaunch. The test host observes the actual TextKit paragraph anchor;
 only setup and fault injection use test controls. No production provider, physical
 device or existing reader data is involved. The ordinary Swift product
-gate remains separate; UI tests do not replace it. The UI gate requires exactly
-seven passing tests with no failures or skips. Both directory buttons are exercised
+gate remains separate; UI tests do not replace it. The UI driver declares the current journey inventory in
+[`reader_ui_ci.py`](../scripts/path-c/reader_ui_ci.py). It requires the selected
+journeys to pass with no failures or skips; repeat `--only-test <method>` to select
+relevant declared methods, or omit it to run the full inventory. Choose scope from
+the changed behavior and risk rather than a historical test count. Both directory buttons are exercised
 for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
