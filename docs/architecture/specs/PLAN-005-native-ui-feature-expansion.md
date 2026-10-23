@@ -1,7 +1,7 @@
 # Native UI feature expansion
 
 Date: 2026-10-19
-Status: First delivery approved on 2026-10-19
+Status: Deliveries through discovery merged; later slices remain candidates (updated 2026-10-23)
 
 ## Goal and evidence
 
@@ -11,25 +11,30 @@ Inspected checkout: `6a968ccee`; locally available `origin/native-reader`: `1f0d
 
 At the original planning baseline, native capabilities included explicit shelf admission/removal, durable resume, incremental multi-source search, exact candidate selection, chapter navigation, continuous reading and typography controls. Source import is embedded in search; details and the chapter list share one screen. Reading style is view state. At that baseline, native exports did not provide active-book source switching, discovery, bookmarks or whole-book downloads.
 
-## Delivery status (2026-10-21)
+## Delivery status (2026-10-23)
 
-The baseline and proposal above record the original 2026-10-19 planning snapshot.
-Everyday navigation/global typography (PR #30), explicit source switching (PR #31),
-and bounded offline reading/cache controls (PR #32) have since merged into `native-reader`.
-Source management (PR #33) is also merged. The current implementation baseline is
-`68f6ab619452dc21c853a1cc3ae38b7085f680f7`.
+The proposal above records the original 2026-10-19 planning snapshot, not the
+current checkout. Everyday navigation/global typography (PR #30), explicit source
+switching (PR #31), bounded offline reading/cache controls (PR #32), source
+management (PR #33) and [discovery / SPEC-008](SPEC-008-native-discovery.md)
+([PR #34](https://github.com/austery/legado/pull/34)) have merged into `native-reader`.
+Discovery merged as `0ec7c618250e1c4acce8a8143053ccad9ec0798f`, including the separately
+approved Native JS context repair. Its simulator and exact-head PR/merged C1
+closeout is recorded in SPEC-008; this does not establish live-source or device acceptance.
 
-The owner approved [SPEC-007](SPEC-007-native-source-management.md) on 2026-10-21:
-all text sources, filters, individual/batch enablement, group membership, reviewed imports
-with upstream selection/retention behavior, and selected export. Implementation and local simulator
-acceptance and final-head/merged-head complete C1 passed. The owner now approved
-[SPEC-008](SPEC-008-native-discovery.md): source/category browsing, pagination, existing
-book/reading flows and cross-engine lifecycle acceptance. This is the next active goal;
-create a reviewed PR. On 2026-10-22 the owner authorized the bounded Native JS context
-repair first and merge after all gates pass. Interactive login remains a separate follow-up;
-the upstream data fields alone do not establish native runtime support.
+Subsequent maintenance deliveries also merged: upstream integration PR #35,
+validation/H1/H2 documentation PR #36, UI fixture orientation PR #40 and upstream
+integration PR #42. Current product snapshot: `61562bc558d76d901a854f79136d28e9077a2781`;
+integrated KMP upstream: `d31c0a270e7c8610e9679dbbda5a6bee06927952`.
+See [maintenance status](../../MAINTENANCE.md#current-limits-and-completed-pilot).
 
-## Proposed next delivery: everyday native reading UI
+No feature slice is active under this plan. Bookmarks, in-book search and other
+remaining coverage candidates require their own approval and acceptance.
+Interactive login remains a follow-up; upstream fields do not establish native
+runtime support. Full Wanyuan feature coverage and current-build physical-device
+comfort have not been established.
+
+## Original first-delivery proposal: everyday native reading UI (delivered in PR #30)
 
 Make the existing working journey coherent before adding another shared-state operation.
 
@@ -41,7 +46,7 @@ Make the existing working journey coherent before adding another shared-state op
 
 Proposed preference policy: typography/appearance apply globally, survive relaunch and do not write book progress merely because text reflows. Per-book overrides are a later feature.
 
-## Simulator acceptance
+## Original first-delivery simulator acceptance contract
 
 Use the real native app and KMP bridge with controlled sources and isolated synthetic data. Fixtures make failures reproducible; they are not a replacement production backend.
 
@@ -55,15 +60,15 @@ Use the real native app and KMP bridge with controlled sources and isolated synt
 
 Before implementation, verify the latest branch/PR state and use a task-owned checkout. Preserve the primary checkout's untracked glossary and Xcode project. Record and release only invocation-owned temporary simulator resources under the shared lifecycle rules.
 
-## Subsequent feature backlog
+## Coverage backlog and scoped delivery status
 
-This is a coverage backlog, not a claim of an exhaustive observed Wanyuan inventory. Each slice needs a concrete behavior contract and separate acceptance.
+This is a coverage backlog, not a claim of an exhaustive observed Wanyuan inventory. Each remaining slice needs a concrete behavior contract and separate acceptance. Merged rows describe bounded deliveries, not every capability implied by the row title.
 
-| Order | Delivery | Decision or boundary to resolve |
+| Order | Delivery | Status and remaining boundary |
 | --- | --- | --- |
-| 2 | Explicit active-book source switching | Prepare candidate content before commit; chapter matching and ambiguity; failure preserves the old source and resume. Do not copy character offsets across different bodies. |
-| 3 | Adjacent-chapter prefetch and download/cache management | Bounded work, cancellation, truthful cache state, offline availability and recovery. |
-| 4 | Source management and discovery | Enable/group/import/export and source-specific browsing; validate native exports and interactive verification requirements. |
+| 2 | Explicit active-book source switching | Merged in PR #31 (SPEC-005). Prepare candidate content before commit; chapter matching and ambiguity; failure preserves the old source and resume. Do not copy character offsets across different bodies. |
+| 3 | Adjacent-chapter prefetch and download/cache management | Bounded next-two prefetch, next-20 cache and protected controls merged in PR #32 (SPEC-006); whole-book downloads are not claimed. |
+| 4 | Source management and discovery | Source management merged in PR #33; discovery in PR #34. Interactive verification remains outside these deliveries. |
 | 5 | Bookmarks, text search and richer shelf management | Coordinate semantics, search scope, sorting/groups and persistence authority. |
 | 6 | Local books, richer pagination/font options | Verify actual reference behavior and upstream native capabilities before promising formats or modes. |
 | 7 | Audio/TTS, backup/sync, RSS and browser-related features | Treat as coverage candidates for the full-function goal; verify reference presence, personal relevance, platform support and data/permission semantics. Do not silently exclude or claim support. |
@@ -72,4 +77,4 @@ Maintain a feature inventory with observed reference behavior, native implementa
 
 ## Owner approval
 
-On 2026-10-19 the owner approved the first delivery, simulator implementation and acceptance, and globally applied presentation preferences. Implementation proceeds as one continuous goal. The later feature backlog remains future scope. A broader storage redesign remains a separate decision.
+On 2026-10-19 the owner approved the first delivery, simulator implementation and acceptance, and globally applied presentation preferences. That first delivery is complete. Remaining coverage candidates require separate approval; this historical authorization does not start another continuous goal. A broader storage redesign remains a separate decision.
