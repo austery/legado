@@ -43,7 +43,7 @@ class ScopeTest(unittest.TestCase):
         return {'pull_request': {'base': {'sha': self.base}, 'head': {'sha': head}}}
 
     def test_explanatory_docs_on_pr_and_push_skip_heavy_regression(self) -> None:
-        self.write('README.md', '# Reader\n\n[Guide](docs/architecture/guide.md#guide)\n')
+        self.write('README.md', '# Reader\n\n[Guide](docs/architecture/guide.md#guide)\n[Top](#reader)\n')
         head = self.commit()
         for name in ('pull_request', 'push'):
             mode, paths, _ = plan(self.root, self.event(head, name), name)

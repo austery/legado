@@ -89,7 +89,7 @@ def check_link(root: Path, source: Path, target: str) -> None:
     if parsed.scheme or parsed.netloc or target.startswith('/'):
         return  # Remote and machine-local paths are outside repository static checks.
     filename = unquote(parsed.path)
-    destination = (source.parent / filename).resolve() if filename else source
+    destination = (source.parent / filename).resolve() if filename else source.resolve()
     if not destination.is_relative_to(root.resolve()):
         raise ValueError(f'{source.relative_to(root)}: link leaves repository: {target}')
     if not destination.exists():
