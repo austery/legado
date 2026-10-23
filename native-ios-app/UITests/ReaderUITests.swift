@@ -750,7 +750,7 @@ final class ReaderUITests: XCTestCase {
         let body = app.textViews["reader.text"]
         body.swipeLeft()
         wait(app) { self.state(app).contains("spread=1;") && self.anchor(app) > 0 }
-        let position = anchor(app)
+        var position = anchor(app)
         capture("two-page-after-turn")
         body.swipeRight()
         wait(app) { self.state(app).contains("spread=0;") && self.anchor(app) == 0 }
@@ -767,6 +767,10 @@ final class ReaderUITests: XCTestCase {
         wait(app) { self.anchor(app) == position && self.state(app).contains("layout=scroll;") }
         XCTAssertEqual(readingIdentity(app), identity)
         XCTAssertLessThanOrEqual(body.frame.width, 850)
+        body.swipeUp()
+        wait(app) { self.anchor(app) > position && self.state(app).contains("dragging=false;decelerating=false;") }
+        position = anchor(app)
+        XCTAssertEqual(readingIdentity(app), identity)
         capture("two-page-narrow-viewport")
         app.buttons["fixture.readerWidth"].tap()
         wait(app) { self.state(app).contains("layout=spread;") }
