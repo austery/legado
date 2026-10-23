@@ -26,32 +26,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Keep the required check independent of skipped or failed test jobs.
+  scope:
+    name: C1 change scope and documentation checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+      run_regression: ${{ steps.scope.outputs.run_regression }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check routing and gate regressions
+        run: python3 -m unittest discover -s scripts/path-c -p 'test_c1_*.py'
+      - name: Classify complete diff and check documentation
+        id: scope
+        run: python3 scripts/path-c/c1_scope.py plan
+
   regression:
     name: C1 engine regression
     if: ${{ always() }}
-    needs: [engine, native-process]
+    needs: [scope, engine, native-process]
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     timeout-minutes: 5
     steps:
-      - name: Require both regression jobs to succeed
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require evidence for the selected scope
         env:
+          MODE: ${{ needs.scope.outputs.mode }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
           ENGINE_RESULT: ${{ needs.engine.result }}
           PROCESS_RESULT: ${{ needs.native-process.result }}
-        shell: bash
-        run: |
-          if [[ "$ENGINE_RESULT" != "success" || "$PROCESS_RESULT" != "success" ]]; then
-            echo "::error::C1 requires both jobs (engine: $ENGINE_RESULT; native process: $PROCESS_RESULT)."
-            exit 1
-          fi
-          echo "All C1 regression suites passed."
+          TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: python3 scripts/path-c/c1_scope.py gate
 
   # Automatic PR/push validation uses the complete local profile while hosted
   # simulator responsiveness is unresolved. Manual cloud diagnosis stays available.
   engine:
     name: C1 builds and regular regressions
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: scope
+    if: ${{ always() && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ fromJSON((inputs.execution || 'local') != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
     timeout-minutes: 90
     defaults:
@@ -247,7 +268,8 @@ jobs:
 
   native-process:
     name: C1 local interruption and offline restart
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: scope
+    if: ${{ always() && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: [self-hosted, macOS, ARM64, legado-macos-local]
     timeout-minutes: 60
     defaults:
