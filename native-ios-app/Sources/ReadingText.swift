@@ -23,6 +23,9 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
     var chapterKey = ""
     var style = ReadingStyle()
     private var previousSize = CGSize.zero
+    private(set) var spreadView: ReadingSpreadView?
+    private var spreadNeedsReflow = true
+    var usesSpreads: Bool { spreadView?.isHidden == false }
     private var needsAnchorRestoration = true
     private var restoration: ReadingRestoration?
     private var validRestoration = true
@@ -102,6 +105,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
             validRestoration = normalized != nil
             anchor = normalized ?? 0
         }
+        spreadNeedsReflow = true
         needsAnchorRestoration = true
         setNeedsLayout()
     }
@@ -113,7 +117,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { userScrolling = false }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty else { return }
+        guard !usesSpreads, readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty else { return }
         let point = CGPoint(x: textContainerInset.left + 1, y: contentOffset.y + textContainerInset.top + 1)
         guard let position = closestPosition(to: point),
               let normalized = paragraphStart(offset(from: beginningOfDocument, to: position)) else { return }
@@ -128,6 +132,11 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
         let wasRestoring = restoring
         restoring = true
         defer { restoring = wasRestoring }
+        if usesSpreads {
+            spreadView?.restore(anchor: anchor)
+            needsAnchorRestoration = false
+            return
+        }
         layoutManager.ensureLayout(for: textContainer)
         if let position = position(from: beginningOfDocument, offset: anchor) {
             // caretRect also represents the empty last paragraph after a trailing delimiter.
@@ -161,11 +170,48 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
         let inset = max(style.margin, (bounds.width - 680) / 2)
         let desiredInset = UIEdgeInsets(top: 24, left: inset, bottom: 40, right: inset)
         if textContainerInset != desiredInset { textContainerInset = desiredInset }
+        let landscape = window.map { $0.bounds.width > $0.bounds.height } ?? false
+        let wantsSpreads = traitCollection.userInterfaceIdiom == .pad && landscape && bounds.width >= 900 && bounds.height >= 160
+        let modeChanged = wantsSpreads != usesSpreads
+        if wantsSpreads, spreadView == nil {
+            let pages = ReadingSpreadView()
+            pages.onTurn = { [weak self] offset in self?.acceptPageTurn(offset) }
+            spreadView = pages
+            addSubview(pages)
+        }
+        spreadView?.isHidden = !wantsSpreads
+        // Disabling UITextView scrolling changes its intrinsic height to the entire
+        // chapter under SwiftUI. Keep its viewport sizing and disable only its gesture.
+        panGestureRecognizer.isEnabled = !wantsSpreads
+        showsVerticalScrollIndicator = !wantsSpreads
         super.layoutSubviews()
-        if changed || needsAnchorRestoration { restoreAnchor() }
+        if wantsSpreads, let pages = spreadView {
+            setContentOffset(.zero, animated: false)
+            pages.frame = CGRect(origin: .zero, size: bounds.size)
+            bringSubviewToFront(pages)
+            if changed || modeChanged || spreadNeedsReflow {
+                pages.reflow(text: attributedText, margin: style.margin, anchor: anchor,
+                             paper: backgroundColor ?? .systemBackground)
+                spreadNeedsReflow = false
+            }
+        }
+        if changed || modeChanged || needsAnchorRestoration { restoreAnchor() }
         previousSize = bounds.size
         restoring = wasRestoring
         scheduleDisplayed()
+    }
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        if usesSpreads { return spreadView?.accessibilityScroll(direction) ?? false }
+        return super.accessibilityScroll(direction)
+    }
+
+    private func acceptPageTurn(_ offset: Int) {
+        guard readingIsActive, !restoring, !needsAnchorRestoration, bodyIsVisible,
+              let normalized = paragraphStart(offset) else { return }
+        anchor = normalized
+        guard let identity = restoration?.identity, displayedIdentity == identity, validRestoration else { return }
+        onParagraphScroll?(identity, anchor)
     }
 
     private var bodyIsVisible: Bool {
