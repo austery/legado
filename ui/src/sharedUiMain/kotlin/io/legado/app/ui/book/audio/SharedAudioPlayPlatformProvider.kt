@@ -2,6 +2,7 @@ package io.legado.app.ui.book.audio
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.Dp
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 音频播放页平台 UI provider 的共享默认实现 (2026-08 去重)。
@@ -25,8 +26,9 @@ object SharedAudioPlayPlatformProvider : AudioPlayPlatformProvider {
     @Composable
     override fun Content(
         state: AudioPlayUiState,
+        /** 位置/缓冲/时长子状态: 只有进度区订阅, 不进 state */
+        progress: StateFlow<AudioPlayProgress>,
         onBack: () -> Unit,
-        onOpenChangeSource: () -> Unit,
         onOpenBookInfo: () -> Unit,
         onOpenToc: () -> Unit,
         onOpenBookSourceEdit: (String) -> Unit,
@@ -42,8 +44,8 @@ object SharedAudioPlayPlatformProvider : AudioPlayPlatformProvider {
     ) {
         SharedAudioPlayScreenContent(
             state = state,
+            progress = progress,
             onBack = onBack,
-            onOpenChangeSource = onOpenChangeSource,
             onOpenBookInfo = onOpenBookInfo,
             onOpenToc = onOpenToc,
             onOpenBookSourceEdit = onOpenBookSourceEdit,

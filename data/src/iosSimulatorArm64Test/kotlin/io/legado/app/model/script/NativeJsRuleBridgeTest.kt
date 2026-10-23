@@ -9,6 +9,19 @@ import kotlin.test.assertFailsWith
 
 class NativeJsRuleBridgeTest {
     @Test
+    fun constructedResponseReturnsNativeObjectAndReleasesItsHandle() = withAnalyzer {
+        repeat(3) {
+            val response = kotlin.test.assertIs<io.legado.app.help.http.StrResponse>(
+                evalJS("java.strResponse('https://example.invalid/chapter', 'replacement')")
+            )
+            assertEquals("replacement", response.body)
+            assertEquals("https://example.invalid/chapter", response.url)
+            val handle = (evalJS("String(java.strResponse('https://example.invalid', null).__h)") as String).toLong()
+            kotlin.test.assertNull(NativeJsExtensionsBridge.getObject(handle))
+        }
+    }
+
+    @Test
     fun scriptCannotCloseItsExecutingAnalyzer() {
         registerNativeJsEngines(IosImageOps)
         for (source in listOf(null, BookSource(), BookSource().apply { jsLib = "var sharedMarker = 1;" })) {

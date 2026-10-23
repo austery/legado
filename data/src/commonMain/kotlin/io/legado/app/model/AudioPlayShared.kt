@@ -130,28 +130,35 @@ object AudioPlayShared {
     var durCoverUrl: String? = null
 
     /**
-     * 底层播放器实时音频物理 PCM 能量强度 (0.0f ~ 1.0f)。
+     * 一帧音频可视信号: 整体能量 + 各频段幅度。
      *
-     * 由底层播放器 (Android ExoPlayer PCM 采样) 真实音频物理电平驱动,
-     * 用于实时调制歌词微弱柔光与背景流光的呼吸收放。
+     * 派发方必须保证每帧都是新实例, 不能改旧实例的字段: 订阅方把"收到一帧"当作
+     * "管道还在供数"的依据 (相同数值也必须照常通知), 并用 [bands] 换数组建立重绘依赖。
      *
-     * 只在播放器真的产出 PCM 时更新; 暂停后值停在最后一帧, 所以**显示侧自己按播放状态
-     * 收到 0**(见 AudioEnergyEnvelope 的两个使用方), 不依赖谁去清零。
+     * @param energy 整体能量 0~1: 供歌词辉光
+     * @param bands 各频段幅度 0~1 (长度 [AudioSpectrum.BAND_COUNT]): 供页面边缘光效按段驱动
      */
-    val audioEnergy = MutableStateFlow(0f)
+    class AudioVisualFrame(
+        val energy: Float,
+        val bands: FloatArray,
+    )
 
     /**
-     * 底层播放器实时多频段幅度 (每段 0.0f ~ 1.0f, 长度 [io.legado.app.model.audio.AudioSpectrum.BAND_COUNT])。
+     * 底层播放器实时音频可视信号。
      *
-     * 供页面边缘光效按频段分别驱动 (低频、人声、高频各占不同位置), 与 [audioEnergy] 的单值
-     * 口径不同: 那边是给歌词辉光的合成曲线, 这边保留各段独立起伏。
+     * 由底层播放器真实音频物理 PCM 驱动: [AudioVisualFrame.energy] 用于实时调制歌词微弱柔光与
+     * 背景流光的呼吸收放, [AudioVisualFrame.bands] 供页面边缘光效按频段分别驱动 (低频、人声、
+     * 高频各占不同位置), 两者同源但口径不同。
      *
      * 无频谱能力的端 (桌面走播放器峰值电平、鸿蒙只给整体幅度) 用整体电平填满各段 ——
      * 如实退化, 不伪造频谱。
      *
-     * 与 [audioEnergy] 同源, 同样由显示侧按播放状态收尾。
+     * 只在播放器真的产出 PCM 时更新; 暂停后值停在最后一帧, 所以**显示侧自己按播放状态
+     * 收到 0**(见 AudioEnergyEnvelope 的两个使用方), 不依赖谁去清零。
      */
-    val audioBands = MutableStateFlow(FloatArray(AudioSpectrum.BAND_COUNT))
+    val audioVisual = MutableStateFlow(
+        AudioVisualFrame(0f, FloatArray(AudioSpectrum.BAND_COUNT))
+    )
 
     /**
      * 当前章节歌词 (null = 无歌词/未就绪)。
@@ -262,11 +269,12 @@ object AudioPlayShared {
     /**
      * 发布一帧音频可视信号 (能量 + 各频段)。
      *
-     * [bands] 会被复制一份, 调用方可以直接传自己复用的数组 (不要依赖“必须拷贝”的口头约定)。
+     * [bands] 会被复制一份, 调用方可以直接传自己复用的数组 (不要依赖“必须拷贝”的口头约定);
+     * 传 null 表示该帧没有新的频段值, 沿用上一帧的。
      */
     fun publishVisual(energy: Float, bands: FloatArray?) {
-        audioEnergy.value = energy
-        bands?.let { audioBands.value = it.copyOf() }
+        val previous = audioVisual.value
+        audioVisual.value = AudioVisualFrame(energy, bands?.copyOf() ?: previous.bands)
     }
 
     /**
@@ -275,21 +283,44 @@ object AudioPlayShared {
      * 也是“没有信号了”(停止/拆链/flush) 的清零入口。
      */
     fun publishLevelOnly(energy: Float) {
-        audioEnergy.value = energy
-        audioBands.value = FloatArray(AudioSpectrum.BAND_COUNT) { energy }
+        audioVisual.value = AudioVisualFrame(energy, FloatArray(AudioSpectrum.BAND_COUNT) { energy })
     }
 
     /**
-     * 按两个辉光开关同步底层 offload 策略 (开关切换后调用, 无需重起播)。
+     * 按两个辉光开关与音频页可见性同步底层 offload 策略 (开关切换、页面进出可见态后调用)。
      *
-     * 采样旁路常挂, offload 是运行时参数: 都关时省电, 任一开启时取 PCM 供光效使用。
+     * 采样旁路常挂, offload 是运行时参数: 页面不可见时一律开 offload 省电, 可见时只在
+     * 两个辉光开关都关时才开 (任一开启要取 PCM 供光效使用)。
      */
     fun syncAudioOffload() = AudioPlayCommanders.get().syncAudioOffload()
 
     /**
+     * 音频页当前处于 RESUMED 的页面 id 集合。
+     *
+     * 用集合而不是单个布尔: 换书时旧页退场与新页进场同帧发生, 两个回调的先后顺序不确定,
+     * 单个布尔会被后到的 "离开" 覆盖成不可见; 按 id 记账后结果与顺序无关。
+     */
+    private val resumedAudioPages = mutableSetOf<Long>()
+
+    /**
+     * 记录一个音频页进入/离开可见态 (RESUMED = 栈顶且 app 在前台)。
+     *
+     * 只有聚合结果翻转时才下发一次策略: 被盖住/退后台算不可见, 回来算可见。
+     */
+    fun setAudioPageResumed(pageId: Long, resumed: Boolean) {
+        val before = resumedAudioPages.isNotEmpty()
+        if (resumed) resumedAudioPages += pageId else resumedAudioPages -= pageId
+        if (resumedAudioPages.isNotEmpty() != before) syncAudioOffload()
+    }
+
+    /** 音频页是否可见 (RESUMED); 没有任何音频页在场时为 false。 */
+    fun isAudioPageResumed(): Boolean = resumedAudioPages.isNotEmpty()
+
+    /**
      * 两个辉光开关任一开启即需要 PCM 采样。
      *
-     * 这是“要不要关解码省电”的唯一判定处: 播放服务、界面开关都只看这里, 不再各自拼条件。
+     * 这是“要不要关解码省电”的开关判定处: 播放服务、界面开关都只看这里, 不再各自拼条件。
+     * 实际是否关 offload 还要叠加页面可见性, 见 [isAudioPageResumed]。
      */
     fun needsAudioPcm(): Boolean {
         val prefs = PreferenceProviders.get()
