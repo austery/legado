@@ -817,13 +817,13 @@ final class ReaderUITests: XCTestCase {
 
     @MainActor private func assertRenderedAnchor(_ app: XCUIApplication, identity: [String], position: Int,
                                                 file: StaticString = #filePath, line: UInt = #line) {
-        wait(app, file: file, line: line) {
+        wait(app, {
             guard let rendered = self.state(app).components(separatedBy: ";").first(where: { $0.hasPrefix("rendered=") }) else { return false }
             return rendered.dropFirst("rendered=".count).split(separator: ",").contains { item in
                 let values = item.split(separator: ":").compactMap { Int($0) }
                 return values.count == 2 && NSLocationInRange(position, NSRange(location: values[0], length: values[1]))
             }
-        }
+        }, file: file, line: line)
         XCTAssertEqual(readingIdentity(app), identity, file: file, line: line)
         XCTAssertEqual(anchor(app), position, file: file, line: line)
     }
