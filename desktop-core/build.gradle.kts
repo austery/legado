@@ -18,6 +18,7 @@ plugins {
 }
 
 dependencies {
+    testImplementation(libs.junit)
     // 引入 shared 模块 jvm target (传递 commonMain + jvmMain 全部 API;
     // okhttp/jsoup/room 等经 shared 的 api 依赖可见, 无需显式声明)
     implementation(project(":ui"))

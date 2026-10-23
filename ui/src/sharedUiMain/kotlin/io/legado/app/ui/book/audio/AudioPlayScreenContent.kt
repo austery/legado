@@ -15,6 +15,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
@@ -39,6 +40,8 @@ import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,17 +56,20 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.sp
 import io.legado.app.model.AudioPlayShared
 import io.legado.app.ui.compose.component.AppDropdownMenu
 import io.legado.app.ui.compose.component.AppMenuCheckbox
 import io.legado.app.ui.compose.component.AppSlider
-import io.legado.app.ui.compose.platform.rememberColor
 import io.legado.app.ui.compose.platform.rememberPainter
 import io.legado.app.ui.compose.platform.rememberString
 import io.legado.app.ui.compose.platform.platformStatusBarPadding
@@ -73,15 +79,14 @@ import io.legado.app.ui.compose.theme.LocalEInk
 import io.legado.app.ui.root.PhotoSharedCoverHost
 import io.legado.app.utils.format
 import io.legado.app.utils.toDurationTime
+import kotlinx.coroutines.flow.StateFlow
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.audio_edge_glow_title
 import legado.ui.generated.resources.audio_energy_glow_title
 import legado.ui.generated.resources.audio_play
 import legado.ui.generated.resources.back
-import legado.ui.generated.resources.change_origin
 import legado.ui.generated.resources.chapter_list
 import legado.ui.generated.resources.ic_arrow_back
-import legado.ui.generated.resources.ic_exchange
 import legado.ui.generated.resources.ic_more_vert
 import legado.ui.generated.resources.more_menu
 import legado.ui.generated.resources.next_chapter
@@ -109,8 +114,7 @@ enum class AudioPlaySidePanelKind { TOC, REVIEW }
  * - [titleBarTrailingSlot]: 标题栏尾部 (默认评论钮, 四端一致; 见 SharedAudioPlayScreenContent)
  * - [timerDialogSlot]/[speedDialogSlot]: 定时/倍速弹窗 (四端共用 AlertDialog 实现)
  *
- * 视觉参数 (图标/回显标签底色/控制排透明度/内边距) 已统一为 app 原版值,
- * 不再暴露平台参数 (原 desktop 半透明黑标签/1f 透明度/8dp 标题栏内边距等已移除);
+ * 视觉参数 (图标/控制排透明度/内边距) 由本文件统一给出, 不接受平台注入;
  * 控制钮按压底用 Compose 默认指示 (不绘制 arco_fill_3 圆形底)。
  *
  * @param title 标题 (书名)
@@ -119,7 +123,7 @@ enum class AudioPlaySidePanelKind { TOC, REVIEW }
  * @param coverVisible 封面圆形图显隐 (点击封面切到 false, 由调用方管理状态)
  * @param timerMinute 定时分钟数 (>0 时左上角回显标签)
  * @param speed 倍速 (!=1f 时右上角回显标签)
- * @param progressMs 当前播放位置 ms
+ * @param progress 位置/缓冲/时长子状态 (只有进度区在这一层订阅, 心跳不牵动整页重组)
  * @param durationMs 总时长 ms
  * @param bufferMs 缓冲进度 ms
  * @param isPlaying 播放中 (回显播放/暂停钮)
@@ -131,7 +135,6 @@ enum class AudioPlaySidePanelKind { TOC, REVIEW }
  * @param lrcActiveColor SeekBar 已播层颜色 (null=用 accentColor; 调用方从 lrcColors 取)
  * @param lrcInactiveColor SeekBar 缓冲层颜色 (null=用 accentColor.copy(0.5); 调用方从 lrcColors 取)
  * @param onBack 返回
- * @param onOpenChangeSource 换源
  * @param onCoverClick 封面点击 (隐藏封面)
  * @param onCoverLongClick 封面长按 (查看封面大图; 无封面 URL 时由调用方内部判空不动作)
  * @param onTogglePlay 播放/暂停切换
@@ -158,9 +161,7 @@ fun AudioPlayScreenContent(
     coverVisible: Boolean,
     timerMinute: Int,
     speed: Float,
-    progressMs: Int,
-    durationMs: Int,
-    bufferMs: Int,
+    progress: StateFlow<AudioPlayProgress>,
     isPlaying: Boolean,
     loading: Boolean,
     playMode: AudioPlayShared.PlayMode,
@@ -170,7 +171,6 @@ fun AudioPlayScreenContent(
     lrcActiveColor: Color? = null,
     lrcInactiveColor: Color? = null,
     onBack: () -> Unit,
-    onOpenChangeSource: () -> Unit,
     /** 点顶栏标题进书籍详情 */
     onOpenBookInfo: () -> Unit,
     onCoverClick: () -> Unit,
@@ -185,7 +185,7 @@ fun AudioPlayScreenContent(
     onSetSpeed: (Float) -> Unit,
     overflowActions: AudioPlayOverflowActions? = null,
     coverSlot: @Composable (String?, Modifier) -> Unit,
-    blurBgSlot: (@Composable (String?, Modifier) -> Unit)? = null,
+    blurBgSlot: (@Composable (String?, Modifier, Boolean) -> Unit)? = null,
     edgeGlowSlot: (@Composable (Modifier) -> Unit)? = null,
     lrcSlot: @Composable (Modifier) -> Unit,
     titleBarTrailingSlot: @Composable RowScope.() -> Unit = {},
@@ -209,7 +209,7 @@ fun AudioPlayScreenContent(
         if (eInk) snap() else tween(durationMillis = 300, easing = FastOutSlowInEasing)
     val panelWidthAnim: FiniteAnimationSpec<Dp> =
         if (eInk) snap() else tween(durationMillis = 300, easing = FastOutSlowInEasing)
-    val animatedPanelWidth by animateDpAsState(
+    val animatedPanelWidth = animateDpAsState(
         targetValue = if (sidePanelVisible) sidePanelWidth else 0.dp,
         animationSpec = panelWidthAnim,
         label = "audioSidePanelWidth",
@@ -222,8 +222,9 @@ fun AudioPlayScreenContent(
         // 含 → 长短按: 短按 seek +10s / 长按 2x 倍速松手恢复), 本层不再挂键盘处理器
     ) {
         // 模糊封面背景 (平台 blurBgSlot 加载; null 时复用 coverSlot)
-        val bgSlot = blurBgSlot ?: coverSlot
-        bgSlot(coverUrl, Modifier.matchParentSize())
+        val bgSlot: @Composable (String?, Modifier, Boolean) -> Unit =
+            blurBgSlot ?: { url, modifier, _ -> coverSlot(url, modifier) }
+        bgSlot(coverUrl, Modifier.matchParentSize(), isPlaying)
         // 半透明遮罩 (对照 app 端 0x3A000000): 压暗背景保证歌词与控件的对比度
         Box(Modifier.matchParentSize().background(Color(0x3A000000)))
         // 边缘光效: 在遮罩之上、内容之下 —— 光在文字背后, 不糊内容
@@ -233,13 +234,12 @@ fun AudioPlayScreenContent(
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(end = animatedPanelWidth)
+                .sidePanelSqueeze(animatedPanelWidth)
                 .tapOnUnconsumed { onTapOutsideSidePanel?.invoke() },
         ) {
             AudioTitleBar(
                 title = title,
                 onBack = onBack,
-                onOpenChangeSource = onOpenChangeSource,
                 onOpenBookInfo = onOpenBookInfo,
                 overflowActions = overflowActions,
                 trailingSlot = titleBarTrailingSlot,
@@ -355,7 +355,7 @@ fun AudioPlayScreenContent(
                         )
                     }
                 }
-                // 定时回显标签 (左上; 底色统一 arco_fill_3 跟随主题)
+                // 定时回显标签 (左上; 底色固定半透明黑, 见 FilletLabel)
                 if (timerMinute > 0) {
                     FilletLabel(
                         text = "${timerMinute}m",
@@ -365,7 +365,7 @@ fun AudioPlayScreenContent(
                             .padding(DesignTokens.spacingLg),
                     )
                 }
-                // 倍速回显标签 (右上; 底色统一 arco_fill_3 跟随主题)
+                // 倍速回显标签 (右上; 底色固定半透明黑, 见 FilletLabel)
                 if (speed != 1f) {
                     FilletLabel(
                         text = "%.1fX".format(speed),
@@ -377,9 +377,7 @@ fun AudioPlayScreenContent(
                 }
             }
             ProgressRow(
-                progressMs = progressMs,
-                bufferMs = bufferMs,
-                durationMs = durationMs,
+                progress = progress,
                 accentColor = accentColor,
                 lrcActiveColor = lrcActiveColor,
                 lrcInactiveColor = lrcInactiveColor,
@@ -441,13 +439,12 @@ fun AudioPlayScreenContent(
     }
 }
 
-// ---- 标题栏 (返回 + 标题 + 换源 + 尾部槽) ----
+// ---- 标题栏 (返回 + 标题 + 尾部槽) ----
 
 @Composable
 private fun AudioTitleBar(
     title: String,
     onBack: () -> Unit,
-    onOpenChangeSource: () -> Unit,
     onOpenBookInfo: () -> Unit,
     overflowActions: AudioPlayOverflowActions?,
     trailingSlot: @Composable RowScope.() -> Unit,
@@ -456,7 +453,12 @@ private fun AudioTitleBar(
         Modifier
             .fillMaxWidth()
             .platformStatusBarPadding()
-            .heightIn(min = DesignTokens.viewHeightMax),
+            .heightIn(min = DesignTokens.viewHeightMax)
+            // 整行点击打开书籍详情 (对齐阅读/漫画页顶栏)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { onOpenBookInfo() },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onBack) {
@@ -472,17 +474,8 @@ private fun AudioTitleBar(
             fontSize = 20.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .weight(1f)
-                .clickable { onOpenBookInfo() },
+            modifier = Modifier.weight(1f),
         )
-        IconButton(onClick = onOpenChangeSource) {
-            Icon(
-                painter = painterResource(Res.drawable.ic_exchange),
-                contentDescription = stringResource(Res.string.change_origin),
-                tint = Color.White,
-            )
-        }
         // 平台尾部槽 (review 钮等)
         trailingSlot()
         // 共享溢出菜单 (登录/复制URL/源变量/书变量/编辑书源/书签/日志)
@@ -533,10 +526,6 @@ private fun AudioPlayOverflowMenu(actions: AudioPlayOverflowActions) {
                 dismiss()
                 actions.onAddBookmark()
             }
-            AudioOverflowItem("log") {
-                dismiss()
-                actions.onShowAppLog()
-            }
             if (actions.showGlowToggle) {
                 DropdownMenuItem(onClick = { dismiss(); actions.onToggleGlow() }) {
                     Text(
@@ -554,6 +543,10 @@ private fun AudioPlayOverflowMenu(actions: AudioPlayOverflowActions) {
                     modifier = Modifier.weight(1f),
                 )
                 AppMenuCheckbox(checked = actions.edgeGlowEnabled)
+            }
+            AudioOverflowItem("log") {
+                dismiss()
+                actions.onShowAppLog()
             }
         }
     }
@@ -626,9 +619,12 @@ private fun CoverImage(
     }
 }
 
-// ---- 定时/倍速回显标签 (圆角填充底 + 可选图标 + 白字) ----
-// 底色统一 arco_fill_3 (亮 #FFE6E6E6 / 暗 #FF2A2A2A, 跟随主题), 与移动端/master 一致;
-// 原 desktop 半透明黑 0x66000000 已移除 (见 AudioPlayScreenContent 参数收拢)。
+// ---- 定时/倍速回显标签 (半透明黑圆角底 + 可选图标 + 白字) ----
+// 底色固定半透明黑, 不跟随主题: 本页背景恒为模糊封面 + 深色压暗层, 主题填充色在浅色主题下
+// 是近白 #FFE6E6E6, 与白字同色, 标签读不出来。白字配 50% 黑底, 纯白封面下对比度仍约 6:1。
+
+/** 回显标签底色: 50% 黑, 保证白字在任意封面图上可读。 */
+private val FilletLabelBackground = Color(0x80000000)
 
 @Composable
 private fun FilletLabel(
@@ -638,7 +634,7 @@ private fun FilletLabel(
 ) {
     Row(
         modifier
-            .background(rememberColor("arco_fill_3"), DesignTokens.shapeDefault)
+            .background(FilletLabelBackground, DesignTokens.shapeDefault)
             .padding(horizontal = DesignTokens.spacingDefault),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -658,9 +654,7 @@ private fun FilletLabel(
 
 @Composable
 private fun ProgressRow(
-    progressMs: Int,
-    bufferMs: Int,
-    durationMs: Int,
+    progress: StateFlow<AudioPlayProgress>,
     accentColor: Color,
     lrcActiveColor: Color?,
     lrcInactiveColor: Color?,
@@ -669,6 +663,11 @@ private fun ProgressRow(
     // 拖动中的值 (拖动期间不回显事件进度): 只用于左侧进度文本; 滑块位置由 AppSlider 自己按手指位置持有,
     // 因此这里不回灌给滑条 —— 调整被中断时本预览不会回滚, 回灌会把作废的预览当成业务值把滑块冻住
     var dragValue by remember { mutableStateOf<Int?>(null) }
+    // 位置/缓冲/时长只在这一层收集: 播放心跳每秒钟只重组进度区, 不牵动标题、菜单与背景
+    val snapshot by progress.collectAsState()
+    val progressMs = snapshot.progressMs
+    val bufferMs = snapshot.bufferMs
+    val durationMs = snapshot.durationMs
     // 时长未知 (流式资源 READY 前/无时长): 显示 --:-- 并禁用拖动, 避免“进度超过时长”的观感
     val durationKnown = durationMs > 0
     Row(
@@ -856,6 +855,24 @@ private fun playModeIconKey(mode: AudioPlayShared.PlayMode): String = when (mode
     AudioPlayShared.PlayMode.RANDOM -> "ic_play_mode_random"
     AudioPlayShared.PlayMode.LIST_LOOP -> "ic_play_mode_list_loop"
 }
+
+/**
+ * 右侧面板挤压: 宽度在测量期读, 动画每帧只重测不改组。
+ *
+ * 逐条对应 Foundation `padding(end = width)` 的 PaddingNode 做法: 子级可用宽度扣掉挤压量,
+ * 自身尺寸含挤压量, 子级按 placeRelative 落位 —— 从右到左布局时空出的那条边自动换到左侧。
+ * 在组合期读这个值会让整页组装在 300ms 里逐帧重跑。
+ */
+private fun Modifier.sidePanelSqueeze(width: State<Dp>): Modifier =
+    layout { measurable, constraints ->
+        val squeeze = width.value.roundToPx()
+        val placeable = measurable.measure(constraints.offset(-squeeze, 0))
+        val measuredWidth = constraints.constrainWidth(placeable.width + squeeze)
+        val measuredHeight = constraints.constrainHeight(placeable.height)
+        layout(measuredWidth, measuredHeight) {
+            placeable.placeRelative(0, 0)
+        }
+    }
 
 /**
  * 只响应未被子级消费的点击 (子级按钮/歌词等消费后不触发); 用于"面板打开时点击外部关闭"。

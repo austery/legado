@@ -69,6 +69,13 @@ class AudioSpectrum(private val sampleRate: Int) {
         0.5 - 0.5 * cos(2.0 * PI * it / FFT_SIZE)
     }
     private val reversed = IntArray(FFT_SIZE) { reverseBits(it) }
+    /**
+     * 旋转因子表: 第 len 级蝶形的第 k 个因子 = exp(-2πi · k·(HALF/len) / FFT_SIZE),
+     * 下标按 `k * (HALF / halfLen)` 取。每级每对只查表, 不再靠上一次结果乘下一个因子
+     * (累乘会把浮点误差逐级放大到整谱)。
+     */
+    private val twiddleRe = DoubleArray(HALF) { cos(-2.0 * PI * it / FFT_SIZE) }
+    private val twiddleIm = DoubleArray(HALF) { sin(-2.0 * PI * it / FFT_SIZE) }
     private val binHz: Double
     private val bassStart: Int
     private val bassEnd: Int
@@ -102,8 +109,8 @@ class AudioSpectrum(private val sampleRate: Int) {
         ring.fill(0.0)
         writeIndex = 0
         filled = 0
-        frame.bands.fill(0.0)
         frame.lowBand = 0.0
+        frame.bands.fill(0.0)
     }
 
     fun pushSample(mono: Double) {
@@ -148,15 +155,14 @@ class AudioSpectrum(private val sampleRate: Int) {
         }
         var length = 2
         while (length <= FFT_SIZE) {
-            val angle = -2.0 * PI / length
-            val wRe = cos(angle)
-            val wIm = sin(angle)
             val halfLen = length / 2
+            val stride = HALF / halfLen
             var start = 0
             while (start < FFT_SIZE) {
-                var curRe = 1.0
-                var curIm = 0.0
                 for (k in 0 until halfLen) {
+                    val tw = k * stride
+                    val curRe = twiddleRe[tw]
+                    val curIm = twiddleIm[tw]
                     val a = start + k
                     val b = a + halfLen
                     val tRe = re[b] * curRe - im[b] * curIm
@@ -165,9 +171,6 @@ class AudioSpectrum(private val sampleRate: Int) {
                     im[b] = im[a] - tIm
                     re[a] += tRe
                     im[a] += tIm
-                    val nextRe = curRe * wRe - curIm * wIm
-                    curIm = curRe * wIm + curIm * wRe
-                    curRe = nextRe
                 }
                 start += length
             }

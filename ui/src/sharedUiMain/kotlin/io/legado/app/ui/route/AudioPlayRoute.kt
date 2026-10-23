@@ -21,17 +21,17 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.help.IntentData
-import io.legado.app.help.book.changeSourceTo
 import io.legado.app.help.book.delBookCore
 import io.legado.app.help.book.isAudio
-import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isNotShelf
+import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.removeType
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.PreferenceProviders
@@ -60,6 +60,7 @@ import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.AppOverlay
 import io.legado.app.ui.root.AppRoute
+import io.legado.app.ui.root.toReadRoute
 import io.legado.app.ui.root.toRouteRef
 import io.legado.app.ui.root.LocalSharedCoverBinding
 import io.legado.app.ui.root.PlatformCapabilityProviders
@@ -72,7 +73,6 @@ import io.legado.app.ui.root.RouteResults
 import io.legado.app.ui.root.ScreenModelStore
 import io.legado.app.ui.root.asBook
 import io.legado.app.ui.root.rememberSharedCoverDestinationBinding
-import io.legado.app.ui.root.toReadRoute
 import io.legado.app.utils.toDurationTime
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,8 +91,7 @@ import org.jetbrains.compose.resources.stringResource
  *
  * 对照 app 端 [io.legado.app.ui.book.audio.AudioPlayActivity]:
  * - onActivityCreated viewModel.initData → Init 事件
- * - showChangeSource → ChangeSourceDialogHost 全高底部弹窗 (原版 ChangeBookSourceDialog);
- *   openChapterList → 宽屏右侧面板 / 窄屏 TocDialogHost 全高底部弹窗 (对照原版 push Toc 带 resultKey)
+ * - openChapterList → 宽屏右侧面板 / 窄屏 TocDialogHost 全高底部弹窗 (对照原版 push Toc 带 resultKey)
  * - showLogin / copyAudioUrl / showSourceVariable / showBookVariable / editSource / addBookmark / showAppLog →
  *   构造 [AudioPlayOverflowActions] 交由 shared [io.legado.app.ui.book.audio.AudioPlayScreenContent] 渲染溢出菜单
  * - finish: !inBookshelf 时弹加书架确认 (对照 Activity.finish alert)
@@ -104,7 +103,7 @@ fun AudioPlayRoute(
     screenModelStore: ScreenModelStore,
 ) {
     val route = entry.route as AppRoute.AudioPlay
-    // asBook() 每次 copy() 新实例, remember(route) 固定后 LaunchedEffect(book) 只在换路由时重启
+    // asBook() 对搜索书每次新建实例, remember(route) 让同一路由内保持同一份
     val book = remember(route) { route.book.asBook() }
 
     val screenModel = screenModelStore.getOrCreateTyped(entry) { AudioPlayScreenModel() }
@@ -147,9 +146,9 @@ fun AudioPlayRoute(
             if (shortcut.key == Key.DirectionRight) {
                 keyLongPress.onRelease(
                     onShortPress = {
-                        val s = screenModel.state.value
+                        val p = screenModel.progress.value
                         screenModel.dispatch(
-                            AudioPlayUiEvent.Seek((s.progressMs + 10_000).coerceAtMost(s.durationMs))
+                            AudioPlayUiEvent.Seek((p.progressMs + 10_000).coerceAtMost(p.durationMs))
                         )
                     },
                     onLongPressRelease = {
@@ -162,7 +161,9 @@ fun AudioPlayRoute(
         when (shortcut.key) {
             Key.Spacebar -> screenModel.dispatch(AudioPlayUiEvent.TogglePlay)
             Key.DirectionLeft -> screenModel.dispatch(
-                AudioPlayUiEvent.Seek((state.progressMs - 10_000).coerceAtLeast(0))
+                AudioPlayUiEvent.Seek(
+                    (screenModel.progress.value.progressMs - 10_000).coerceAtLeast(0),
+                )
             )
             Key.DirectionRight -> keyLongPress.onPress(scope, longPressTimeoutMs) {
                 // 长按激活: 记录长按前倍速, 切 当前倍速×2 (与视频页长按语义一致, 不加配置项)
@@ -175,16 +176,45 @@ fun AudioPlayRoute(
     }
 
     // 初始化标题 (对照 viewModel.initData 中 titleData.postValue(book.name) + applyBookmarkPosition)
-    LaunchedEffect(book) {
+    // 只按书的身份重启: 同一页面被单例复用只换章节时不得重发 Init (Init 会重新拉目录)
+    LaunchedEffect(route.book) {
         screenModel.dispatch(
             AudioPlayUiEvent.Init(route.book, route.chapterIndex, route.chapterPos)
         )
+    }
+
+    // 单例页复用: 同一页面被再次打开时路由参数会变 (对照原版 singleTask + onNewIntent)。
+    // 换书交给上面的 Init 全量重载; 只换章节时按原版 applyBookmarkPosition 轻量定位。
+    val appliedTarget = remember {
+        mutableStateOf(route.book to (route.chapterIndex to route.chapterPos))
+    }
+    LaunchedEffect(route.book, route.chapterIndex, route.chapterPos) {
+        val target = route.book to (route.chapterIndex to route.chapterPos)
+        if (target == appliedTarget.value) return@LaunchedEffect
+        val previous = appliedTarget.value
+        appliedTarget.value = target
+        if (previous.first != target.first) return@LaunchedEffect
+        val index = target.second.first ?: return@LaunchedEffect
+        val pos = target.second.second ?: 0
+        when {
+            index != previous.second.first -> AudioPlayShared.skipTo(index, pos)
+            pos != (previous.second.second ?: 0) -> AudioPlayShared.adjustProgress(pos)
+        }
     }
 
     // 退出音频页: 落库进度 + 通知书架刷新 (对齐阅读器/视频/漫画行为, 回归 2026-08)。
     // 挂本页 Lifecycle 的"在栈期间" (STARTED): 出栈才落库, 被压栈 (进书源编辑等) 不落。
     // saveRead 内部会发 UP_BOOKSHELF 让书架重启分组流强制重查 durChapterTime
     OnRouteLifecycle(onLeave = { AudioPlayShared.saveRead() })
+
+    // 可见性入账: 本页 RESUMED (栈顶且 app 在前台) 才需要 PCM 供光效使用; 被盖住/退后台
+    // 即开 offload 省电。不用单个布尔: 换书时旧页退场与新页进场同帧发生, 按页 id 记账后
+    // 结果与回调顺序无关。
+    OnRouteLifecycle(
+        minState = Lifecycle.State.RESUMED,
+        onEnter = { AudioPlayShared.setAudioPageResumed(entry.id.value, true) },
+        onLeave = { AudioPlayShared.setAudioPageResumed(entry.id.value, false) },
+    )
 
     // 订阅子页结果回填 (对照 VideoPlayRoute navigator.resultsFor(entry.id).collect)
     LaunchedEffect(Unit) {
@@ -251,8 +281,6 @@ fun AudioPlayRoute(
     // 平台对话框状态 (对照 VideoPlayRoute showLogDialog / pendingBookmark)
     var showLogDialog by remember { mutableStateOf(false) }
     var pendingBookmark by remember { mutableStateOf<Bookmark?>(null) }
-    // 整书换源弹窗显示开关 (对照原版 menu_change_source → showDialogFragment(ChangeBookSourceDialog))
-    var showChangeSourceDialog by remember { mutableStateOf(false) }
     // 目录弹窗显示开关 (窄屏目录入口, 对照阅读页 ReaderDialogEvent.Toc → TocDialogHost)
     var showTocDialog by remember { mutableStateOf(false) }
 
@@ -388,7 +416,7 @@ fun AudioPlayRoute(
             val b = AudioPlayShared.book ?: return@AudioPlayOverflowActions
             val chapter = AudioPlayShared.durChapter
             val pos = AudioPlayShared.durChapterPos
-            val total = state.durationMs
+            val total = screenModel.progress.value.durationMs
             val bookmark = Bookmark(bookName = b.name, bookAuthor = b.author).apply {
                 chapterIndex = AudioPlayShared.durChapterIndex
                 chapterPos = pos
@@ -417,6 +445,7 @@ fun AudioPlayRoute(
     CompositionLocalProvider(LocalSharedCoverBinding provides coverBinding) {
     platform.Content(
         state = pageState,
+        progress = screenModel.progress,
         onBack = onBack,
         // 点顶栏标题进书籍详情 (对照 app 端 AudioPlayActivity 的顶栏标题点击)
         onOpenBookInfo = {
@@ -424,10 +453,6 @@ fun AudioPlayRoute(
                 AppRoute.BookInfo((AudioPlayShared.book ?: book).toRouteRef()),
                 resultKey = RouteResults.BOOK_INFO,
             )
-        },
-        onOpenChangeSource = {
-            // 对照原版 menu_change_source → showDialogFragment(ChangeBookSourceDialog) 全高底部弹窗
-            showChangeSourceDialog = true
         },
         onOpenToc = {
             // 对照 app 端 AudioPlayActivity.openChapterList: 未加书架的书目录不落库, 走内存传递。
@@ -622,53 +647,6 @@ fun AudioPlayRoute(
                 }
             },
             onDismiss = { showTocDialog = false },
-        )
-    }
-
-    // 整书换源弹窗 (对照原版 menu_change_source → ChangeBookSourceDialog 全高底部弹窗, 同阅读页/详情页同款)
-    if (showChangeSourceDialog) {
-        ChangeSourceDialogHost(
-            book = AudioPlayShared.book ?: book,
-            onSourceChanged = changeSource@{ source, newBook, toc ->
-                showChangeSourceDialog = false
-                if (!newBook.isAudio) {
-                    // 非音频书: 停播 + 迁移落库 + 跳对应阅读路由 + 退出音频页
-                    scope.launch {
-                        runCatching {
-                            AudioPlayShared.book?.changeSourceTo(
-                                newBook,
-                                toc,
-                                AudioPlayShared.inBookshelf
-                            )
-                        }.onFailure {
-                            AppLog.put("换源失败\n$it", it, true)
-                        }
-                        AudioPlayShared.stop()
-                        navigator.replace(newBook.toReadRoute())
-                    }
-                    return@changeSource
-                }
-                // 1) migrateTo 迁移进度/分组 2) 书架书落库 3) 切源数据落地
-                scope.launch {
-                    runCatching {
-                        AudioPlayShared.book?.changeSourceTo(
-                            newBook,
-                            toc,
-                            AudioPlayShared.inBookshelf
-                        )
-                    }.onFailure {
-                        AppLog.put("换源失败\n$it", it, true)
-                    }
-                    AudioPlayShared.chapterList = toc
-                    AudioPlayShared.resetData(newBook, source)
-                    screenModel.dispatch(AudioPlayUiEvent.UpdateInShelf(!newBook.isNotShelf))
-                }
-            },
-            onEditSource = { origin ->
-                navigator.push(AppRoute.BookSourceEdit(origin), RouteResults.BOOK_SOURCE_EDIT)
-            },
-            onBookSourceManage = { navigator.push(AppRoute.BookSourceManage) },
-            onDismiss = { showChangeSourceDialog = false },
         )
     }
 }
