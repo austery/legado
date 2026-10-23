@@ -27,8 +27,9 @@ merged as `61562bc558d76d901a854f79136d28e9077a2781`. It records H1, bounded ada
 decisions, independent review, local validation, successful exact-head PR and
 merged-head C1, explicit merge approval and owner H2 acceptance on 2026-10-23.
 The slice is closed; physical-device, live-provider and distribution evidence remain
-outside it. No new deterministic check was added: the existing C1 gate was retained;
-no automation expansion is proposed by this reconciliation. Final north-star wording
+outside it. Focused regression tests were added for the integration; no new CI gate
+or recurring automation was introduced. The existing C1 gate was retained; no
+automation expansion is proposed by this reconciliation. Final north-star wording
 and acceptable recurring maintenance effort remain a separate owner decision.
 
 ## Historical observed starting point (2026-10-22)
