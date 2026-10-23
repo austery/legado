@@ -96,6 +96,14 @@ class ScopeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing heading'):
             plan(self.root, self.event(head), 'pull_request')
 
+    def test_removed_heading_breaks_unchanged_same_document_link(self) -> None:
+        self.write('README.md', '# Reader\n\n[Jump](#old)\n\n## Old\n')
+        self.base = self.commit()
+        self.write('README.md', '# Reader\n\n[Jump](#old)\n\n## New\n')
+        head = self.commit()
+        with self.assertRaisesRegex(ValueError, 'missing heading'):
+            plan(self.root, self.event(head), 'pull_request')
+
     def test_new_missing_link_or_heading_and_unclosed_fence_fail(self) -> None:
         for text, message in (('# Reader\n[bad](missing.md)\n', 'missing link'),
                               ('# Reader\n[bad](docs/architecture/guide.md#absent)\n', 'missing heading'),

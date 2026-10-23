@@ -133,7 +133,9 @@ def check_documents(root: Path, paths: Sequence[str], base: str) -> None:
             parsed = urlsplit(target)
             if parsed.scheme or parsed.netloc or target.startswith('/'):
                 continue
-            destination = ((root / path).parent / unquote(parsed.path)).resolve()
+            source = root / path
+            destination = ((source.parent / unquote(parsed.path)).resolve()
+                           if parsed.path else source.resolve())
             if destination.is_relative_to(root.resolve()) and destination.relative_to(root.resolve()).as_posix() in affected:
                 check_link(root, root / path, target)
 
