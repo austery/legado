@@ -740,6 +740,9 @@ final class ReaderUITests: XCTestCase {
         wait(app) { self.state(app).contains("chapter=1;") }
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { self.state(app).contains("layout=spread;") }
+        XCTAssertTrue(app.buttons["reader.contents"].isHittable)
+        XCTAssertTrue(app.frame.contains(app.buttons["reader.contents"].frame))
+        XCTAssertLessThanOrEqual(app.textViews["reader.text"].frame.maxY, app.buttons["reader.contents"].frame.minY + 1)
         capture("two-page-initial")
         let body = app.textViews["reader.text"]
         body.swipeLeft()

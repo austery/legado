@@ -180,7 +180,10 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
             addSubview(pages)
         }
         spreadView?.isHidden = !wantsSpreads
-        isScrollEnabled = !wantsSpreads
+        // Disabling UITextView scrolling changes its intrinsic height to the entire
+        // chapter under SwiftUI. Keep its viewport sizing and disable only its gesture.
+        panGestureRecognizer.isEnabled = !wantsSpreads
+        showsVerticalScrollIndicator = !wantsSpreads
         super.layoutSubviews()
         if wantsSpreads, let pages = spreadView {
             setContentOffset(.zero, animated: false)
