@@ -22,9 +22,12 @@ enum class RouteLaunchMode {
  */
 val AppRoute.launchMode: RouteLaunchMode
     get() = when (this) {
+        // Preserve nested audio source changes and their return targets.
+        is AppRoute.AudioPlay -> RouteLaunchMode.Standard
+
         // 原版 singleTask
         is AppRoute.Main, is AppRoute.Reader, is AppRoute.MangaReader, is AppRoute.BookInfoEdit,
-        is AppRoute.AudioPlay, is AppRoute.BookSourceEdit, is AppRoute.ReplaceEdit,
+        is AppRoute.BookSourceEdit, is AppRoute.ReplaceEdit,
         is AppRoute.About -> RouteLaunchMode.SingleTask
 
         // 原版 singleTop

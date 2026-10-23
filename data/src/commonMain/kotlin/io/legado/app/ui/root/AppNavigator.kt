@@ -191,6 +191,8 @@ class AppNavigator(
         result.removed.forEach { removedEntry ->
             targetedResults.remove(removedEntry.id)?.close()
             refreshHandlers.remove(removedEntry.id)
+            catalogHandlers.remove(removedEntry.id)
+            pendingResults.remove(removedEntry.id)
         }
         targetedResults.getOrPut(result.entryId) { Channel(Channel.UNLIMITED) }
         return result.entryId
