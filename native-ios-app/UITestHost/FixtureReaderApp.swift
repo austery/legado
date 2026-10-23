@@ -26,6 +26,7 @@ struct FixtureReaderApp: App {
     })
     @State private var searchFixtureBase: String?
     @State private var prepared = false
+    @State private var narrowReader = false
     @State private var failure: String?
     @State private var rejectingSave = false
     @State private var heldChapter = false
@@ -39,6 +40,7 @@ struct FixtureReaderApp: App {
             VStack(spacing: 0) {
                 if prepared {
                     ReaderScreen(model: model)
+                        .frame(maxWidth: narrowReader ? 850 : .infinity)
                     HStack {
                         Text("SYNTHETIC UI HOST").font(.caption2)
                         Text("Fixture position").accessibilityIdentifier("fixture.position").accessibilityValue(positionStatus)
@@ -68,6 +70,10 @@ struct FixtureReaderApp: App {
                             }.accessibilityIdentifier(scenario == "discovery-held" ? "fixture.invalidateDiscovery" : "fixture.invalidateSearch")
                         }
                         Spacer()
+                        if scenario == "two-page" {
+                            Button(narrowReader ? "Wide reader" : "Narrow reader") { narrowReader.toggle() }
+                                .accessibilityIdentifier("fixture.readerWidth")
+                        }
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
                             Task { @MainActor in
                                 guard let base = model.book?.sourceId,
@@ -97,6 +103,14 @@ struct FixtureReaderApp: App {
                 if let text {
                     let ranges = text.spreadView?.visibleRanges ?? []
                     positionStatus += ";layout=\(text.usesSpreads ? "spread" : "scroll");spread=\(text.spreadView?.spread ?? -1);visible=\(ranges.map { "\($0.location):\($0.length)" }.joined(separator: ","));"
+                    let rendered = text.spreadView?.subviews.compactMap { $0 as? UITextView }.filter {
+                        !$0.isHidden && $0.frame.intersects(text.spreadView!.bounds)
+                    }.map { page -> NSRange in
+                        let glyphs = page.layoutManager.glyphRange(forBoundingRect: page.bounds, in: page.textContainer)
+                        return page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+                    } ?? []
+                    positionStatus += "rendered=\(rendered.map { "\($0.location):\($0.length)" }.joined(separator: ","));"
+
                 }
                 if let progress = model.cacheProgress {
                     positionStatus += ";cached=\(progress.completed);cacheRunning=\(progress.running);"

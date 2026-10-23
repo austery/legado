@@ -201,6 +201,11 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
         scheduleDisplayed()
     }
 
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        if usesSpreads { return spreadView?.accessibilityScroll(direction) ?? false }
+        return super.accessibilityScroll(direction)
+    }
+
     private func acceptPageTurn(_ offset: Int) {
         guard readingIsActive, !restoring, !needsAnchorRestoration, bodyIsVisible,
               let normalized = paragraphStart(offset) else { return }

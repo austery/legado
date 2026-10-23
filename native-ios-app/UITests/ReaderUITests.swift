@@ -730,6 +730,7 @@ final class ReaderUITests: XCTestCase {
     @MainActor func testTwoPageTurnsReflowAndDurableRecovery() {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "two-page"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
@@ -738,6 +739,8 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.textViews["reader.text"].waitForExistence(timeout: 20))
         app.buttons["reader.next"].tap()
         wait(app) { self.state(app).contains("chapter=1;") }
+        let identity = readingIdentity(app)
+        XCTAssertEqual(identity.count, 3)
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { self.state(app).contains("layout=spread;") }
         XCTAssertTrue(app.buttons["reader.contents"].isHittable)
@@ -758,9 +761,19 @@ final class ReaderUITests: XCTestCase {
         app.buttons["typography.larger"].tap()
         app.buttons["Done"].tap()
         wait(app) { self.anchor(app) == position && self.state(app).contains("layout=spread;") }
+        assertRenderedAnchor(app, identity: identity, position: position)
         capture("two-page-larger-text")
+        app.buttons["fixture.readerWidth"].tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("layout=scroll;") }
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertLessThanOrEqual(body.frame.width, 850)
+        capture("two-page-narrow-viewport")
+        app.buttons["fixture.readerWidth"].tap()
+        wait(app) { self.state(app).contains("layout=spread;") }
+        assertRenderedAnchor(app, identity: identity, position: position)
         XCUIDevice.shared.orientation = .portrait
         wait(app) { self.anchor(app) == position && self.state(app).contains("layout=scroll;") }
+        XCTAssertEqual(readingIdentity(app), identity)
         capture("two-page-portrait-reflow")
         XCUIDevice.shared.orientation = .landscapeRight
         wait(app) { self.anchor(app) == position && self.state(app).contains("layout=spread;") }
@@ -769,6 +782,7 @@ final class ReaderUITests: XCTestCase {
             XCTAssertTrue(app.buttons[entry].waitForExistence(timeout: 10))
             app.buttons[entry].tap()
             wait(app) { self.anchor(app) == position && app.buttons["reader.contents"].exists }
+            assertRenderedAnchor(app, identity: identity, position: position)
         }
         app.buttons["fixture.saveFailure"].tap()
         app.buttons["reader.shelf"].tap()
@@ -787,7 +801,27 @@ final class ReaderUITests: XCTestCase {
         book.tap()
         wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") && self.state(app).contains("layout=spread;") }
         XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
+        assertRenderedAnchor(app, identity: identity, position: position)
         capture("two-page-relaunched")
+    }
+
+    @MainActor private func readingIdentity(_ app: XCUIApplication) -> [String] {
+        state(app).components(separatedBy: ";").filter {
+            $0.hasPrefix("source=") || $0.hasPrefix("book=") || $0.hasPrefix("id=")
+        }
+    }
+
+    @MainActor private func assertRenderedAnchor(_ app: XCUIApplication, identity: [String], position: Int,
+                                                file: StaticString = #filePath, line: UInt = #line) {
+        wait(app, file: file, line: line) {
+            guard let rendered = self.state(app).components(separatedBy: ";").first(where: { $0.hasPrefix("rendered=") }) else { return false }
+            return rendered.dropFirst("rendered=".count).split(separator: ",").contains { item in
+                let values = item.split(separator: ":").compactMap { Int($0) }
+                return values.count == 2 && NSLocationInRange(position, NSRange(location: values[0], length: values[1]))
+            }
+        }
+        XCTAssertEqual(readingIdentity(app), identity, file: file, line: line)
+        XCTAssertEqual(anchor(app), position, file: file, line: line)
     }
 
     @MainActor private func state(_ app: XCUIApplication) -> String {

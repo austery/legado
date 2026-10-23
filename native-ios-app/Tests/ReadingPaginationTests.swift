@@ -58,7 +58,7 @@ final class ReadingPaginationTests: XCTestCase {
         view.layoutIfNeeded()
         XCTAssertTrue(view.usesSpreads)
         let pages = view.spreadView!
-        XCTAssertTrue(pages.visibleRanges.contains { NSLocationInRange(6, $0) })
+        XCTAssertTrue(renderedSpreadRanges(in: view).contains { NSLocationInRange(6, $0) })
         let pagination = pages.pagination!
         for (index, container) in pagination.manager.textContainers.enumerated() {
             let glyphs = pagination.manager.glyphRange(for: container)
@@ -78,11 +78,49 @@ final class ReadingPaginationTests: XCTestCase {
                        onParagraphScroll: { _, offset in samples.append(offset) })
         view.layoutIfNeeded()
         XCTAssertEqual(view.anchor, 6)
-        XCTAssertTrue(pages.visibleRanges.contains { NSLocationInRange(6, $0) })
+        XCTAssertTrue(renderedSpreadRanges(in: view).contains { NSLocationInRange(6, $0) })
         window.frame = CGRect(x: 0, y: 0, width: 850, height: 760)
         view.setNeedsLayout(); view.layoutIfNeeded()
         XCTAssertFalse(view.usesSpreads)
         XCTAssertEqual(view.anchor, 6)
         XCTAssertTrue(samples.isEmpty, "No displayed acknowledgment means no durable progress sampling")
     }
+    func testAccessibleTurnsSaveOnlyDisplayedActiveToken() async throws {
+        let body = (0..<120).map { "Paragraph \($0) " + String(repeating: "中文 text ", count: 20) }.joined(separator: "\n")
+        let view = AnchoredTextView()
+        view.delegate = view
+        let host = UIViewController(); host.view = view
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1100, height: 760))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        var displayed: [String] = []
+        var samples: [String] = []
+        func configure(_ token: String, active: Bool) {
+            view.configure(chapterKey: token, body: body, style: ReadingStyle(),
+                           restoration: ReadingRestoration(identity: token, utf16Offset: 0),
+                           onDisplayed: { id, _ in displayed.append(id) },
+                           onParagraphScroll: { id, _ in samples.append(id) }, isReading: active)
+            view.layoutIfNeeded()
+        }
+        configure("A", active: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(displayed, ["A"])
+        XCTAssertTrue(view.accessibilityScroll(.left))
+        XCTAssertGreaterThan(view.anchor, 0)
+        XCTAssertEqual(samples, ["A"])
+        configure("A", active: false)
+        let anchor = view.anchor
+        _ = view.accessibilityScroll(.left)
+        XCTAssertEqual(view.anchor, anchor)
+        XCTAssertEqual(samples, ["A"])
+        configure("B", active: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(view.anchor, 0)
+        XCTAssertEqual(displayed, ["A", "B"])
+        XCTAssertFalse(view.accessibilityScroll(.right), "Chapter start must not advance or save")
+        XCTAssertEqual(samples, ["A"])
+        XCTAssertTrue(view.accessibilityScroll(.left))
+        XCTAssertEqual(samples, ["A", "B"])
+    }
+
 }

@@ -125,6 +125,25 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
     }
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { finishTurn() }
 
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        guard let pagination else { return false }
+        let delta: Int
+        switch direction {
+        case .left, .next: delta = 1
+        case .right, .previous: delta = -1
+        default: return false
+        }
+        let target = spread + delta
+        guard target >= 0, target < (pagination.ranges.count + 1) / 2 else { return false }
+        userPaging = true
+        setContentOffset(CGPoint(x: CGFloat(target) * bounds.width, y: 0), animated: false)
+        scrollViewDidScroll(self)
+        finishTurn()
+        UIAccessibility.post(notification: .pageScrolled,
+                             argument: "Page \(target * 2 + 1) of \(pagination.ranges.count)")
+        return true
+    }
+
     private func finishTurn() {
         guard userPaging, !reflowing else { return }
         userPaging = false

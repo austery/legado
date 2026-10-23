@@ -7,8 +7,8 @@ import SQLite3
 
 @MainActor
 final class ReadingJourneyTests: XCTestCase {
-    private func findText(_ view: UIView) -> UITextView? {
-        if let text = view as? UITextView { return text }
+    private func findText(_ view: UIView) -> AnchoredTextView? {
+        if let text = view as? AnchoredTextView { return text }
         return view.subviews.lazy.compactMap { self.findText($0) }.first
     }
 
@@ -67,8 +67,8 @@ final class ReadingJourneyTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         host.view.layoutIfNeeded()
         XCTAssertTrue(view.usesSpreads)
-        let pages = try XCTUnwrap(view.spreadView)
-        XCTAssertTrue(pages.visibleRanges.contains { NSIntersectionRange($0, paragraph).length > 0 },
+        XCTAssertNotNil(view.spreadView)
+        XCTAssertTrue(renderedSpreadRanges(in: view).contains { NSIntersectionRange($0, paragraph).length > 0 },
                       "Original paragraph must remain visible in the actual two-page layout")
         XCTAssertEqual(view.text, text)
         let attachment = XCTAttachment(image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) })
