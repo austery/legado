@@ -6,6 +6,8 @@ import io.legado.app.help.config.PreferenceProvider
 import io.legado.app.help.storage.FilesJsonStore
 import io.legado.app.utils.decodeAnyMapOrNull
 import io.legado.app.utils.encodeAnyMap
+import java.io.File
+import java.util.prefs.Preferences
 
 /**
  * [PreferenceProvider] 桌面端实现。
@@ -27,7 +29,26 @@ import io.legado.app.utils.encodeAnyMap
  * 变更通知: 进程内写入走 [PreferenceChangeNotifier] 同步自通知; 跨进程直写无监听
  * (桌面应用单实例运行, JSON 文件没有跨进程通知通道)。
  */
-class DesktopPreferenceProvider : PreferenceProvider {
+class DesktopPreferenceProvider internal constructor(
+    private val readConfig: () -> String?,
+    private val writeConfig: (String) -> Unit,
+    private val readLegacy: () -> Map<String, String>,
+) : PreferenceProvider {
+    constructor() : this(
+        readConfig = {
+            val file = File(FilesJsonStore.path(PREF_CONFIG_FILE_NAME))
+            if (file.exists()) file.readText() else null
+        },
+        writeConfig = { json ->
+            check(FilesJsonStore.writeText(PREF_CONFIG_FILE_NAME, json)) {
+                "Could not persist desktop preferences"
+            }
+        },
+        readLegacy = {
+            val prefs = Preferences.userNodeForPackage(PreferenceProvider::class.java)
+            prefs.keys().associateWith { prefs.get(it, "") }
+        },
+    )
 
     private val lock = Any()
 
@@ -53,7 +74,7 @@ class DesktopPreferenceProvider : PreferenceProvider {
         val value = valueOf(key)
         return when (value) {
             is Boolean -> value
-            is String -> when (value) {
+            is String -> when (value.lowercase()) {
                 "true" -> true
                 "false" -> false
                 else -> default
@@ -151,22 +172,26 @@ class DesktopPreferenceProvider : PreferenceProvider {
         }
     }
 
-    /** 键值文件不存在/读不出即空表启动 (首次运行本就无内容, 非异常状态)。 */
+    /** Migrate only an absent file; preserve legacy storage for recovery. */
     private fun loadValues(): MutableMap<String, Any?> {
-        val json = FilesJsonStore.readText(PREF_CONFIG_FILE_NAME) ?: return linkedMapOf()
-        val loaded = decodeAnyMapOrNull(json)
-        if (loaded == null) {
-            // 解析失败说明文件内容已损 (原子写不会留半截, 恶意改动除外): 记日志后按空表走,
-            // 下一次写入会以内存值整份覆盖回去
-            AppLog.put("配置文件解析失败, 按空配置启动: $PREF_CONFIG_FILE_NAME")
-            return linkedMapOf()
+        val json = readConfig()
+        if (json == null) {
+            // Legacy storage has no type metadata. Keep strings, including numeric-looking IDs.
+            val migrated = readLegacy().toMutableMap<String, Any?>()
+            // Persist even an empty migration, so removed keys cannot return on restart.
+            // Failure leaves legacy data intact and must not masquerade as a completed migration.
+            writeConfig(encodeAnyMap(migrated))
+            return migrated
+        }
+        val loaded = requireNotNull(decodeAnyMapOrNull(json)) {
+            "Invalid desktop preferences; preserve the file for recovery"
         }
         return loaded.filterValues { it != null }.toMutableMap()
     }
 
     /** 整份回写键值 JSON (调用方已持 [lock]; 失败由 FilesJsonStore 记日志, 此处不再抛)。 */
     private fun persistLocked() {
-        runCatching { FilesJsonStore.writeText(PREF_CONFIG_FILE_NAME, encodeAnyMap(cachedValues)) }
+        runCatching { writeConfig(encodeAnyMap(cachedValues)) }
             .onFailure {
                 AppLog.put("配置写入失败: $PREF_CONFIG_FILE_NAME\n${it.message}", it)
             }

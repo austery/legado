@@ -68,7 +68,8 @@ import kotlin.coroutines.cancellation.CancellationException
  *   app 端 [io.legado.app.help.AppWebDav]; 其 `exportWebDav(Uri)` 在此以路径版
  *   [exportWebDav] 下沉 (Uri → 本地路径)。
  * - **复用 [isNetworkAvailable]**: 与 app 端原版一致, 未配置 / 断网时静默 return
- *   (见 [backUpWebDav] / [uploadBookProgress] / [downloadAllBookProgress])。
+ *   (见 [uploadBookProgress] / [downloadAllBookProgress])。
+ * Backup uploads instead fail explicitly when unavailable, because they may be the only copy.
  *
  * # 命名后缀 Shared
  * 与 app 端 [io.legado.app.help.AppWebDav] 同包同名会与 app 模块类冲突
@@ -246,12 +247,21 @@ object AppWebDavShared {
      */
     @Throws(Exception::class)
     suspend fun backUpWebDav(fileName: String) {
-        // 未配置 / 断网静默 return (对照 app 端原版 AppWebDav.backUpWebDav)
-        if (!isNetworkAvailable()) return
-        authorization?.let { auth ->
-            val putUrl = "$rootWebDavUrl$fileName"
-            WebDav(putUrl, auth).upload(BackupShared.zipFilePath)
+        uploadBackupArchive(::isNetworkAvailable, { authorization }) { auth ->
+            WebDav("$rootWebDavUrl$fileName", auth).upload(BackupShared.zipFilePath)
         }
+    }
+
+    /** A normal return certifies an upload, never a skipped attempt. */
+    internal suspend fun uploadBackupArchive(
+        networkAvailable: () -> Boolean,
+        currentAuthorization: () -> Authorization?,
+        upload: suspend (Authorization) -> Unit,
+    ) {
+        if (!networkAvailable()) throw NoStackTraceException("Backup upload requires a network connection")
+        val auth = currentAuthorization()
+            ?: throw NoStackTraceException("Backup upload requires WebDAV authorization")
+        upload(auth)
     }
 
     /**
