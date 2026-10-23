@@ -3,7 +3,7 @@
 An independent SwiftUI/TextKit client of ReaderEngine, with bundle ID
 `io.legado.pathc.nativereader`. It does not share a sandbox with existing readers
 or the C1 harness. The app covers source import, incremental multi-source search,
-contents, scrolling text, chapter navigation, typography, an explicit bookshelf
+contents, adaptive scrolling/two-page text, chapter navigation, typography, an explicit bookshelf
 and durable reading positions with cached reopening. Explicit source switching
 prepares replacement text before confirmation and starts the chosen chapter at
 its beginning.
@@ -17,7 +17,7 @@ These are product defaults awaiting owner feedback, not recovered Wanyuan values
   12 (0–30), margins 28 (12–64). Maximum text column width is approximately 680 points.
 - Warm light background; optional dark appearance. Typography and appearance apply globally and persist in this app's preferences across launches. Invalid saved layout values fall back to safe defaults; book progress remains owned by ReaderEngine.
 - Explicit show/hide control button instead of guessed tap regions. Long-press text
-  selection follows UITextView behavior. No custom pagination engine.
+  selection follows UITextView behavior. Wide iPad landscape uses TextKit page containers.
 - Text layout keeps a paragraph-based UTF-16 anchor across typography and size
   changes. The reading coordinator saves accepted scroll positions through the
   native engine and finishes a reading session before navigation.
@@ -26,6 +26,30 @@ The existing IPA provides static menu, typography and navigation clues. It does
 not establish default values, active interaction wiring or physical iPad comfort.
 The approved scope and device acceptance are in local `SPEC-002`; its `docs/`
 directory is ignored by the inherited repository policy.
+
+## Two-page iPad reading (Issue #46)
+
+The owner approved [H1](https://github.com/austery/legado/issues/46) on 2026-10-23.
+At 900 points of available reader width, iPad landscape presents consecutive left
+and right pages. Swipe horizontally to advance one spread. Portrait, narrow windows
+and body heights below 160 points retain vertical single-column scrolling. A chapter
+ends in its own spread; the right page may be empty. Existing chapter controls remain.
+
+TextKit ranges refer to the original attributed chapter. Pagination is disposable
+in-memory presentation state; no dependency, engine contract or storage format is
+added. Rotation, window resizing, typography and controls reflow around the accepted
+paragraph without saving reflow as user progress. A completed user turn samples the
+left page's first paragraph using the existing reading token and save coordinator.
+A paragraph spanning multiple pages can reopen at its beginning. Page numbers and
+within-paragraph line positions are not persisted.
+
+Validation adds original-text coverage/Unicode/page geometry checks and a real
+simulator journey for bidirectional swipes, reflow, directory return, rejected saves
+and process relaunch. Existing product and interruption/offline lanes remain required
+where applicable. Screenshots and exact revision results belong to the task evidence;
+this description is not an assertion that validation or physical acceptance passed.
+The formal north star's 14-day iPad use and independent community sources remain
+separate owner acceptance. H2 and merge approval remain pending.
 
 ## Incremental search (SPEC-004)
 

@@ -66,9 +66,10 @@ final class ReadingJourneyTests: XCTestCase {
         window.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
         try await Task.sleep(nanoseconds: 200_000_000)
         host.view.layoutIfNeeded()
-        let visible = view.layoutManager.glyphRange(forBoundingRect: CGRect(x: 0, y: view.contentOffset.y, width: view.bounds.width, height: view.bounds.height), in: view.textContainer)
-        let characters = view.layoutManager.characterRange(forGlyphRange: visible, actualGlyphRange: nil)
-        XCTAssertTrue(NSIntersectionRange(characters, paragraph).length > 0, "Original paragraph must remain visible")
+        XCTAssertTrue(view.usesSpreads)
+        let pages = try XCTUnwrap(view.spreadView)
+        XCTAssertTrue(pages.visibleRanges.contains { NSIntersectionRange($0, paragraph).length > 0 },
+                      "Original paragraph must remain visible in the actual two-page layout")
         XCTAssertEqual(view.text, text)
         let attachment = XCTAttachment(image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) })
         attachment.name = "Long Chinese text after typography and landscape resize"

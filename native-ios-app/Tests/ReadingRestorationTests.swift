@@ -70,9 +70,13 @@ final class ReadingRestorationTests: XCTestCase {
         try await settle(host)
         XCTAssertEqual(displayed, [target])
         XCTAssertTrue(samples.isEmpty)
-        let position = try XCTUnwrap(view.position(from: view.beginningOfDocument, offset: target))
-        XCTAssertTrue(view.bounds.intersects(view.caretRect(for: position)))
-        // Drive the public scroll delegate lifecycle on the real laid-out UITextView.
+        let pages = try XCTUnwrap(view.spreadView)
+        XCTAssertTrue(view.usesSpreads)
+        XCTAssertTrue(pages.visibleRanges.contains { NSLocationInRange(target, $0) })
+        // Return to the narrow layout and drive the public scroll delegate lifecycle on the real laid-out UITextView.
+        window.frame = CGRect(x: 0, y: 0, width: 768, height: 1024)
+        try await settle(host)
+        XCTAssertFalse(view.usesSpreads)
         view.scrollViewWillBeginDragging(view)
         view.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
         view.scrollViewDidScroll(view)

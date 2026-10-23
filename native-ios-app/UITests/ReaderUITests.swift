@@ -727,6 +727,66 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
+    @MainActor func testTwoPageTurnsReflowAndDurableRecovery() {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 40))
+        book.tap()
+        XCTAssertTrue(app.textViews["reader.text"].waitForExistence(timeout: 20))
+        app.buttons["reader.next"].tap()
+        wait(app) { self.state(app).contains("chapter=1;") }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") }
+        capture("two-page-initial")
+        let body = app.textViews["reader.text"]
+        body.swipeLeft()
+        wait(app) { self.state(app).contains("spread=1;") && self.anchor(app) > 0 }
+        let position = anchor(app)
+        capture("two-page-after-turn")
+        body.swipeRight()
+        wait(app) { self.state(app).contains("spread=0;") && self.anchor(app) == 0 }
+        body.swipeLeft()
+        wait(app) { self.anchor(app) == position }
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5))
+        app.buttons["typography.larger"].tap()
+        app.buttons["Done"].tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("layout=spread;") }
+        capture("two-page-larger-text")
+        XCUIDevice.shared.orientation = .portrait
+        wait(app) { self.anchor(app) == position && self.state(app).contains("layout=scroll;") }
+        capture("two-page-portrait-reflow")
+        XCUIDevice.shared.orientation = .landscapeRight
+        wait(app) { self.anchor(app) == position && self.state(app).contains("layout=spread;") }
+        for entry in ["contents.continue", "contents.currentChapter"] {
+            app.buttons["reader.contents"].tap()
+            XCTAssertTrue(app.buttons[entry].waitForExistence(timeout: 10))
+            app.buttons[entry].tap()
+            wait(app) { self.anchor(app) == position && app.buttons["reader.contents"].exists }
+        }
+        app.buttons["fixture.saveFailure"].tap()
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(app.buttons["Retry save"].waitForExistence(timeout: 10))
+        XCTAssertEqual(anchor(app), position)
+        capture("two-page-save-rejected")
+        app.buttons["fixture.saveFailure"].tap()
+        app.buttons["Retry save"].tap()
+        wait(app) { !app.buttons["Retry save"].exists }
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(book.waitForExistence(timeout: 10))
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 30))
+        book.tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") && self.state(app).contains("layout=spread;") }
+        XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
+        capture("two-page-relaunched")
+    }
+
     @MainActor private func state(_ app: XCUIApplication) -> String {
         app.staticTexts["fixture.position"].value as? String ?? ""
     }
