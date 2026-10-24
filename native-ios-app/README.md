@@ -440,3 +440,12 @@ save rejection, cancellation and network retry. Earlier assertions that controls
 below the text are replaced by the intentional overlay contract, with independent
 rendered-geometry comparisons added. No engine contract, stored format or dependency
 changes. Physical comfort and owner H2 are separate from these automated checks.
+
+Spread selection uses disposable single-container page views because UIKit disables
+selection on the previous shared multi-container views. The original TextKit
+pagination still defines every original chapter range; each attached page holds
+only its attributed substring and original offset. At most the current spread and
+its neighbors are retained. Page copies never enter the engine or saved progress.
+Actual-page coverage tests check complete rendered ranges and original attributed
+text at supported sizes, including long mixed-script/Unicode paragraphs. UI checks
+long-press selection on both visible pages as well as portrait and narrow layouts.

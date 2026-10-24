@@ -849,16 +849,17 @@ final class ReaderUITests: XCTestCase {
             XCTAssertFalse(app.buttons["reader.contents"].exists, "A drag must not show controls")
             app.buttons["reader.controls"].tap()
             XCTAssertTrue(app.buttons["reader.contents"].isHittable)
-            // Exercise page text itself, not the gutter between spread pages.
-            let target = selectionPoint(app)
-            print("SELECTION TARGET \(mode): \(state(app))")
-            body.coordinate(withNormalizedOffset: target).press(forDuration: 1.2)
-            wait(app) { self.selectionLength(app) > 0 }
-            XCTAssertTrue(app.buttons["reader.contents"].exists)
-            capture("controls-\(mode)-native-selection")
-            body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.60)).tap()
-            wait(app) { self.selectionLength(app) == 0 }
-            XCTAssertTrue(app.buttons["reader.contents"].exists, "Dismissing selection must not hide controls")
+            // Exercise actual lettering on both spread pages, not whitespace or the gutter.
+            for prefix in mode == "spread" ? ["selection", "selectionRight"] : ["selection"] {
+                let target = selectionPoint(app, prefix: prefix)
+                body.coordinate(withNormalizedOffset: target).press(forDuration: 1.2)
+                wait(app) { self.selectionLength(app) > 0 }
+                XCTAssertTrue(app.buttons["reader.contents"].exists)
+                capture("controls-\(mode)-\(prefix)-native-selection")
+                body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.60)).tap()
+                wait(app) { self.selectionLength(app) == 0 }
+                XCTAssertTrue(app.buttons["reader.contents"].exists, "Dismissing selection must not hide controls")
+            }
         }
         app.terminate()
     }
@@ -932,12 +933,12 @@ final class ReaderUITests: XCTestCase {
         return app
     }
 
-    @MainActor private func selectionPoint(_ app: XCUIApplication) -> CGVector {
+    @MainActor private func selectionPoint(_ app: XCUIApplication, prefix: String = "selection") -> CGVector {
         func number(_ key: String) -> Double {
             let part = state(app).components(separatedBy: ";").first { $0.hasPrefix(key + "=") }
             return part.flatMap { Double($0.dropFirst(key.count + 1)) } ?? -1
         }
-        let x = number("selectionX"), y = number("selectionY")
+        let x = number(prefix + "X"), y = number(prefix + "Y")
         XCTAssertTrue((0...1).contains(x) && (0...1).contains(y), "Actual glyph must be in the viewport")
         return CGVector(dx: x, dy: y)
     }

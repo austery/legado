@@ -9,6 +9,7 @@ func renderedSpreadRanges(in view: AnchoredTextView) -> [NSRange] {
         !$0.isHidden && $0.frame.intersects(spreads.bounds)
     }.map { page in
         let glyphs = page.layoutManager.glyphRange(forBoundingRect: page.bounds, in: page.textContainer)
-        return page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        let local = page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        return NSRange(location: local.location + ((page as? ReadingPageTextView)?.originalRange.location ?? 0), length: local.length)
     }
 }

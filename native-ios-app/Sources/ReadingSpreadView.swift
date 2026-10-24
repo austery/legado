@@ -32,7 +32,7 @@ final class ReadingPagination {
     }
 }
 
-/// Horizontal spread paging shares one TextKit storage across finite page containers.
+/// Original-text pagination is independent of selectable, disposable page views.
 /// Only the visible spread and its neighbors own text views; chapter layout is in memory.
 @MainActor
 final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
@@ -96,7 +96,9 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
             let view: UITextView
             if let existing = pages[index] { view = existing }
             else {
-                view = UITextView(frame: .zero, textContainer: pagination.manager.textContainers[index])
+                let range = pagination.ranges[index]
+                view = ReadingPageTextView(originalRange: range,
+                                           text: pagination.storage.attributedSubstring(from: range))
                 view.isEditable = false
                 view.isSelectable = true
                 view.isScrollEnabled = false
@@ -108,6 +110,7 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
                 pages[index] = view
                 addSubview(view)
             }
+            view.textContainer.size = pageSize
             view.frame = CGRect(x: CGFloat(index / 2) * bounds.width + margin + CGFloat(index % 2) * (pageSize.width + 40),
                                 y: 24, width: pageSize.width, height: pageSize.height)
             view.accessibilityElementsHidden = index / 2 != spread
@@ -149,4 +152,19 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
         userPaging = false
         onTurn?(firstVisibleOffset)
     }
+}
+
+/// A single-container view retains UIKit selection; multi-container views disable it.
+/// This disposable page copy never becomes an engine body or a saved position.
+final class ReadingPageTextView: UITextView {
+    let originalRange: NSRange
+
+    init(originalRange: NSRange, text: NSAttributedString) {
+        self.originalRange = originalRange
+        super.init(frame: .zero, textContainer: nil)
+        attributedText = text
+        textContainer.lineFragmentPadding = 0
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

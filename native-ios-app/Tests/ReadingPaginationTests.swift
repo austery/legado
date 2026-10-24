@@ -31,6 +31,31 @@ final class ReadingPaginationTests: XCTestCase {
         }
     }
 
+    func testSelectablePageViewsRenderCompleteOriginalRanges() {
+        let body = "Start\n" + String(repeating: "中文 😀 e\u{301} 👩‍👩‍👧‍👦 mixed text العربية עברית ", count: 100) + "\r\nEnd\n"
+        for size: CGFloat in [16, 22, 36] {
+            let source = attributed(body, size: size)
+            let spreads = ReadingSpreadView(frame: CGRect(x: 0, y: 0, width: 1100, height: 760))
+            spreads.reflow(text: source, margin: 28, anchor: 0, paper: .white)
+            let ranges = spreads.pagination!.ranges
+            XCTAssertGreaterThan(ranges.count, 2)
+            for index in stride(from: 0, to: ranges.count, by: 2) {
+                spreads.restore(anchor: ranges[index].location)
+                for page in spreads.subviews.compactMap({ $0 as? ReadingPageTextView }) where page.frame.intersects(spreads.bounds) {
+                    page.layoutIfNeeded()
+                    page.layoutManager.ensureLayout(for: page.textContainer)
+                    XCTAssertTrue(page.isSelectable, "Each visible page must support native selection")
+                    XCTAssertEqual(page.attributedText, source.attributedSubstring(from: page.originalRange))
+                    let glyphs = page.layoutManager.glyphRange(forBoundingRect: page.bounds, in: page.textContainer)
+                    let local = page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+                    XCTAssertEqual(local, NSRange(location: 0, length: page.originalRange.length),
+                                   "The real page must display every original character, including its end")
+                    XCTAssertLessThanOrEqual(page.layoutManager.usedRect(for: page.textContainer).maxY, page.bounds.height + 0.5)
+                }
+            }
+        }
+    }
+
     func testEmptyAndSinglePageDoNotInventRightPageContent() {
         for body in ["", "Short chapter 😀\n"] {
             let layout = ReadingPagination(text: attributed(body), pageSize: CGSize(width: 400, height: 500))
@@ -63,7 +88,7 @@ final class ReadingPaginationTests: XCTestCase {
         for (index, container) in pagination.manager.textContainers.enumerated() {
             let glyphs = pagination.manager.glyphRange(for: container)
             XCTAssertEqual(pagination.manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil),
-                           pagination.ranges[index], "Attaching actual text views must preserve pagination")
+                           pagination.ranges[index], "Page views must not mutate the original pagination")
         }
         pages.scrollViewWillBeginDragging(pages)
         pages.setContentOffset(CGPoint(x: pages.bounds.width, y: 0), animated: false)
