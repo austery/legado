@@ -862,7 +862,23 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testHiddenControlsKeepFailureAndCancelActionsAvailable() {
-        let app = launchControlsReader()
+        let app = launchControlsReader(openSecondChapter: false)
+        let firstIdentity = readingIdentity(app)
+        app.buttons["fixture.hold"].tap()
+        app.buttons["reader.next"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 10))
+        app.buttons["reader.controls"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].isHittable)
+        capture("controls-hidden-loading")
+        app.buttons["Cancel"].tap()
+        app.buttons["fixture.hold"].tap()
+        wait(app) { !app.buttons["Cancel"].exists }
+        XCTAssertEqual(readingIdentity(app), firstIdentity)
+        XCTAssertEqual(anchor(app), 0)
+        XCTAssertFalse(app.buttons["reader.contents"].exists)
+        app.buttons["reader.controls"].tap()
+        app.buttons["reader.next"].tap()
+        wait(app) { self.state(app).contains("chapter=1;") }
         let body = app.textViews["reader.text"]
         let identity = readingIdentity(app)
         body.swipeUp()
@@ -885,19 +901,6 @@ final class ReaderUITests: XCTestCase {
         wait(app) { !app.buttons["Retry save"].exists }
         XCTAssertFalse(app.buttons["reader.contents"].exists)
         app.buttons["reader.controls"].tap()
-        app.buttons["fixture.hold"].tap()
-        app.buttons["reader.previous"].tap()
-        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 10))
-        app.buttons["reader.controls"].tap()
-        XCTAssertTrue(app.buttons["Cancel"].isHittable)
-        capture("controls-hidden-loading")
-        app.buttons["Cancel"].tap()
-        app.buttons["fixture.hold"].tap()
-        wait(app) { !app.buttons["Cancel"].exists }
-        XCTAssertEqual(readingIdentity(app), identity)
-        XCTAssertEqual(anchor(app), position)
-        XCTAssertFalse(app.buttons["reader.contents"].exists)
-        app.buttons["reader.controls"].tap()
         app.buttons["reader.next"].tap()
         XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 15))
         app.buttons["reader.controls"].tap()
@@ -910,7 +913,7 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor private func launchControlsReader() -> XCUIApplication {
+    @MainActor private func launchControlsReader(openSecondChapter: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
         app.launchEnvironment["READER_UI_SCENARIO"] = "two-page"
@@ -919,8 +922,10 @@ final class ReaderUITests: XCTestCase {
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.next"].waitForExistence(timeout: 20))
-        app.buttons["reader.next"].tap()
-        wait(app) { self.state(app).contains("chapter=1;") }
+        if openSecondChapter {
+            app.buttons["reader.next"].tap()
+            wait(app) { self.state(app).contains("chapter=1;") }
+        }
         XCTAssertTrue(app.buttons["reader.contents"].isHittable)
         return app
     }

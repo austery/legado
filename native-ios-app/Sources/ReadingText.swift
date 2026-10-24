@@ -69,6 +69,13 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         return selectedRange.length == 0
     }
 
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Spread pages own native selection recognizers. Observe a completed tap
+        // without preventing selection; the pan failure requirements still apply.
+        gestureRecognizer === controlsTap || otherGestureRecognizer === controlsTap
+    }
+
     /// Matches NativeBodyCoordinates without normalizing or replacing the original body.
     private func paragraphStart(_ offset: Int) -> Int? {
         let body = text as NSString
