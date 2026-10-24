@@ -51,7 +51,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     }
 
     @objc private func toggleControls() {
-        guard readingIsActive else { return }
+        guard readingIsActive, !hasVisibleSelection else { return }
         onToggleControls?()
     }
 
@@ -61,12 +61,16 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         let center = bounds.insetBy(dx: bounds.width * 0.25, dy: bounds.height * 0.20)
         guard center.contains(touch.location(in: self)) else { return false }
         // Let a tap dismiss an existing native selection without also hiding controls.
+        return !hasVisibleSelection
+    }
+
+    private var hasVisibleSelection: Bool {
         if let spreads = spreadView, usesSpreads {
-            return !spreads.subviews.compactMap { $0 as? UITextView }.contains {
+            return spreads.subviews.compactMap { $0 as? UITextView }.contains {
                 $0.frame.intersects(spreads.bounds) && $0.selectedRange.length > 0
             }
         }
-        return selectedRange.length == 0
+        return selectedRange.length > 0
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
