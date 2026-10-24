@@ -118,6 +118,22 @@ struct FixtureReaderApp: App {
                         ? text.spreadView?.subviews.compactMap { $0 as? UITextView }.reduce(0) { $0 + $1.selectedRange.length } ?? 0
                         : text.selectedRange.length
                     positionStatus += "viewport=\(viewport);offset=\(text.contentOffset);scrollRendered=\(scrollRange);selected=\(selected);"
+                    let selectionView = text.usesSpreads
+                        ? text.spreadView?.subviews.compactMap { $0 as? UITextView }.filter {
+                            $0.frame.intersects(text.spreadView!.bounds)
+                        }.sorted { $0.frame.minX < $1.frame.minX }.first
+                        : text
+                    if let page = selectionView, page.layoutManager.numberOfGlyphs > 0 {
+                        let point = CGPoint(x: page.bounds.minX + page.bounds.width * 0.7 - page.textContainerInset.left,
+                                            y: page.bounds.midY - page.textContainerInset.top)
+                        let glyph = page.layoutManager.glyphIndex(for: point, in: page.textContainer)
+                        let rect = page.layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1),
+                                                                   in: page.textContainer)
+                            .offsetBy(dx: page.textContainerInset.left, dy: page.textContainerInset.top)
+                        let target = page.convert(CGPoint(x: rect.midX, y: rect.midY), to: text)
+                        positionStatus += "selectionX=\((target.x - text.bounds.minX) / text.bounds.width);selectionY=\((target.y - text.bounds.minY) / text.bounds.height);rootSelected=\(text.selectedRange.length);"
+                    }
+
 
 
                 }

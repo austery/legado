@@ -850,7 +850,9 @@ final class ReaderUITests: XCTestCase {
             app.buttons["reader.controls"].tap()
             XCTAssertTrue(app.buttons["reader.contents"].isHittable)
             // Exercise page text itself, not the gutter between spread pages.
-            body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.45)).press(forDuration: 1.2)
+            let target = selectionPoint(app)
+            print("SELECTION TARGET \(mode): \(state(app))")
+            body.coordinate(withNormalizedOffset: target).press(forDuration: 1.2)
             wait(app) { self.selectionLength(app) > 0 }
             XCTAssertTrue(app.buttons["reader.contents"].exists)
             capture("controls-\(mode)-native-selection")
@@ -928,6 +930,16 @@ final class ReaderUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["reader.contents"].isHittable)
         return app
+    }
+
+    @MainActor private func selectionPoint(_ app: XCUIApplication) -> CGVector {
+        func number(_ key: String) -> Double {
+            let part = state(app).components(separatedBy: ";").first { $0.hasPrefix(key + "=") }
+            return part.flatMap { Double($0.dropFirst(key.count + 1)) } ?? -1
+        }
+        let x = number("selectionX"), y = number("selectionY")
+        XCTAssertTrue((0...1).contains(x) && (0...1).contains(y), "Actual glyph must be in the viewport")
+        return CGVector(dx: x, dy: y)
     }
 
     @MainActor private func selectionLength(_ app: XCUIApplication) -> Int {
