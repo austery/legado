@@ -39,6 +39,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     var onToggleControls: (() -> Void)?
     private var controlsTouchStarted: TimeInterval = 0
     private var controlsTouchHadSelection = false
+    private weak var controlsTouchPage: UITextView?
 
     private lazy var controlsTap: UITapGestureRecognizer = {
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
@@ -59,8 +60,9 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
               ProcessInfo.processInfo.systemUptime - controlsTouchStarted < 0.5 else { return }
         if controlsTouchHadSelection {
             // Separate page views do not dismiss another page's selection themselves.
-            // Coordinate only a recognized short tap, never a drag or held selection.
-            for page in visibleTextViews where page.selectedRange.length > 0 {
+            // Coordinate only a short tap on another page. Same-page selection/menu
+            // interactions, drags and held selections remain entirely native.
+            for page in visibleTextViews where page !== controlsTouchPage && page.selectedRange.length > 0 {
                 page.selectedTextRange = nil
                 page.resignFirstResponder()
             }
@@ -78,6 +80,9 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         guard center.contains(touch.location(in: self)) else { return false }
         // Remember before UIKit may dismiss the selection on touch-up.
         controlsTouchHadSelection = hasVisibleSelection
+        controlsTouchPage = visibleTextViews.first { page in
+            touch.view?.isDescendant(of: page) == true
+        }
         return true
     }
 
