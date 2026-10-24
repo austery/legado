@@ -34,7 +34,9 @@ final class ReadingPaginationTests: XCTestCase {
     func testSelectablePageViewsRenderCompleteOriginalRanges() {
         let body = "Start\n" + String(repeating: "中文 😀 e\u{301} 👩‍👩‍👧‍👦 mixed text العربية עברית ", count: 100) + "\r\nEnd\n"
         for size: CGFloat in [16, 22, 36] {
-            let source = attributed(body, size: size)
+            // Match UITextView's input normalization, including mixed-script fallback fonts.
+            let source = NSTextStorage(attributedString: attributed(body, size: size))
+            source.fixAttributes(in: NSRange(location: 0, length: source.length))
             let spreads = ReadingSpreadView(frame: CGRect(x: 0, y: 0, width: 1100, height: 760))
             spreads.reflow(text: source, margin: 28, anchor: 0, paper: .white)
             let ranges = spreads.pagination!.ranges
@@ -45,6 +47,7 @@ final class ReadingPaginationTests: XCTestCase {
                     page.layoutIfNeeded()
                     page.layoutManager.ensureLayout(for: page.textContainer)
                     XCTAssertTrue(page.isSelectable, "Each visible page must support native selection")
+                    XCTAssertEqual(page.text, (body as NSString).substring(with: page.originalRange))
                     XCTAssertEqual(page.attributedText, source.attributedSubstring(from: page.originalRange))
                     let glyphs = page.layoutManager.glyphRange(forBoundingRect: page.bounds, in: page.textContainer)
                     let local = page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
