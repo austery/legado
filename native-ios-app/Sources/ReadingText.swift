@@ -37,6 +37,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     private var onParagraphScroll: ((String, Int) -> Void)?
 
     var onToggleControls: (() -> Void)?
+    private var controlsTouchStarted: TimeInterval = 0
 
     private lazy var controlsTap: UITapGestureRecognizer = {
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
@@ -51,13 +52,17 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     }
 
     @objc private func toggleControls() {
-        guard readingIsActive, !hasVisibleSelection else { return }
+        // Simultaneous native selection can finish on the same touch-up. A held
+        // touch belongs to selection even if its selected range is delivered later.
+        guard readingIsActive, !hasVisibleSelection,
+              ProcessInfo.processInfo.systemUptime - controlsTouchStarted < 0.5 else { return }
         onToggleControls?()
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard gestureRecognizer === controlsTap else { return true }
         guard readingIsActive else { return false }
+        controlsTouchStarted = touch.timestamp
         let center = bounds.insetBy(dx: bounds.width * 0.25, dy: bounds.height * 0.20)
         guard center.contains(touch.location(in: self)) else { return false }
         // Let a tap dismiss an existing native selection without also hiding controls.
