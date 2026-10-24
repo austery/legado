@@ -421,3 +421,21 @@ normalizes dangerous API enablement to false, matching upstream export policy. R
 cookie stores, books, cached chapters and progress are separate and are not exported.
 Disabled sources retain cached reading and shelf/progress data but do not enter new searches.
 Rule editing, source login/browser verification and discovery browsing remain later work.
+
+## Reading controls (Issue 48)
+
+Reading starts with controls visible. The heading, shelf action and bottom controls
+are overlays; hiding them leaves the text viewport and pagination unchanged. The
+explicit Show/Hide controls button stays at the top right. A central-body tap toggles
+controls; edge taps do not turn pages. Previous/Next chapter labels distinguish chapter
+navigation from horizontal page turns. Returning from another route shows controls.
+Loading/cancel, error/retry and save-rejection actions remain outside these overlays
+and visible even when ordinary controls are hidden. Such notices may resize the
+viewport and retain the established paragraph-recovery behavior.
+
+The two focused UI journeys check actual taps, drags and native selection, stable
+viewport/offset/rendered glyph ranges in portrait/spread/narrow modes, and hidden-control
+save rejection, cancellation and network retry. Earlier assertions that controls sit
+below the text are replaced by the intentional overlay contract, with independent
+rendered-geometry comparisons added. No engine contract, stored format or dependency
+changes. Physical comfort and owner H2 are separate from these automated checks.

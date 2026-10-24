@@ -65,19 +65,9 @@ struct ReaderScreen: View {
                             .disabled(model.committingSwitch).accessibilityIdentifier("switch.cancel")
                     }.padding()
                 }
-                if model.route == .reading, let content = model.content {
-                    VStack(spacing: 6) {
-                        Text(model.book?.title ?? "")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Text(content.chapter.title)
-                            .font(.title3.weight(.medium)).lineLimit(2)
-                    }
-                    .frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.vertical, 16)
-                    .accessibilityElement(children: .combine)
-                }
                 ZStack {
                     if let content = model.content {
-                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading)
+                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() })
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)
@@ -90,7 +80,12 @@ struct ReaderScreen: View {
                     if model.route == .contents { contents }
                     if model.route == .sourceSwitch { sourceSwitch }
                 }
-                if model.route == .reading { readingControls }
+                .overlay(alignment: .top) {
+                    if model.route == .reading { readingHeader }
+                }
+                .overlay(alignment: .bottom) {
+                    if model.route == .reading && menu { readingControls }
+                }
                 if model.switchingFrom == nil && (model.route == .shelf || model.route == .search || model.route == .sources || model.route == .discovery) { libraryNavigation }
 
             }
@@ -98,8 +93,9 @@ struct ReaderScreen: View {
             .tint(style.dark ? Color(red: 0.82, green: 0.73, blue: 0.58) : Color(red: 0.43, green: 0.32, blue: 0.20))
             .navigationTitle(model.route == .reading ? "" : title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(model.route == .reading ? .hidden : .visible, for: .navigationBar)
             .toolbar {
-                if model.route != .shelf && model.switchingFrom == nil {
+                if model.route != .shelf && model.route != .reading && model.switchingFrom == nil {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button { model.showShelf() } label: { Label("Shelf", systemImage: "chevron.left") }
                             .accessibilityIdentifier("reader.shelf")
@@ -110,13 +106,6 @@ struct ReaderScreen: View {
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button { model.navigate(model.detailReturnRoute) } label: { Label(model.detailReturnRoute == .discovery ? "Discovery results" : "Search results", systemImage: model.detailReturnRoute == .discovery ? "safari" : "magnifyingglass") }
                             .accessibilityIdentifier("navigation.searchResults").disabled(model.busy)
-                    }
-                }
-                if model.route == .reading {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button { menu.toggle() } label: {
-                            Label(menu ? "Hide controls" : "Show controls", systemImage: menu ? "ellipsis.circle.fill" : "ellipsis.circle")
-                        }.accessibilityIdentifier("reader.controls")
                     }
                 }
             }
@@ -147,6 +136,9 @@ struct ReaderScreen: View {
             .onChange(of: scenePhase) { phase in
                 model.setForegroundActive(phase == .active)
                 if phase != .active { model.flushReadingPosition() }
+            }
+            .onChange(of: model.route) { route in
+                if route == .reading { menu = true }
             }
             .onChange(of: model.book?.id) { _ in catalogQuery = "" }
             .onChange(of: model.book?.sourceId) { _ in catalogQuery = "" }
@@ -443,6 +435,36 @@ struct ReaderScreen: View {
         style.dark ? Color(white: 0.08) : Color(red: 0.98, green: 0.97, blue: 0.94)
     }
 
+    private var readingHeader: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Button { model.showShelf() } label: {
+                Label("Shelf", systemImage: "chevron.left")
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            }
+            .accessibilityIdentifier("reader.shelf")
+            .disabled(model.busy)
+            .opacity(menu ? 1 : 0).allowsHitTesting(menu).accessibilityHidden(!menu)
+            Spacer(minLength: 0)
+            if menu {
+                VStack(spacing: 4) {
+                    Text(model.book?.title ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(model.content?.chapter.title ?? "").font(.headline).lineLimit(2)
+                }
+                .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+            }
+            Spacer(minLength: 0)
+            Button { menu.toggle() } label: {
+                Label(menu ? "Hide controls" : "Show controls", systemImage: menu ? "ellipsis.circle.fill" : "ellipsis.circle")
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                    .background(paper.opacity(0.95), in: Circle())
+            }
+            .accessibilityIdentifier("reader.controls")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 4)
+        .background { if menu { paper.opacity(0.97) } }
+    }
+
     private var readingControls: some View {
         VStack(spacing: 12) {
             if menu {
@@ -451,7 +473,7 @@ struct ReaderScreen: View {
                         .disabled(model.busy).accessibilityIdentifier("reader.changeSource")
                 }
                 HStack {
-                    chapterButton("Previous", icon: "chevron.left", delta: -1)
+                    chapterButton("Previous chapter", icon: "chevron.left", delta: -1)
                     Spacer(minLength: 12)
                     Button { model.navigate(.contents) } label: {
                         Label("Contents", systemImage: "list.bullet").frame(minHeight: 44).contentShape(Rectangle())
@@ -464,7 +486,7 @@ struct ReaderScreen: View {
                             .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     }.accessibilityIdentifier("reader.typography")
                     Spacer(minLength: 12)
-                    chapterButton("Next", icon: "chevron.right", delta: 1)
+                    chapterButton("Next chapter", icon: "chevron.right", delta: 1)
                 }
                 .font(.callout).padding(.horizontal, 24)
             }

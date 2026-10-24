@@ -16,7 +16,7 @@ struct ReadingRestoration: Equatable {
     let utf16Offset: Int
 }
 
-final class AnchoredTextView: UITextView, UITextViewDelegate {
+final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
     var anchor = 0
     private var readingIsActive = true
     var restoring = false
@@ -35,6 +35,37 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
     private var userScrolling = false
     private var onDisplayed: ((String, Int) -> Void)?
     private var onParagraphScroll: ((String, Int) -> Void)?
+
+    var onToggleControls: (() -> Void)?
+
+    private lazy var controlsTap: UITapGestureRecognizer = {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        return tap
+    }()
+
+    func enableControlsTap() {
+        addGestureRecognizer(controlsTap)
+        controlsTap.require(toFail: panGestureRecognizer)
+    }
+
+    @objc private func toggleControls() {
+        guard readingIsActive else { return }
+        onToggleControls?()
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === controlsTap, readingIsActive else { return false }
+        let center = bounds.insetBy(dx: bounds.width * 0.25, dy: bounds.height * 0.20)
+        guard center.contains(touch.location(in: self)) else { return false }
+        // Let a tap dismiss an existing native selection without also hiding controls.
+        if selectedRange.length > 0 { return false }
+        if let spreads = spreadView, usesSpreads {
+            return !spreads.subviews.compactMap { $0 as? UITextView }.contains { $0.selectedRange.length > 0 }
+        }
+        return true
+    }
 
     /// Matches NativeBodyCoordinates without normalizing or replacing the original body.
     private func paragraphStart(_ offset: Int) -> Int? {
@@ -176,6 +207,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
         if wantsSpreads, spreadView == nil {
             let pages = ReadingSpreadView()
             pages.onTurn = { [weak self] offset in self?.acceptPageTurn(offset) }
+            controlsTap.require(toFail: pages.panGestureRecognizer)
             spreadView = pages
             addSubview(pages)
         }
@@ -255,10 +287,12 @@ struct ReadingText: UIViewRepresentable {
     var onDisplayed: ((String, Int) -> Void)? = nil
     var onParagraphScroll: ((String, Int) -> Void)? = nil
     var isReading = true
+    var onToggleControls: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
         view.delegate = view
+        view.enableControlsTap()
         view.isEditable = false
         view.isSelectable = true
         // Keep fast drags inside the chapter instead of exposing an empty overscroll viewport.
@@ -268,6 +302,7 @@ struct ReadingText: UIViewRepresentable {
     }
 
     func updateUIView(_ view: AnchoredTextView, context: Context) {
+        view.onToggleControls = onToggleControls
         view.configure(chapterKey: chapterKey, body: text, style: style, restoration: restoration,
                        onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll, isReading: isReading)
     }

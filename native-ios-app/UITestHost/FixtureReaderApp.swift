@@ -110,6 +110,15 @@ struct FixtureReaderApp: App {
                         return page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
                     } ?? []
                     positionStatus += "rendered=\(rendered.map { "\($0.location):\($0.length)" }.joined(separator: ","));"
+                    let viewport = text.convert(text.bounds, to: nil)
+                    let visibleRect = text.bounds.offsetBy(dx: -text.textContainerInset.left, dy: -text.textContainerInset.top)
+                    let scrollGlyphs = text.layoutManager.glyphRange(forBoundingRect: visibleRect, in: text.textContainer)
+                    let scrollRange = text.layoutManager.characterRange(forGlyphRange: scrollGlyphs, actualGlyphRange: nil)
+                    let selected = text.usesSpreads
+                        ? text.spreadView?.subviews.compactMap { $0 as? UITextView }.reduce(0) { $0 + $1.selectedRange.length } ?? 0
+                        : text.selectedRange.length
+                    positionStatus += "viewport=\(viewport);offset=\(text.contentOffset);scrollRendered=\(scrollRange);selected=\(selected);"
+
 
                 }
                 if let progress = model.cacheProgress {

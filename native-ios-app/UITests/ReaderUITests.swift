@@ -479,7 +479,7 @@ final class ReaderUITests: XCTestCase {
             XCTAssertTrue(app.buttons[id].isHittable, "Landscape control must be hittable: \(id)")
             XCTAssertTrue(app.frame.contains(app.buttons[id].frame), "Landscape control must be inside window: \(id)")
         }
-        XCTAssertLessThanOrEqual(body.frame.maxY, app.buttons["reader.contents"].frame.minY + 1)
+        XCTAssertTrue(body.frame.intersects(app.buttons["reader.contents"].frame), "Controls overlay the stable reading viewport")
         app.buttons["reader.controls"].tap()
         XCTAssertFalse(app.buttons["reader.contents"].exists)
         wait(app) { self.anchor(app) == position }
@@ -745,7 +745,7 @@ final class ReaderUITests: XCTestCase {
         wait(app) { self.state(app).contains("layout=spread;") }
         XCTAssertTrue(app.buttons["reader.contents"].isHittable)
         XCTAssertTrue(app.frame.contains(app.buttons["reader.contents"].frame))
-        XCTAssertLessThanOrEqual(app.textViews["reader.text"].frame.maxY, app.buttons["reader.contents"].frame.minY + 1)
+        XCTAssertTrue(app.textViews["reader.text"].frame.intersects(app.buttons["reader.contents"].frame), "Controls overlay the stable reading viewport")
         capture("two-page-initial")
         let body = app.textViews["reader.text"]
         body.swipeLeft()
@@ -807,6 +807,134 @@ final class ReaderUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
         assertRenderedAnchor(app, identity: identity, position: position)
         capture("two-page-relaunched")
+    }
+
+    @MainActor func testReadingControlsTapKeepsViewportAndSelection() {
+        let app = launchControlsReader()
+        let body = app.textViews["reader.text"]
+        let identity = readingIdentity(app)
+        for mode in ["portrait", "spread", "narrow"] {
+            if mode == "spread" {
+                XCUIDevice.shared.orientation = .landscapeLeft
+                wait(app) { self.state(app).contains("layout=spread;") }
+            } else if mode == "narrow" {
+                app.buttons["fixture.readerWidth"].tap()
+                wait(app) { self.state(app).contains("layout=scroll;") && body.frame.width <= 850 }
+            }
+            waitForStableViewport(app)
+            let before = viewportState(app)
+            let position = anchor(app)
+            for _ in 0..<3 {
+                body.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                wait(app) { !app.buttons["reader.contents"].exists }
+                XCTAssertFalse(app.buttons["reader.shelf"].exists)
+                XCTAssertTrue(app.buttons["reader.controls"].isHittable)
+                XCTAssertEqual(viewportState(app), before)
+                XCTAssertEqual(anchor(app), position)
+                XCTAssertEqual(readingIdentity(app), identity)
+                capture("controls-\(mode)-hidden")
+                body.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                wait(app) { app.buttons["reader.contents"].isHittable }
+                XCTAssertEqual(viewportState(app), before)
+                XCTAssertEqual(anchor(app), position)
+            }
+            capture("controls-\(mode)-shown")
+            app.buttons["reader.controls"].tap()
+            let previous = viewportState(app)
+            if mode == "spread" { body.swipeLeft() } else { body.swipeUp() }
+            waitForStableViewport(app)
+            XCTAssertNotEqual(viewportState(app), previous, "The real gesture must move text")
+            XCTAssertFalse(app.buttons["reader.contents"].exists, "A drag must not show controls")
+            app.buttons["reader.controls"].tap()
+            XCTAssertTrue(app.buttons["reader.contents"].isHittable)
+        }
+        // Native long-press selection must neither hide controls nor be swallowed by the tap.
+        body.coordinate(withNormalizedOffset: CGVector(dx: 0.43, dy: 0.45)).press(forDuration: 1.2)
+        wait(app) { !self.state(app).contains("selected=0;") }
+        XCTAssertTrue(app.buttons["reader.contents"].exists)
+        capture("controls-native-selection")
+        app.terminate()
+    }
+
+    @MainActor func testHiddenControlsKeepFailureAndCancelActionsAvailable() {
+        let app = launchControlsReader()
+        let body = app.textViews["reader.text"]
+        let identity = readingIdentity(app)
+        body.swipeUp()
+        waitForStableViewport(app)
+        let position = anchor(app)
+        XCTAssertGreaterThan(position, 0)
+        app.buttons["fixture.saveFailure"].tap()
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(app.buttons["Retry save"].waitForExistence(timeout: 15))
+        app.buttons["reader.controls"].tap()
+        XCTAssertFalse(app.buttons["reader.contents"].exists)
+        for name in ["Retry save", "Return without saving", "Dismiss"] {
+            XCTAssertTrue(app.buttons[name].isHittable)
+        }
+        XCTAssertEqual(anchor(app), position)
+        XCTAssertEqual(readingIdentity(app), identity)
+        capture("controls-hidden-save-rejection")
+        app.buttons["fixture.saveFailure"].tap()
+        app.buttons["Retry save"].tap()
+        wait(app) { !app.buttons["Retry save"].exists }
+        XCTAssertFalse(app.buttons["reader.contents"].exists)
+        app.buttons["reader.controls"].tap()
+        app.buttons["fixture.hold"].tap()
+        app.buttons["reader.previous"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 10))
+        app.buttons["reader.controls"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].isHittable)
+        capture("controls-hidden-loading")
+        app.buttons["Cancel"].tap()
+        app.buttons["fixture.hold"].tap()
+        wait(app) { !app.buttons["Cancel"].exists }
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertEqual(anchor(app), position)
+        XCTAssertFalse(app.buttons["reader.contents"].exists)
+        app.buttons["reader.controls"].tap()
+        app.buttons["reader.next"].tap()
+        XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 15))
+        app.buttons["reader.controls"].tap()
+        XCTAssertTrue(app.buttons["Retry"].isHittable)
+        XCTAssertEqual(readingIdentity(app), identity)
+        capture("controls-hidden-network-failure")
+        app.buttons["Retry"].tap()
+        wait(app) { self.state(app).contains("chapter=2;") }
+        XCTAssertFalse(app.buttons["reader.contents"].exists)
+        app.terminate()
+    }
+
+    @MainActor private func launchControlsReader() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "two-page"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        XCTAssertTrue(app.buttons["reader.next"].waitForExistence(timeout: 20))
+        app.buttons["reader.next"].tap()
+        wait(app) { self.state(app).contains("chapter=1;") }
+        XCTAssertTrue(app.buttons["reader.contents"].isHittable)
+        return app
+    }
+
+    @MainActor private func viewportState(_ app: XCUIApplication) -> [String] {
+        state(app).components(separatedBy: ";").filter { part in
+            ["viewport=", "offset=", "rendered=", "scrollRendered=", "spread=", "layout="].contains { part.hasPrefix($0) }
+        }
+    }
+
+    @MainActor private func waitForStableViewport(_ app: XCUIApplication) {
+        var previous: [String] = []
+        var stable = 0
+        wait(app) {
+            let current = self.viewportState(app)
+            stable = current == previous ? stable + 1 : 0
+            previous = current
+            return stable >= 3 && !current.isEmpty && self.state(app).contains("dragging=false;decelerating=false;")
+        }
     }
 
     @MainActor private func readingIdentity(_ app: XCUIApplication) -> [String] {
