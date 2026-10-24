@@ -437,13 +437,16 @@ struct ReaderScreen: View {
 
     private var readingHeader: some View {
         HStack(alignment: .top, spacing: 12) {
-            Button { model.showShelf() } label: {
-                Label("Shelf", systemImage: "chevron.left")
-                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            if menu {
+                Button { model.showShelf() } label: {
+                    Label("Shelf", systemImage: "chevron.left")
+                        .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                }
+                .accessibilityIdentifier("reader.shelf")
+                .disabled(model.busy)
+            } else {
+                Color.clear.frame(width: 44, height: 44).allowsHitTesting(false)
             }
-            .accessibilityIdentifier("reader.shelf")
-            .disabled(model.busy)
-            .opacity(menu ? 1 : 0).allowsHitTesting(menu).accessibilityHidden(!menu)
             Spacer(minLength: 0)
             if menu {
                 VStack(spacing: 4) {

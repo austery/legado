@@ -56,7 +56,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        guard gestureRecognizer === controlsTap, readingIsActive else { return false }
+        guard gestureRecognizer === controlsTap else { return true }
+        guard readingIsActive else { return false }
         let center = bounds.insetBy(dx: bounds.width * 0.25, dy: bounds.height * 0.20)
         guard center.contains(touch.location(in: self)) else { return false }
         // Let a tap dismiss an existing native selection without also hiding controls.

@@ -829,12 +829,14 @@ final class ReaderUITests: XCTestCase {
                 wait(app) { !app.buttons["reader.contents"].exists }
                 XCTAssertFalse(app.buttons["reader.shelf"].exists)
                 XCTAssertTrue(app.buttons["reader.controls"].isHittable)
+                waitForStableViewport(app)
                 XCTAssertEqual(viewportState(app), before)
                 XCTAssertEqual(anchor(app), position)
                 XCTAssertEqual(readingIdentity(app), identity)
                 capture("controls-\(mode)-hidden")
                 body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5)).tap()
                 wait(app) { app.buttons["reader.contents"].isHittable }
+                waitForStableViewport(app)
                 XCTAssertEqual(viewportState(app), before)
                 XCTAssertEqual(anchor(app), position)
             }
