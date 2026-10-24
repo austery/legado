@@ -16,8 +16,9 @@ These are product defaults awaiting owner feedback, not recovered Wanyuan values
 - 22-point initial text; size range 16–36, line spacing 6 (0–18), paragraph spacing
   12 (0–30), margins 28 (12–64). Maximum text column width is approximately 680 points.
 - Warm light background; optional dark appearance. Typography and appearance apply globally and persist in this app's preferences across launches. Invalid saved layout values fall back to safe defaults; book progress remains owned by ReaderEngine.
-- Explicit show/hide control button instead of guessed tap regions. Long-press text
-  selection follows UITextView behavior. Wide iPad landscape uses TextKit page containers.
+- Tap the central half of the body (excluding its top/bottom fifths) to show or hide
+  reading controls; the explicit accessible toggle remains available. Native text
+  selection and scrolling remain available. Wide iPad landscape uses TextKit page containers.
 - Text layout keeps a paragraph-based UTF-16 anchor across typography and size
   changes. The reading coordinator saves accepted scroll positions through the
   native engine and finishes a reading session before navigation.

@@ -825,7 +825,7 @@ final class ReaderUITests: XCTestCase {
             let before = viewportState(app)
             let position = anchor(app)
             for _ in 0..<3 {
-                body.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5)).tap()
                 wait(app) { !app.buttons["reader.contents"].exists }
                 XCTAssertFalse(app.buttons["reader.shelf"].exists)
                 XCTAssertTrue(app.buttons["reader.controls"].isHittable)
@@ -833,7 +833,7 @@ final class ReaderUITests: XCTestCase {
                 XCTAssertEqual(anchor(app), position)
                 XCTAssertEqual(readingIdentity(app), identity)
                 capture("controls-\(mode)-hidden")
-                body.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5)).tap()
                 wait(app) { app.buttons["reader.contents"].isHittable }
                 XCTAssertEqual(viewportState(app), before)
                 XCTAssertEqual(anchor(app), position)
@@ -847,12 +847,15 @@ final class ReaderUITests: XCTestCase {
             XCTAssertFalse(app.buttons["reader.contents"].exists, "A drag must not show controls")
             app.buttons["reader.controls"].tap()
             XCTAssertTrue(app.buttons["reader.contents"].isHittable)
+            // Exercise page text itself, not the gutter between spread pages.
+            body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.45)).press(forDuration: 1.2)
+            wait(app) { self.selectionLength(app) > 0 }
+            XCTAssertTrue(app.buttons["reader.contents"].exists)
+            capture("controls-\(mode)-native-selection")
+            body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.60)).tap()
+            wait(app) { self.selectionLength(app) == 0 }
+            XCTAssertTrue(app.buttons["reader.contents"].exists, "Dismissing selection must not hide controls")
         }
-        // Native long-press selection must neither hide controls nor be swallowed by the tap.
-        body.coordinate(withNormalizedOffset: CGVector(dx: 0.43, dy: 0.45)).press(forDuration: 1.2)
-        wait(app) { !self.state(app).contains("selected=0;") }
-        XCTAssertTrue(app.buttons["reader.contents"].exists)
-        capture("controls-native-selection")
         app.terminate()
     }
 
@@ -918,6 +921,11 @@ final class ReaderUITests: XCTestCase {
         wait(app) { self.state(app).contains("chapter=1;") }
         XCTAssertTrue(app.buttons["reader.contents"].isHittable)
         return app
+    }
+
+    @MainActor private func selectionLength(_ app: XCUIApplication) -> Int {
+        let value = state(app).components(separatedBy: ";").first { $0.hasPrefix("selected=") }
+        return value.flatMap { Int($0.dropFirst("selected=".count)) } ?? -1
     }
 
     @MainActor private func viewportState(_ app: XCUIApplication) -> [String] {

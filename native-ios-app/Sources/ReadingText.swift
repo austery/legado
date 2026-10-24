@@ -60,11 +60,12 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         let center = bounds.insetBy(dx: bounds.width * 0.25, dy: bounds.height * 0.20)
         guard center.contains(touch.location(in: self)) else { return false }
         // Let a tap dismiss an existing native selection without also hiding controls.
-        if selectedRange.length > 0 { return false }
         if let spreads = spreadView, usesSpreads {
-            return !spreads.subviews.compactMap { $0 as? UITextView }.contains { $0.selectedRange.length > 0 }
+            return !spreads.subviews.compactMap { $0 as? UITextView }.contains {
+                $0.frame.intersects(spreads.bounds) && $0.selectedRange.length > 0
+            }
         }
-        return true
+        return selectedRange.length == 0
     }
 
     /// Matches NativeBodyCoordinates without normalizing or replacing the original body.
