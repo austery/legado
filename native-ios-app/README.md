@@ -16,8 +16,9 @@ These are product defaults awaiting owner feedback, not recovered Wanyuan values
 - 22-point initial text; size range 16–36, line spacing 6 (0–18), paragraph spacing
   12 (0–30), margins 28 (12–64). Maximum text column width is approximately 680 points.
 - Warm light background; optional dark appearance. Typography and appearance apply globally and persist in this app's preferences across launches. Invalid saved layout values fall back to safe defaults; book progress remains owned by ReaderEngine.
-- Explicit show/hide control button instead of guessed tap regions. Long-press text
-  selection follows UITextView behavior. Wide iPad landscape uses TextKit page containers.
+- Tap the central half of the body (excluding its top/bottom fifths) to show or hide
+  reading controls; the explicit accessible toggle remains available. Native text
+  selection and scrolling remain available. Wide iPad landscape uses TextKit page containers.
 - Text layout keeps a paragraph-based UTF-16 anchor across typography and size
   changes. The reading coordinator saves accepted scroll positions through the
   native engine and finishes a reading session before navigation.
@@ -421,3 +422,30 @@ normalizes dangerous API enablement to false, matching upstream export policy. R
 cookie stores, books, cached chapters and progress are separate and are not exported.
 Disabled sources retain cached reading and shelf/progress data but do not enter new searches.
 Rule editing, source login/browser verification and discovery browsing remain later work.
+
+## Reading controls (Issue 48)
+
+Reading starts with controls visible. The heading, shelf action and bottom controls
+are overlays; hiding them leaves the text viewport and pagination unchanged. The
+explicit Show/Hide controls button stays at the top right. A central-body tap toggles
+controls; edge taps do not turn pages. Previous/Next chapter labels distinguish chapter
+navigation from horizontal page turns. Returning from another route shows controls.
+Loading/cancel, error/retry and save-rejection actions remain outside these overlays
+and visible even when ordinary controls are hidden. Such notices may resize the
+viewport and retain the established paragraph-recovery behavior.
+
+The two focused UI journeys check actual taps, drags and native selection, stable
+viewport/offset/rendered glyph ranges in portrait/spread/narrow modes, and hidden-control
+save rejection, cancellation and network retry. Earlier assertions that controls sit
+below the text are replaced by the intentional overlay contract, with independent
+rendered-geometry comparisons added. No engine contract, stored format or dependency
+changes. Physical comfort and owner H2 are separate from these automated checks.
+
+Spread selection uses disposable single-container page views because UIKit disables
+selection on the previous shared multi-container views. The original TextKit
+pagination still defines every original chapter range; each attached page holds
+only its attributed substring and original offset. At most the current spread and
+its neighbors are retained. Page copies never enter the engine or saved progress.
+Actual-page coverage tests check complete rendered ranges and original attributed
+text at supported sizes, including long mixed-script/Unicode paragraphs. UI checks
+long-press selection on both visible pages as well as portrait and narrow layouts.

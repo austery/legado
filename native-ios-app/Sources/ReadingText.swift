@@ -16,7 +16,7 @@ struct ReadingRestoration: Equatable {
     let utf16Offset: Int
 }
 
-final class AnchoredTextView: UITextView, UITextViewDelegate {
+final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
     var anchor = 0
     private var readingIsActive = true
     var restoring = false
@@ -35,6 +35,76 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
     private var userScrolling = false
     private var onDisplayed: ((String, Int) -> Void)?
     private var onParagraphScroll: ((String, Int) -> Void)?
+
+    var onToggleControls: (() -> Void)?
+    private var controlsTouchStarted: TimeInterval = 0
+    private var controlsTouchHadSelection = false
+    private weak var controlsTouchPage: UITextView?
+
+    private lazy var controlsTap: UITapGestureRecognizer = {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        return tap
+    }()
+
+    func enableControlsTap() {
+        addGestureRecognizer(controlsTap)
+        controlsTap.require(toFail: panGestureRecognizer)
+    }
+
+    @objc private func toggleControls() {
+        // Simultaneous native selection can finish on the same touch-up. A held
+        // touch belongs to selection even if its selected range is delivered later.
+        guard readingIsActive,
+              ProcessInfo.processInfo.systemUptime - controlsTouchStarted < 0.5 else { return }
+        if controlsTouchHadSelection {
+            // Separate page views do not dismiss another page's selection themselves.
+            // Coordinate only a short tap on another page. Same-page selection/menu
+            // interactions, drags and held selections remain entirely native.
+            for page in visibleTextViews where page !== controlsTouchPage && page.selectedRange.length > 0 {
+                page.selectedTextRange = nil
+                page.resignFirstResponder()
+            }
+            return
+        }
+        guard !hasVisibleSelection else { return }
+        onToggleControls?()
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === controlsTap else { return true }
+        guard readingIsActive else { return false }
+        controlsTouchStarted = touch.timestamp
+        let center = bounds.insetBy(dx: bounds.width * 0.25, dy: bounds.height * 0.20)
+        guard center.contains(touch.location(in: self)) else { return false }
+        // Remember before UIKit may dismiss the selection on touch-up.
+        controlsTouchHadSelection = hasVisibleSelection
+        controlsTouchPage = visibleTextViews.first { page in
+            touch.view?.isDescendant(of: page) == true
+        }
+        return true
+    }
+
+    private var visibleTextViews: [UITextView] {
+        if let spreads = spreadView, usesSpreads {
+            return spreads.subviews.compactMap { $0 as? UITextView }.filter {
+                $0.frame.intersects(spreads.bounds)
+            }
+        }
+        return [self]
+    }
+
+    private var hasVisibleSelection: Bool {
+        visibleTextViews.contains { $0.selectedRange.length > 0 }
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Spread pages own native selection recognizers. Observe a completed tap
+        // without preventing selection; the pan failure requirements still apply.
+        gestureRecognizer === controlsTap || otherGestureRecognizer === controlsTap
+    }
 
     /// Matches NativeBodyCoordinates without normalizing or replacing the original body.
     private func paragraphStart(_ offset: Int) -> Int? {
@@ -176,6 +246,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate {
         if wantsSpreads, spreadView == nil {
             let pages = ReadingSpreadView()
             pages.onTurn = { [weak self] offset in self?.acceptPageTurn(offset) }
+            controlsTap.require(toFail: pages.panGestureRecognizer)
             spreadView = pages
             addSubview(pages)
         }
@@ -255,10 +326,12 @@ struct ReadingText: UIViewRepresentable {
     var onDisplayed: ((String, Int) -> Void)? = nil
     var onParagraphScroll: ((String, Int) -> Void)? = nil
     var isReading = true
+    var onToggleControls: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
         view.delegate = view
+        view.enableControlsTap()
         view.isEditable = false
         view.isSelectable = true
         // Keep fast drags inside the chapter instead of exposing an empty overscroll viewport.
@@ -268,6 +341,7 @@ struct ReadingText: UIViewRepresentable {
     }
 
     func updateUIView(_ view: AnchoredTextView, context: Context) {
+        view.onToggleControls = onToggleControls
         view.configure(chapterKey: chapterKey, body: text, style: style, restoration: restoration,
                        onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll, isReading: isReading)
     }

@@ -107,9 +107,29 @@ struct FixtureReaderApp: App {
                         !$0.isHidden && $0.frame.intersects(text.spreadView!.bounds)
                     }.map { page -> NSRange in
                         let glyphs = page.layoutManager.glyphRange(forBoundingRect: page.bounds, in: page.textContainer)
-                        return page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+                        let local = page.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+                        return NSRange(location: local.location + ((page as? ReadingPageTextView)?.originalRange.location ?? 0), length: local.length)
                     } ?? []
                     positionStatus += "rendered=\(rendered.map { "\($0.location):\($0.length)" }.joined(separator: ","));"
+                    let viewport = text.convert(text.bounds, to: nil)
+                    let visibleRect = text.bounds.offsetBy(dx: -text.textContainerInset.left, dy: -text.textContainerInset.top)
+                    let scrollGlyphs = text.layoutManager.glyphRange(forBoundingRect: visibleRect, in: text.textContainer)
+                    let scrollRange = text.layoutManager.characterRange(forGlyphRange: scrollGlyphs, actualGlyphRange: nil)
+                    let selected = text.usesSpreads
+                        ? text.spreadView?.subviews.compactMap { $0 as? UITextView }.reduce(0) { $0 + $1.selectedRange.length } ?? 0
+                        : text.selectedRange.length
+                    positionStatus += "viewport=\(viewport);offset=\(text.contentOffset);scrollRendered=\(scrollRange);selected=\(selected);"
+                    let selectionViews = text.usesSpreads
+                        ? text.spreadView?.subviews.compactMap { $0 as? UITextView }.filter {
+                            $0.frame.intersects(text.spreadView!.bounds)
+                        }.sorted { $0.frame.minX < $1.frame.minX } ?? []
+                        : [text]
+                    for (index, page) in selectionViews.enumerated() {
+                        if let target = selectionTarget(in: page, root: text) {
+                            let prefix = index == 0 ? "selection" : "selectionRight"
+                            positionStatus += "\(prefix)X=\(target.dx);\(prefix)Y=\(target.dy);"
+                        }
+                    }
 
                 }
                 if let progress = model.cacheProgress {
@@ -215,6 +235,30 @@ struct FixtureReaderApp: App {
             }
         }
     }
+    /// Choose actual visible lettering near the center, never a newline's empty glyph box.
+    private func selectionTarget(in page: UITextView, root: AnchoredTextView) -> CGVector? {
+        let visible = page.bounds.offsetBy(dx: -page.textContainerInset.left, dy: -page.textContainerInset.top)
+        let glyphs = page.layoutManager.glyphRange(forBoundingRect: visible, in: page.textContainer)
+        let preferred = CGPoint(x: visible.minX + visible.width * 0.7, y: visible.midY)
+        let body = page.text as NSString
+        let points = (glyphs.location..<NSMaxRange(glyphs)).compactMap { index -> CGPoint? in
+            let range = NSRange(location: index, length: 1)
+            let characters = page.layoutManager.characterRange(forGlyphRange: range, actualGlyphRange: nil)
+            guard body.substring(with: characters).rangeOfCharacter(from: .alphanumerics) != nil else { return nil }
+            let rect = page.layoutManager.boundingRect(forGlyphRange: range, in: page.textContainer)
+            guard visible.contains(CGPoint(x: rect.midX, y: rect.midY)) else { return nil }
+            return CGPoint(x: rect.midX, y: rect.midY)
+        }
+        func distance(_ point: CGPoint) -> CGFloat {
+            pow(point.x - preferred.x, 2) + pow(point.y - preferred.y, 2)
+        }
+        guard let point = points.min(by: { distance($0) < distance($1) }) else { return nil }
+        let target = page.convert(CGPoint(x: point.x + page.textContainerInset.left,
+                                          y: point.y + page.textContainerInset.top), to: root)
+        return CGVector(dx: (target.x - root.bounds.minX) / root.bounds.width,
+                        dy: (target.y - root.bounds.minY) / root.bounds.height)
+    }
+
     private func findText(_ view: UIView) -> AnchoredTextView? {
         if let text = view as? AnchoredTextView { return text }
         return view.subviews.lazy.compactMap(findText).first
