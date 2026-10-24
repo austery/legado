@@ -38,6 +38,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
 
     var onToggleControls: (() -> Void)?
     private var controlsTouchStarted: TimeInterval = 0
+    private var controlsTouchHadSelection = false
 
     private lazy var controlsTap: UITapGestureRecognizer = {
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
@@ -54,8 +55,18 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     @objc private func toggleControls() {
         // Simultaneous native selection can finish on the same touch-up. A held
         // touch belongs to selection even if its selected range is delivered later.
-        guard readingIsActive, !hasVisibleSelection,
+        guard readingIsActive,
               ProcessInfo.processInfo.systemUptime - controlsTouchStarted < 0.5 else { return }
+        if controlsTouchHadSelection {
+            // Separate page views do not dismiss another page's selection themselves.
+            // Coordinate only a recognized short tap, never a drag or held selection.
+            for page in visibleTextViews where page.selectedRange.length > 0 {
+                page.selectedTextRange = nil
+                page.resignFirstResponder()
+            }
+            return
+        }
+        guard !hasVisibleSelection else { return }
         onToggleControls?()
     }
 
@@ -65,17 +76,22 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         controlsTouchStarted = touch.timestamp
         let center = bounds.insetBy(dx: bounds.width * 0.25, dy: bounds.height * 0.20)
         guard center.contains(touch.location(in: self)) else { return false }
-        // Let a tap dismiss an existing native selection without also hiding controls.
-        return !hasVisibleSelection
+        // Remember before UIKit may dismiss the selection on touch-up.
+        controlsTouchHadSelection = hasVisibleSelection
+        return true
+    }
+
+    private var visibleTextViews: [UITextView] {
+        if let spreads = spreadView, usesSpreads {
+            return spreads.subviews.compactMap { $0 as? UITextView }.filter {
+                $0.frame.intersects(spreads.bounds)
+            }
+        }
+        return [self]
     }
 
     private var hasVisibleSelection: Bool {
-        if let spreads = spreadView, usesSpreads {
-            return spreads.subviews.compactMap { $0 as? UITextView }.contains {
-                $0.frame.intersects(spreads.bounds) && $0.selectedRange.length > 0
-            }
-        }
-        return selectedRange.length > 0
+        visibleTextViews.contains { $0.selectedRange.length > 0 }
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
