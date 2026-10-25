@@ -81,7 +81,9 @@ final class ReaderUITests: XCTestCase {
         let selectedPoint = selectionPoint(app)
         body.coordinate(withNormalizedOffset: selectedPoint).press(forDuration: 1.2)
         wait(app) { self.selectionLength(app) > 0 }
-        body.coordinate(withNormalizedOffset: selectedPoint).tap()
+        if !app.menuItems["Copy"].exists && !app.buttons["Copy"].exists {
+            body.coordinate(withNormalizedOffset: selectedPoint).tap()
+        }
         wait(app) { app.menuItems["Copy"].exists || app.buttons["Copy"].exists }
         let copy = app.menuItems["Copy"].exists ? app.menuItems["Copy"] : app.buttons["Copy"]
         XCTAssertTrue(copy.isHittable); copy.tap()

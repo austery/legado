@@ -81,21 +81,20 @@ final class ChapterFindSession: ObservableObject {
 
 struct ChapterFindPanel: View {
     @ObservedObject var session: ChapterFindSession
-    @FocusState private var editing: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 TextField("Find in current chapter", text: $session.query)
                     .textFieldStyle(.roundedBorder).autocorrectionDisabled()
-                    .textInputAutocapitalization(.never).focused($editing)
+                    .textInputAutocapitalization(.never).submitLabel(.done)
                     .accessibilityIdentifier("reader.find.query")
-                    .onSubmit { editing = false }
+                    .onSubmit { dismissKeyboard() }
                 if !session.query.isEmpty {
-                    Button("Clear") { session.query = ""; editing = true }
+                    Button("Clear") { session.query = "" }
                         .frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("reader.find.clear")
                 }
-                Button { editing = false; session.close() } label: {
+                Button { dismissKeyboard(); session.close() } label: {
                     Label("Close find", systemImage: "xmark.circle.fill").labelStyle(.iconOnly)
                         .frame(width: 44, height: 44)
                 }.accessibilityIdentifier("reader.find.close")
@@ -103,13 +102,17 @@ struct ChapterFindPanel: View {
             HStack {
                 Text(status).font(.callout).accessibilityIdentifier("reader.find.status")
                 Spacer()
-                Button("Previous match") { editing = false; session.move(forward: false) }.frame(minHeight: 44)
+                Button("Previous match") { dismissKeyboard(); session.move(forward: false) }.frame(minHeight: 44)
                     .accessibilityIdentifier("reader.find.previous").disabled(session.matches.isEmpty)
-                Button("Next match") { editing = false; session.move(forward: true) }.frame(minHeight: 44)
+                Button("Next match") { dismissKeyboard(); session.move(forward: true) }.frame(minHeight: 44)
                     .accessibilityIdentifier("reader.find.next").disabled(session.matches.isEmpty)
             }
             Text("Current chapter only · Case sensitive").font(.caption).foregroundStyle(.secondary)
         }.padding(.horizontal, 16).padding(.vertical, 8).background(.regularMaterial)
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private var status: String {
