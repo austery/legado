@@ -110,7 +110,7 @@ class ProcessOnlyModeTest(unittest.TestCase):
                 self.assertTrue(command[1].endswith("process_interruption_regression.py"))
                 self.assertIn(str(output / "DerivedData/Build/Products/fresh.xctestrun"), command)
                 self.assertEqual(command[-2:], ["--runtime-version", "27.0"])
-                self.assertNotIn("--case", command)  # All four boundaries remain required.
+                self.assertNotIn("--case", command)  # Every declared reading and group boundary remains required.
             self.assertNotIn("--shelf-restart", process_commands[0])
             if not fail_interruption:
                 self.assertIn("--shelf-restart", process_commands[1])
