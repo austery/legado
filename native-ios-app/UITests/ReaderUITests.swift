@@ -241,7 +241,7 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.contents"].tap()
         let chapter = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "contents.chapter.", "Chapter 2")).firstMatch
         XCTAssertTrue(chapter.waitForExistence(timeout: 10)); chapter.tap()
-        let body = app.textViews["reader.body"]
+        let body = app.textViews["reader.text"]
         wait(app) { self.state(app).contains("chapter=1;") && (body.value as? String ?? "").contains("第199段") }
         body.swipeUp(); body.swipeUp()
         wait(app) { self.anchor(app) > 0 }
