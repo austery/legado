@@ -25,4 +25,44 @@ final class ChapterFindTests: XCTestCase {
         find.query = "aa"
         XCTAssertEqual(find.matches, [NSRange(location: 0, length: 2), NSRange(location: 2, length: 2)])
     }
+    func testOnlyExplicitNavigationSelectsAndContextChangesRetireFind() {
+        let find = ChapterFindSession()
+        let context = ChapterFindContext(chapterKey: "source/book/chapter", readingIdentity: "reading", text: "cat cat")
+        find.open(context)
+        find.query = "cat"
+        XCTAssertNil(find.selectedIndex, "Typing must not select or navigate")
+        find.move(forward: true)
+        XCTAssertEqual(find.selectedIndex, 0)
+        find.move(forward: true)
+        XCTAssertEqual(find.selectedIndex, 1)
+        find.move(forward: true)
+        XCTAssertEqual(find.selectedIndex, 0, "Next wraps")
+        find.move(forward: false)
+        XCTAssertEqual(find.selectedIndex, 1, "Previous wraps")
+        find.updateContext(context)
+        XCTAssertEqual(find.selectedIndex, 1)
+        find.query = "missing"
+        XCTAssertNil(find.selectedIndex)
+        find.move(forward: true)
+        XCTAssertNil(find.selectedIndex)
+        for replacement in [
+            ChapterFindContext(chapterKey: "source/book/other", readingIdentity: "reading", text: context.text),
+            ChapterFindContext(chapterKey: context.chapterKey, readingIdentity: "new-session", text: context.text),
+            ChapterFindContext(chapterKey: context.chapterKey, readingIdentity: context.readingIdentity, text: "new body")
+        ] {
+            find.open(context); find.query = "cat"; find.move(forward: true)
+            find.updateContext(replacement)
+            XCTAssertFalse(find.isPresented)
+            XCTAssertTrue(find.query.isEmpty)
+            XCTAssertTrue(find.matches.isEmpty)
+            XCTAssertNil(find.selectedIndex)
+        }
+        find.open(context); find.query = "cat"; find.move(forward: false)
+        XCTAssertEqual(find.selectedIndex, 1)
+        find.close()
+        XCTAssertFalse(find.isPresented)
+        find.move(forward: true)
+        XCTAssertNil(find.selectedIndex)
+    }
+
 }
