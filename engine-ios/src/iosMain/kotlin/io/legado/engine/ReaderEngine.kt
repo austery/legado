@@ -346,7 +346,9 @@ class ReaderEngine {
 
     private fun shelfGroupId(value: String): Long {
         val id = value.toLongOrNull()
-        if (id == null || id <= 0 || id and (id - 1) != 0L) throw InvalidInput("Choose a valid shelf group")
+        if (id == null || id <= 0 || id and (id - 1) != 0L) {
+            throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "Choose a valid shelf group")
+        }
         return id
     }
 
