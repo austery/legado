@@ -145,4 +145,25 @@ final class ChapterFindTests: XCTestCase {
         }
     }
 
+    func testFindHighlightCrossesPageBoundaryWithoutChangingOriginalCharacters() throws {
+        let body = (0..<350).map { "word-\($0) 😀 中文 continuous reading " }.joined()
+        let source = NSAttributedString(string: body, attributes: [.font: UIFont.systemFont(ofSize: 22)])
+        let pages = ReadingSpreadView(frame: CGRect(x: 0, y: 0, width: 1194, height: 760))
+        pages.reflow(text: source, margin: 28, anchor: 0, paper: .white)
+        let layout = try XCTUnwrap(pages.pagination)
+        XCTAssertGreaterThan(layout.ranges.count, 2)
+        let boundary = layout.ranges[1].location
+        let match = (body as NSString).rangeOfComposedCharacterSequences(for: NSRange(location: boundary - 1, length: 2))
+        pages.updateFindHighlights(matches: [match], selected: match)
+        let left = try XCTUnwrap(pages.subviews.compactMap { $0 as? ReadingPageTextView }.first { $0.originalRange == layout.ranges[0] })
+        let right = try XCTUnwrap(pages.subviews.compactMap { $0 as? ReadingPageTextView }.first { $0.originalRange == layout.ranges[1] })
+        XCTAssertNotNil(left.textStorage.attribute(.backgroundColor, at: left.textStorage.length - 1, effectiveRange: nil))
+        XCTAssertNotNil(right.textStorage.attribute(.backgroundColor, at: 0, effectiveRange: nil))
+        XCTAssertEqual(left.text, (body as NSString).substring(with: left.originalRange))
+        XCTAssertEqual(right.text, (body as NSString).substring(with: right.originalRange))
+        pages.updateFindHighlights(matches: [], selected: nil)
+        XCTAssertNil(left.textStorage.attribute(.backgroundColor, at: left.textStorage.length - 1, effectiveRange: nil))
+        XCTAssertNil(right.textStorage.attribute(.backgroundColor, at: 0, effectiveRange: nil))
+    }
+
 }
