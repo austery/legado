@@ -116,18 +116,19 @@ struct ChapterFindPanel: View {
     }
 }
 
-/// Temporary display attributes leave the original body, layout metrics and UIKit selection intact.
+/// Display-only attributes in disposable view storage preserve original characters and layout metrics.
 extension UITextView {
     func updateFindHighlights(matches: [NSRange], selected: NSRange?, originalRange: NSRange) {
-        layoutManager.removeTemporaryAttribute(.backgroundColor,
-            forCharacterRange: NSRange(location: 0, length: textStorage.length))
+        textStorage.beginEditing()
+        defer { textStorage.endEditing() }
+        textStorage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: textStorage.length))
         for match in matches {
             let intersection = NSIntersectionRange(match, originalRange)
             guard intersection.length > 0 else { continue }
             let local = NSRange(location: intersection.location - originalRange.location, length: intersection.length)
             let color = match == selected ? UIColor.systemOrange.withAlphaComponent(0.65)
                 : UIColor.systemYellow.withAlphaComponent(0.4)
-            layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: local)
+            textStorage.addAttribute(.backgroundColor, value: color, range: local)
         }
     }
 }
