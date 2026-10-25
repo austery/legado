@@ -28,6 +28,24 @@ not establish default values, active interaction wiring or physical iPad comfort
 The approved scope and device acceptance are in local `SPEC-002`; its `docs/`
 directory is ignored by the inherited repository policy.
 
+## Find in the current chapter (Issue #57)
+
+Use **Find in chapter** in the reader controls to search the complete loaded chapter,
+including off-screen text. Queries are literal and case sensitive. Typing highlights
+matches and shows their count; **Previous match** and **Next match** explicitly
+reveal an occurrence and wrap at the ends. **Clear** removes the query. Closing the
+panel clears transient find state without undoing an intentional reading jump.
+
+Only explicit navigation follows the existing paragraph-save path; typing, highlights,
+rotation and typography do not write reading progress. Portrait and two-page landscape
+share original UTF-16 ranges, including matches crossing a page boundary. Native
+selection and Copy remain UIKit-owned. Source/book/chapter/session changes retire old
+find state and queued publications. Find reads loaded text without network requests,
+new engine exports, dependencies, schema changes or query history. It does not search
+other chapters/books. See [SPEC-009](../docs/architecture/specs/SPEC-009-native-in-chapter-find.md)
+for the approved H1 and acceptance limits. Owner H2 and merge approval remain pending;
+merge is explicitly withheld.
+
 ## Two-page iPad reading (Issue #46)
 
 The owner approved [H1](https://github.com/austery/legado/issues/46) on 2026-10-23.

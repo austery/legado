@@ -14,7 +14,7 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.buttons["reader.find"].waitForExistence(timeout: 10)); app.buttons["reader.find"].tap()
         let query = app.textFields["reader.find.query"]
         XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("第80段\n")
-        wait(app) { app.staticTexts["reader.find.status"].label == "1 matches" }
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         waitForStableViewport(app)
         XCTAssertEqual(anchor(app), original, "Typing must not navigate")
         XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored, "Typing/highlighting must not save progress")
@@ -62,10 +62,10 @@ final class ReaderUITests: XCTestCase {
         wait(app) { app.staticTexts["reader.find.status"].label == "No matches" }
         XCTAssertFalse(app.buttons["reader.find.next"].isEnabled)
         XCTAssertFalse(app.buttons["reader.find.previous"].isEnabled)
-        query.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 14))
+        app.buttons["reader.find.clear"].tap()
         wait(app) { app.staticTexts["reader.find.status"].label == "Enter text to find" }
         query.typeText("第120段\n")
-        wait(app) { app.staticTexts["reader.find.status"].label == "1 matches" }
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         XCTAssertEqual(anchor(app), original)
         let body = app.textViews["reader.text"]
         body.coordinate(withNormalizedOffset: selectionPoint(app)).press(forDuration: 1.2)
@@ -774,7 +774,7 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.find"].tap()
         let findQuery = app.textFields["reader.find.query"]
         XCTAssertTrue(findQuery.waitForExistence(timeout: 5)); findQuery.tap(); findQuery.typeText("C1-FIRST\n")
-        wait(app) { app.staticTexts["reader.find.status"].label == "1 matches" }
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         app.buttons["reader.changeSource"].tap()
         XCTAssertFalse(findQuery.exists, "Source preparation must retire old find state")
         let work = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "discovered sources")).firstMatch

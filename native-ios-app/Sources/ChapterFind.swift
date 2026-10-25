@@ -91,6 +91,10 @@ struct ChapterFindPanel: View {
                     .textInputAutocapitalization(.never).focused($editing)
                     .accessibilityIdentifier("reader.find.query")
                     .onSubmit { editing = false }
+                if !session.query.isEmpty {
+                    Button("Clear") { session.query = ""; editing = true }
+                        .frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("reader.find.clear")
+                }
                 Button { editing = false; session.close() } label: {
                     Label("Close find", systemImage: "xmark.circle.fill").labelStyle(.iconOnly)
                         .frame(width: 44, height: 44)
@@ -99,9 +103,9 @@ struct ChapterFindPanel: View {
             HStack {
                 Text(status).font(.callout).accessibilityIdentifier("reader.find.status")
                 Spacer()
-                Button("Previous match") { editing = false; session.move(forward: false) }
+                Button("Previous match") { editing = false; session.move(forward: false) }.frame(minHeight: 44)
                     .accessibilityIdentifier("reader.find.previous").disabled(session.matches.isEmpty)
-                Button("Next match") { editing = false; session.move(forward: true) }
+                Button("Next match") { editing = false; session.move(forward: true) }.frame(minHeight: 44)
                     .accessibilityIdentifier("reader.find.next").disabled(session.matches.isEmpty)
             }
             Text("Current chapter only · Case sensitive").font(.caption).foregroundStyle(.secondary)
@@ -112,7 +116,7 @@ struct ChapterFindPanel: View {
         if session.query.isEmpty { return "Enter text to find" }
         if session.matches.isEmpty { return "No matches" }
         if let index = session.selectedIndex { return "\(index + 1) of \(session.matches.count)" }
-        return "\(session.matches.count) matches"
+        return session.matches.count == 1 ? "1 match" : "\(session.matches.count) matches"
     }
 }
 
