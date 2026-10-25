@@ -9,6 +9,13 @@ from process_interruption_regression import BUNDLE, owned_documents, validate_te
 
 
 class InterruptionOwnershipTests(unittest.TestCase):
+    def testGroupBoundariesAreAvailableThroughExistingDriver(self) -> None:
+        script = Path(__file__).with_name('process_interruption_regression.py')
+        result = subprocess.run([sys.executable, str(script), '--help'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('group-before-db', result.stdout)
+        self.assertIn('group-after-db', result.stdout)
+
     def testRejectsOtherHostsBeforeDeviceCreation(self):
         with tempfile.TemporaryDirectory() as directory:
             host = Path(directory) / 'NativeReader.app'
