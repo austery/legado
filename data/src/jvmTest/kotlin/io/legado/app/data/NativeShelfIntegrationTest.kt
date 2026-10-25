@@ -26,6 +26,31 @@ import io.legado.app.data.dao.NativeShelfTarget
 /** Native shelf persistence only; all databases and book records are synthetic. */
 class NativeShelfIntegrationTest {
     @Test
+    fun reusedGroupIdentifiersNeverReattachOldMemberships() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            for (id in listOf("kept", "removed")) dao.addToShelf(
+                Book(bookUrl = id, origin = "source", name = id),
+                listOf(BookChapter(bookUrl = id, url = "chapter-$id")))
+            dao.createGroup("Growing", dao.organization().token)
+            val kept = NativeShelfTarget("source", "kept")
+            val removed = NativeShelfTarget("source", "removed")
+            dao.changeGroups(listOf(kept, removed), listOf(1L), emptyList(), dao.organization().token)
+            dao.removeBooks(listOf(removed), dao.organization().token)
+            val beforeDelete = dao.organization()
+            dao.deleteGroup(1L, beforeDelete.token)
+            val replacement = dao.createGroup("Replacement", dao.organization().token)
+            assertEquals(1L, replacement.groups.single().groupId)
+            assertEquals(0L, replacement.books.single().group)
+            val readmitted = dao.addToShelf(Book(bookUrl = "removed", origin = "source", name = "removed"), emptyList())
+            assertEquals(0L, readmitted.book.group)
+            assertEquals(NativeShelfFailure.STALE_ORGANIZATION, assertFailsWith<NativeShelfException> {
+                dao.deleteGroup(1L, beforeDelete.token)
+            }.failure)
+        }
+    }
+
+    @Test
     fun groupNamesCapacityAndDeletedSlotReuseRespectExistingRepresentation() = runBlocking {
         withDatabase { database, _ ->
             val dao = database.nativeShelfDao
