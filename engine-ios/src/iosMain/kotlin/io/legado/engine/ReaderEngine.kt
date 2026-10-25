@@ -9,6 +9,9 @@ import platform.Foundation.NSUUID
 import io.legado.app.data.dao.NativeShelfEntry
 import io.legado.app.data.dao.NativeShelfException
 import io.legado.app.data.dao.NativeShelfFailure
+import io.legado.app.data.dao.NativeShelfOrganization
+import io.legado.app.data.dao.NativeShelfTarget
+import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -40,8 +43,11 @@ class SourcesReply internal constructor(val sources: List<SourceSnapshot>) : Eng
 class BookSnapshot internal constructor(val sourceId: String, val id: String, val title: String,
     val author: String, val intro: String)
 class ShelfBookSnapshot internal constructor(val book: BookSnapshot, val sourceName: String,
-    val lastChapter: String)
-class ShelfReply internal constructor(val books: List<ShelfBookSnapshot>) : EngineReply()
+    val lastChapter: String, val groupIds: List<String> = emptyList(), val coverUrl: String? = null)
+class ShelfGroupSnapshot internal constructor(val id: String, val name: String, val bookCount: Int)
+class ShelfBookTarget(val sourceId: String, val bookId: String)
+class ShelfReply internal constructor(val books: List<ShelfBookSnapshot>,
+    val groups: List<ShelfGroupSnapshot> = emptyList(), val token: String = "") : EngineReply()
 class ShelfEntryReply internal constructor(val entry: ShelfBookSnapshot,
     val chapters: List<ChapterSnapshot>) : EngineReply()
 class ShelfRemoved internal constructor() : EngineReply()
@@ -305,8 +311,49 @@ class ReaderEngine {
         request(completion, interruptCache = false) { sourceManagement.export(ids) }
 
     fun listShelf(completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
-        ShelfReply(shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.listBooks() }.map { shelfSnapshot(it) })
+        shelfOperation { shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.organization()) }
     }
+
+    fun createShelfGroup(name: String, expectedToken: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion) { shelfOperation {
+            shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.createGroup(name, expectedToken))
+        } }
+
+    fun renameShelfGroup(groupId: String, name: String, expectedToken: String,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion) { shelfOperation {
+            shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.renameGroup(shelfGroupId(groupId), name, expectedToken))
+        } }
+
+    fun deleteShelfGroup(groupId: String, expectedToken: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion) { shelfOperation {
+            shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.deleteGroup(shelfGroupId(groupId), expectedToken))
+        } }
+
+    fun changeShelfGroups(targets: List<ShelfBookTarget>, addGroupIds: List<String>, removeGroupIds: List<String>,
+        expectedToken: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) { shelfOperation {
+            shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.changeGroups(
+                targets.map { NativeShelfTarget(it.sourceId, it.bookId) }, addGroupIds.map(::shelfGroupId),
+                removeGroupIds.map(::shelfGroupId), expectedToken))
+        } }
+
+    fun removeShelfBooks(targets: List<ShelfBookTarget>, expectedToken: String,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion) { shelfOperation {
+            val result = AppDatabaseProviders.get().appDb.nativeShelfDao.removeBooks(
+                targets.map { NativeShelfTarget(it.sourceId, it.bookId) }, expectedToken)
+            targets.forEach { ReadingSessions.invalidate(it.sourceId, it.bookId) }
+            shelfReply(result)
+        } }
+
+    private fun shelfGroupId(value: String): Long {
+        val id = value.toLongOrNull()
+        if (id == null || id <= 0 || id and (id - 1) != 0L) throw InvalidInput("Choose a valid shelf group")
+        return id
+    }
+
+    private suspend fun shelfReply(state: NativeShelfOrganization) = ShelfReply(
+        state.books.map { shelfSnapshot(it, state.groups) },
+        state.groups.map { group -> ShelfGroupSnapshot(group.groupId.toString(), group.groupName,
+            state.books.count { it.group and group.groupId != 0L }) }, state.token)
 
     /** Only a loaded catalog may be added; the returned identity can be an existing source. */
     fun addToShelf(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
@@ -334,9 +381,13 @@ class ReaderEngine {
         return ShelfEntryReply(shelfSnapshot(entry.book), entry.chapters.map { snapshot(entry.book.origin, it) })
     }
 
-    private suspend fun shelfSnapshot(book: Book) = ShelfBookSnapshot(snapshot(book),
+    private suspend fun shelfSnapshot(book: Book): ShelfBookSnapshot =
+        shelfSnapshot(book, AppDatabaseProviders.get().appDb.nativeShelfDao.organization().groups)
+
+    private suspend fun shelfSnapshot(book: Book, groups: List<BookGroup>) = ShelfBookSnapshot(snapshot(book),
         AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: book.origin,
-        book.durChapterTitle.orEmpty())
+        book.durChapterTitle.orEmpty(), groups.filter { it.groupId and book.group != 0L }.map { it.groupId.toString() },
+        book.getDisplayCover())
 
     private suspend fun <T> shelfOperation(action: suspend () -> T): T = try { action() }
         catch (error: CancellationException) { throw error }
@@ -684,6 +735,8 @@ class ReaderEngine {
                 NativeShelfFailure.AMBIGUOUS_IDENTITY -> EngineErrorCode.AMBIGUOUS_IDENTITY
                 NativeShelfFailure.UNSUPPORTED_BOOK -> EngineErrorCode.UNSUPPORTED
                 NativeShelfFailure.NOT_ON_SHELF -> EngineErrorCode.NOT_FOUND
+                NativeShelfFailure.STALE_ORGANIZATION -> EngineErrorCode.STALE_UPDATE
+                NativeShelfFailure.GROUP_CAPACITY -> EngineErrorCode.INVALID_INPUT
             }
             is MissingEntity -> EngineErrorCode.NOT_FOUND
             is InvalidInput -> EngineErrorCode.INVALID_INPUT
