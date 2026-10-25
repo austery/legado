@@ -33,7 +33,7 @@ def main() -> None:
         'app': 'io.legado.pathc.ui-fixture', 'expectedTests': 24,
         'fixture': 'owned loopback only', 'physicalDevice': False,
         'suites': ['ReaderUITests/testChapterFindLandscapeRejectedSaveAndChapterRetirement',
-                   'ReaderUITests/testChapterFindNoMatchesCopyFailureAndChapterRetirement',
+                   'ReaderUITests/testChapterFindNoMatchesSelectionFailureAndChapterRetirement',
                    'ReaderUITests/testChapterFindAcrossLayoutsAndDurablePosition',
                    'ReaderUITests/testEmptyShelfAuthorSearchTrialAdmissionRemovalAndReadmission',
                    'ReaderUITests/testShelfSaveFailureKeepsSelectionAndStaleEditorRequiresReview',

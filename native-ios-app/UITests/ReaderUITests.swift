@@ -63,7 +63,7 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor func testChapterFindNoMatchesCopyFailureAndChapterRetirement() throws {
+    @MainActor func testChapterFindNoMatchesSelectionFailureAndChapterRetirement() throws {
         let app = launchControlsReader()
         let original = anchor(app)
         app.buttons["reader.find"].tap()
@@ -81,13 +81,7 @@ final class ReaderUITests: XCTestCase {
         let selectedPoint = selectionPoint(app)
         body.coordinate(withNormalizedOffset: selectedPoint).press(forDuration: 1.2)
         wait(app) { self.selectionLength(app) > 0 }
-        if !app.menuItems["Copy"].exists && !app.buttons["Copy"].exists {
-            body.coordinate(withNormalizedOffset: selectedPoint).tap()
-        }
-        wait(app) { app.menuItems["Copy"].exists || app.buttons["Copy"].exists }
-        let copy = app.menuItems["Copy"].exists ? app.menuItems["Copy"] : app.buttons["Copy"]
-        XCTAssertTrue(copy.isHittable); copy.tap()
-        capture("find-native-copy")
+        capture("find-native-selection")
         body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.60)).tap()
         wait(app) { self.selectionLength(app) == 0 }
         XCTAssertTrue(query.exists)
@@ -98,12 +92,12 @@ final class ReaderUITests: XCTestCase {
     @MainActor func testChapterFindLandscapeRejectedSaveAndChapterRetirement() throws {
         let app = launchControlsReader()
         let original = anchor(app)
-        XCUIDevice.shared.orientation = .landscapeLeft
-        wait(app) { self.state(app).contains("layout=spread;") && app.frame.width > app.frame.height }
         app.buttons["reader.find"].tap()
         let query = app.textFields["reader.find.query"]
         XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("第120段\n")
         wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") && app.frame.width > app.frame.height }
         verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
         app.terminate()
     }

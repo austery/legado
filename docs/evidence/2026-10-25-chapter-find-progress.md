@@ -45,3 +45,10 @@ Independent review refreshed at81416a52f: Standards reports0 remaining code find
 Review refresh through9268b1c15 (docs8e0a6e451): Standards0 new findings; Spec0 code deviations and the same Copy acceptance gap. Both independently confirmed the added journey preserves original assertions and strict inventory/count gates. Canonical ordinary product regression at8e0a6e451 (production source81416a52f, latest UI tests9268b1c15) completed94/94 passed, zero failures/skips, at/private/tmp/chapter-find-product-final. The current-code run began only after the UI driver exited and released its exclusive fixtures. External process-interruption/restart suites are excluded by the declared ordinary lane. Exact-head C1 and whole actual-UI acceptance remain pending.
 
 The timed-out UI bundle lacks Info.plist; xcresulttool cannot read or export its attachments. It is retained as an incomplete diagnostic artifact, not a valid result summary. The plain test log and independently captured live-landscape-diagnostic.png remain available; do not claim a complete screenshot export or terminal landscape pass.
+
+
+## Owner H3 decision and continuation
+
+Lei's2026-10-25 answer explicitly keeps this scope and follows up Copy separately. Issue58 preserves baseline reproduction, failed touch-menu evidence and future actual clipboard acceptance. The feature journey now asserts real native selection and retains no-match/clear, save rejection/retry and chapter retirement; it no longer certifies the deferred touch Copy menu. This is an owner-approved acceptance amendment, not an inferred waiver. The previous failed Copy runs remain failed.
+
+The independent landscape timeout is investigated by changing only input order: enter the query in portrait, then rotate into landscape before the unchanged save-rejection/retry/chapter assertions. Main previously passed this input/rotation order. Candidate hypotheses are a landscape keyboard animation, panel layout animation, or simulator idleness reporting; no lower-level cause is claimed. The driver deadline and result/count gates remain unchanged.

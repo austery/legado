@@ -54,3 +54,8 @@ Pending runnable preview and Lei's normal/failure-journey and value/maintenance 
 ## Implementation clarification: latest intentional reading action
 
 The selected occurrence identity/query survives reflow while the chapter remains active. A later manual scroll/page turn is a new intentional reading action and supersedes the earlier temporary reveal focus. Subsequent reflow follows the latest accepted reading paragraph; Next/Previous can explicitly reveal the retained result again. This preserves H1.8 existing reading behavior and H1.5 intentional-position authority, without adding a new persistence contract. The standard-review P2 interleaving was reproduced by a real UIKit paging/reflow test before the narrow fix.
+
+
+## H3 — owner-approved Copy follow-up
+
+On2026-10-25 Lei explicitly answered: keep this scope and follow up the Copy menu separately. Native selection must remain usable; this slice does not certify that the touch Copy menu appears or writes the clipboard. The pre-feature baseline reproduction and remaining obligation are tracked in https://github.com/austery/legado/issues/58. The prior native Copy criterion is superseded only to this extent; no engine/storage budget expansion, timeout relaxation or merge authorization is granted. The actual no-match/clear/selection/save-failure/chapter-retirement journey retains its other assertions. Its Copy-menu assertions move to the separately tracked reproduction at source9268b1c15; no passing Copy claim is made. Landscape timeout remains an independent outstanding validation obligation.
