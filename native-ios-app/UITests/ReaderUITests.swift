@@ -277,6 +277,7 @@ final class ReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { app.frame.width > app.frame.height }
         capture("discovery-books-landscape")
+        let shelfBookIdentifier = discoveryBook(app).identifier.replacingOccurrences(of: "discovery.book.", with: "shelf.book.")
         discoveryBook(app).tap()
         XCTAssertTrue(app.buttons["details.read"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.buttons["details.add"].exists)
@@ -302,7 +303,7 @@ final class ReaderUITests: XCTestCase {
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
         app.launch()
-        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Discovery first")).firstMatch
+        let book = app.buttons[shelfBookIdentifier]
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
