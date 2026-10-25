@@ -48,7 +48,14 @@ final class ChapterFindSession: ObservableObject {
         matches = found
     }
 
-    func move(forward: Bool) {}
+    func move(forward: Bool) {
+        guard context != nil, !matches.isEmpty else { return }
+        if let selectedIndex {
+            self.selectedIndex = (selectedIndex + (forward ? 1 : -1) + matches.count) % matches.count
+        } else {
+            selectedIndex = forward ? 0 : matches.count - 1
+        }
+    }
 }
 
 struct ChapterFindPanel: View {
