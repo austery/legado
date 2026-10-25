@@ -68,8 +68,10 @@ final class ReaderUITests: XCTestCase {
         wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         XCTAssertEqual(anchor(app), original)
         let body = app.textViews["reader.text"]
-        body.coordinate(withNormalizedOffset: selectionPoint(app)).press(forDuration: 1.2)
+        let selectedPoint = selectionPoint(app)
+        body.coordinate(withNormalizedOffset: selectedPoint).press(forDuration: 1.2)
         wait(app) { self.selectionLength(app) > 0 }
+        body.coordinate(withNormalizedOffset: selectedPoint).tap()
         wait(app) { app.menuItems["Copy"].exists || app.buttons["Copy"].exists }
         let copy = app.menuItems["Copy"].exists ? app.menuItems["Copy"] : app.buttons["Copy"]
         XCTAssertTrue(copy.isHittable); copy.tap()

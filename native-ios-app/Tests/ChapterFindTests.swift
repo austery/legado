@@ -166,4 +166,37 @@ final class ChapterFindTests: XCTestCase {
         XCTAssertNil(right.textStorage.attribute(.backgroundColor, at: 0, effectiveRange: nil))
     }
 
+    func testManualSpreadTurnRetiresFindRevealBeforeTypographyReflow() async throws {
+        let body = (0..<240).map { "Paragraph \($0) continued reading text." }.joined(separator: "\n")
+        let context = ChapterFindContext(chapterKey: "source/book/chapter", readingIdentity: "reading", text: body)
+        let find = ChapterFindSession(); find.open(context); find.query = "Paragraph 10 "
+        var style = ReadingStyle()
+        let view = AnchoredTextView(); view.delegate = view; view.isEditable = false
+        let host = UIViewController(); host.view = view
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1194, height: 834))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        var samples: [Int] = []
+        func configure() {
+            view.configure(chapterKey: context.chapterKey, body: body, style: style,
+                restoration: ReadingRestoration(identity: context.readingIdentity, utf16Offset: 0),
+                onDisplayed: { _, _ in }, onParagraphScroll: { _, offset in samples.append(offset) })
+            view.applyFind(find.presentation); view.layoutIfNeeded()
+        }
+        configure(); try await Task.sleep(nanoseconds: 150_000_000)
+        find.move(forward: true); configure(); try await Task.sleep(nanoseconds: 150_000_000)
+        let matchAnchor = view.anchor
+        let pages = try XCTUnwrap(view.spreadView)
+        XCTAssertTrue(pages.accessibilityScroll(.left), "A real user paging action must advance")
+        let accepted = view.anchor
+        XCTAssertGreaterThan(accepted, matchAnchor)
+        XCTAssertEqual(samples.last, accepted)
+        let sampleCount = samples.count
+        style.size = 30; configure(); try await Task.sleep(nanoseconds: 150_000_000); view.layoutIfNeeded()
+        XCTAssertTrue(try XCTUnwrap(view.spreadView).visibleRanges.contains { NSLocationInRange(accepted, $0) },
+                      "Reflow must follow the latest user page turn rather than the older Find hit")
+        XCTAssertEqual(view.anchor, accepted)
+        XCTAssertEqual(samples.count, sampleCount, "Reflow itself must not save another position")
+    }
+
 }
