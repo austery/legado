@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class ReadingPreferencesTests: XCTestCase {
+    func testShelfViewDefaultsToGridAndPersistsBothModes() {
+        withDefaults { defaults in
+            let preferences = ReadingPreferences(defaults: defaults)
+            XCTAssertEqual(preferences.shelfLayout, .grid)
+            preferences.shelfLayout = .list
+            XCTAssertEqual(ReadingPreferences(defaults: defaults).shelfLayout, .list)
+            preferences.shelfLayout = .grid
+            XCTAssertEqual(ReadingPreferences(defaults: defaults).shelfLayout, .grid)
+        }
+    }
     func testPrefetchIsOptInAndPersistsAcrossStores() {
         withDefaults { defaults in
             let preferences = ReadingPreferences(defaults: defaults)

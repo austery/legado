@@ -156,6 +156,7 @@ struct FixtureReaderApp: App {
         if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.storageKey)
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.prefetchKey)
+            UserDefaults.standard.removeObject(forKey: ReadingPreferences.shelfLayoutKey)
             UserDefaults.standard.removeObject(forKey: "fixture.switchCommitted")
             UserDefaults.standard.removeObject(forKey: "fixture.sourceReplies")
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
