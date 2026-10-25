@@ -209,14 +209,78 @@ final class ReaderUITests: XCTestCase {
         app.buttons["navigation.search"].tap(); findByAuthor()
         app.buttons["details.add"].tap()
         XCTAssertTrue(app.staticTexts["Added to shelf."].waitForExistence(timeout: 15))
-        app.buttons["details.contents"].tap()
-        let chapter = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "contents.chapter.", "Chapter 2")).firstMatch
-        XCTAssertTrue(chapter.waitForExistence(timeout: 10)); chapter.tap()
-        XCTAssertTrue(app.buttons["reader.shelf"].waitForExistence(timeout: 15))
-        wait(app) { self.state(app).contains("chapter=1;") }
         app.buttons["reader.shelf"].tap()
         let book = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
         XCTAssertTrue(book.waitForExistence(timeout: 15))
+        let bookIdentifier = book.identifier
+        func group(_ title: String) -> XCUIElement {
+            app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "shelf.group.", title)).firstMatch
+        }
+        func createGroup(_ title: String) -> String {
+            app.buttons["shelf.newGroup"].tap()
+            let field = app.textFields["shelf.groupName"]
+            XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText(title)
+            app.buttons["shelf.group.save"].tap()
+            XCTAssertTrue(group(title).waitForExistence(timeout: 10))
+            return group(title).identifier.replacingOccurrences(of: "shelf.group.", with: "")
+        }
+        let laterID = createGroup("Later")
+        let fictionID = createGroup("Fiction")
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.bookMenu.")).firstMatch.tap()
+        app.buttons["Set groups"].tap()
+        XCTAssertTrue(app.buttons["shelf.membership.group." + laterID].waitForExistence(timeout: 5))
+        app.buttons["shelf.membership.group." + laterID].tap()
+        app.buttons["shelf.membership.group." + fictionID].tap()
+        app.buttons["shelf.membership.save"].tap()
+        wait(app) { !book.exists }
+        group("Later").tap()
+        XCTAssertTrue(app.buttons[bookIdentifier].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count, 1)
+        app.buttons[bookIdentifier].tap()
+        XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
+        app.buttons["reader.contents"].tap()
+        let chapter = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "contents.chapter.", "Chapter 2")).firstMatch
+        XCTAssertTrue(chapter.waitForExistence(timeout: 10)); chapter.tap()
+        let body = app.textViews["reader.text"]
+        wait(app) { self.state(app).contains("chapter=1;") && (body.value as? String ?? "").contains("第199段") }
+        body.swipeUp(); body.swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        let identity = readingIdentity(app)
+        XCTAssertGreaterThan(position, 0, "The shared reading position must be a nonzero paragraph")
+        XCTAssertEqual(identity.count, 3, "Observe source, book and chapter identity")
+        capture("shelf-group-a-nonzero-reading-position")
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(app.buttons["shelf.home"].waitForExistence(timeout: 10))
+        app.buttons["shelf.home"].tap(); group("Fiction").tap()
+        XCTAssertTrue(app.buttons[bookIdentifier].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count, 1)
+        app.buttons[bookIdentifier].tap()
+        wait(app) { self.state(app).contains("chapter=1;") && self.anchor(app) == position }
+        XCTAssertEqual(readingIdentity(app), identity, "Both group appearances must open the same book and active source")
+        capture("shelf-group-b-shared-reading-position")
+        app.buttons["reader.shelf"].tap()
+        app.terminate(); app.launchEnvironment["READER_UI_RESET"] = "0"; app.launch()
+        XCTAssertTrue(app.buttons["shelf.newGroup"].waitForExistence(timeout: 40))
+        for title in ["Later", "Fiction"] {
+            XCTAssertTrue(group(title).exists)
+            group(title).tap()
+            XCTAssertTrue(app.buttons[bookIdentifier].waitForExistence(timeout: 10))
+            XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count, 1)
+            app.buttons[bookIdentifier].tap()
+            wait(app) { self.state(app).contains("chapter=1;") && self.anchor(app) == position }
+            XCTAssertEqual(readingIdentity(app), identity, "Relaunch must preserve one shared source, chapter and paragraph")
+            capture("shelf-relaunched-" + title.lowercased() + "-shared-position")
+            app.buttons["reader.shelf"].tap()
+            XCTAssertTrue(app.buttons["shelf.home"].waitForExistence(timeout: 10)); app.buttons["shelf.home"].tap()
+        }
+        for id in [laterID, fictionID] {
+            app.buttons["shelf.groupMenu." + id].tap(); app.buttons["Delete group"].tap()
+            app.buttons.matching(identifier: "shelf.deleteGroup.confirm").firstMatch.tap()
+            wait(app) { !app.buttons["shelf.group." + id].exists }
+        }
+        XCTAssertTrue(book.waitForExistence(timeout: 10), "Deleting the populated groups keeps the same book ungrouped")
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.bookMenu.")).firstMatch.tap()
         app.buttons["Remove from shelf"].tap()
         app.buttons.matching(identifier: "shelf.remove.confirm").firstMatch.tap()
@@ -235,7 +299,8 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.shelf"].tap()
         XCTAssertTrue(book.waitForExistence(timeout: 10)); book.tap()
         XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
-        wait(app) { self.state(app).contains("chapter=1;") }
+        wait(app) { self.state(app).contains("chapter=1;") && self.anchor(app) == position }
+        XCTAssertEqual(readingIdentity(app), identity, "Re-admission preserves the same active source and reading position")
         capture("shelf-readmission-retains-chapter")
         app.terminate()
     }

@@ -1,0 +1,25 @@
+{
+  "testCommit": "7282131339fd7233ab3744a44d45b6137fc2f5cf",
+  "output": "/private/tmp/bookshelf-f01-ui-green",
+  "method": "ReaderUITests/testEmptyShelfAuthorSearchTrialAdmissionRemovalAndReadmission",
+  "passed": 1,
+  "failed": 0,
+  "skipped": 0,
+  "screenshots": [
+    {
+      "file": "group-a-nonzero-position.png",
+      "sha256": "01516b7c7b5ff71d00449d55ea580e2319d364e5505c106b57951cd3df018502",
+      "originalAttachment": "D3EFD243-AFBF-4ACE-B19A-31E449E877DE.png"
+    },
+    {
+      "file": "group-b-shared-position.png",
+      "sha256": "220ba201e1754ad6457b152c1808d4221c331edcd22f855c1fbbb75e6252adfb",
+      "originalAttachment": "A7255D5A-6556-40FC-A7C3-B8E9E236BAF3.png"
+    },
+    {
+      "file": "relaunched-group-b-shared-position.png",
+      "sha256": "a30e3ced9706ce4f3dc9ca4d8f9d9449425e8775ba7f094062fbf80633b836d5",
+      "originalAttachment": "BABDE3BF-971C-4C39-981F-4ABF2CCF8473.png"
+    }
+  ]
+}
