@@ -116,6 +116,7 @@ struct FixtureReaderApp: App {
                 storedStatus = (try? storedRecord()) ?? "query-failed"
                 positionStatus = "dragging=\(text?.isDragging ?? false);decelerating=\(text?.isDecelerating ?? false);canSave=\(model.content?.reading.map { $0.canSave ? "true" : "false" } ?? "nil");chapter=\(chapter);anchor=\(text?.anchor ?? -1);source=\(model.content?.chapter.sourceId ?? "none");book=\(model.content?.chapter.bookId ?? "none");id=\(model.content?.chapter.id ?? "none")"
                 if let text {
+                    positionStatus += ";[DEBUG-find-copy]firstResponder=\(text.isFirstResponder);canCopy=\(text.canPerformAction(#selector(UIResponderStandardEditActions.copy(_:)), withSender: nil));"
                     let ranges = text.spreadView?.visibleRanges ?? []
                     positionStatus += ";layout=\(text.usesSpreads ? "spread" : "scroll");spread=\(text.spreadView?.spread ?? -1);visible=\(ranges.map { "\($0.location):\($0.length)" }.joined(separator: ","));"
                     let rendered = text.spreadView?.subviews.compactMap { $0 as? UITextView }.filter {
