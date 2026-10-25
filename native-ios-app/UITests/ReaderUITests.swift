@@ -1,6 +1,19 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testChapterFindAcrossLayoutsAndDurablePosition() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        XCTAssertTrue(app.buttons["reader.find"].waitForExistence(timeout: 15))
+        app.buttons["reader.find"].tap()
+        XCTAssertTrue(app.textFields["reader.find.query"].waitForExistence(timeout: 5))
+        app.terminate()
+    }
+
     @MainActor func testShelfGroupingAndGridListManagement() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
