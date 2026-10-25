@@ -21,7 +21,7 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.find.next"].tap()
         wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" && self.anchor(app) > original }
         waitForStableViewport(app)
-        let position = anchor(app)
+        var position = anchor(app)
         XCTAssertGreaterThan(position, 0)
         capture("find-portrait-explicit-match")
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -35,6 +35,16 @@ final class ReaderUITests: XCTestCase {
         assertRenderedAnchor(app, identity: identity, position: position)
         app.buttons["reader.find.previous"].tap()
         wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" && self.anchor(app) == position }
+        let foundPosition = position
+        app.textViews["reader.text"].swipeLeft()
+        wait(app) { self.anchor(app) > foundPosition }
+        position = anchor(app)
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5)); app.buttons["typography.larger"].tap()
+        app.buttons["Done"].tap()
+        assertRenderedAnchor(app, identity: identity, position: position)
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "1 of 1", "Manual reading retains the query and selected result identity")
+        capture("find-manual-page-turn-survives-reflow")
         app.buttons["reader.find.close"].tap()
         XCTAssertFalse(query.exists)
         XCTAssertEqual(anchor(app), position, "Closing must not undo an explicit reading jump")

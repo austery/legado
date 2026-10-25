@@ -302,6 +302,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     private func acceptPageTurn(_ offset: Int) {
         guard readingIsActive, !restoring, !needsAnchorRestoration, bodyIsVisible,
               let normalized = paragraphStart(offset) else { return }
+        findRevealOffset = nil
+        preservingFindAnchor = false
         anchor = normalized
         guard let identity = restoration?.identity, displayedIdentity == identity, validRestoration else { return }
         onParagraphScroll?(identity, anchor)

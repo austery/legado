@@ -50,3 +50,7 @@ Basebcf99c6e193e954a586f8d0f8e094c6c25d9bf9d; task branchcodex/chapter-find. All
 ## H2 — owner assessment
 
 Pending runnable preview and Lei's normal/failure-journey and value/maintenance assessment. Simulator success does not supply H2 or physical-device acceptance. **Merge authorization: explicitly withheld.**
+
+## Implementation clarification: latest intentional reading action
+
+The selected occurrence identity/query survives reflow while the chapter remains active. A later manual scroll/page turn is a new intentional reading action and supersedes the earlier temporary reveal focus. Subsequent reflow follows the latest accepted reading paragraph; Next/Previous can explicitly reveal the retained result again. This preserves H1.8 existing reading behavior and H1.5 intentional-position authority, without adding a new persistence contract. The standard-review P2 interleaving was reproduced by a real UIKit paging/reflow test before the narrow fix.

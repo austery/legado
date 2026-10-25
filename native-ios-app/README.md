@@ -38,7 +38,8 @@ panel clears transient find state without undoing an intentional reading jump.
 
 Only explicit navigation follows the existing paragraph-save path; typing, highlights,
 rotation and typography do not write reading progress. Portrait and two-page landscape
-share original UTF-16 ranges, including matches crossing a page boundary. Native
+share original UTF-16 ranges, including matches crossing a page boundary. Manual scrolling or page turning supersedes temporary find reveal focus; reflow
+follows the latest accepted reading paragraph until another explicit find jump. Native
 selection and Copy remain UIKit-owned. Source/book/chapter/session changes retire old
 find state and queued publications. Find reads loaded text without network requests,
 new engine exports, dependencies, schema changes or query history. It does not search
