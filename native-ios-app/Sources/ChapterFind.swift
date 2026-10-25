@@ -9,7 +9,7 @@ struct ChapterFindContext: Equatable {
 @MainActor
 final class ChapterFindSession: ObservableObject {
     @Published private(set) var context: ChapterFindContext?
-    @Published var query = ""
+    @Published var query = "" { didSet { updateMatches() } }
     @Published private(set) var matches: [NSRange] = []
     @Published private(set) var selectedIndex: Int?
     var isPresented: Bool { context != nil }
@@ -30,6 +30,22 @@ final class ChapterFindSession: ObservableObject {
         query = ""
         matches = []
         selectedIndex = nil
+    }
+
+    private func updateMatches() {
+        selectedIndex = nil
+        guard let context, !query.isEmpty else { matches = []; return }
+        let body = context.text as NSString
+        var found: [NSRange] = []
+        var cursor = 0
+        while cursor < body.length {
+            let range = body.range(of: query, options: .literal,
+                                   range: NSRange(location: cursor, length: body.length - cursor))
+            guard range.location != NSNotFound else { break }
+            found.append(range)
+            cursor = NSMaxRange(range)
+        }
+        matches = found
     }
 
     func move(forward: Bool) {}
