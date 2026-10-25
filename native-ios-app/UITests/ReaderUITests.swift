@@ -91,6 +91,24 @@ final class ReaderUITests: XCTestCase {
         body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.60)).tap()
         wait(app) { self.selectionLength(app) == 0 }
         XCTAssertTrue(query.exists)
+        verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
+        app.terminate()
+    }
+
+    @MainActor func testChapterFindLandscapeRejectedSaveAndChapterRetirement() throws {
+        let app = launchControlsReader()
+        let original = anchor(app)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") && app.frame.width > app.frame.height }
+        app.buttons["reader.find"].tap()
+        let query = app.textFields["reader.find.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("第120段\n")
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+        verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
+        app.terminate()
+    }
+
+    @MainActor private func verifyFindRejectedSaveAndChapterRetirement(_ app: XCUIApplication, query: XCUIElement, original: Int) {
         app.buttons["fixture.saveFailure"].tap()
         app.buttons["reader.find.next"].tap()
         wait(app) { self.anchor(app) > original }
@@ -110,7 +128,6 @@ final class ReaderUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["reader.find.status"].label, "Enter text to find")
         XCTAssertFalse(app.buttons["reader.find.next"].isEnabled)
         app.buttons["reader.find.close"].tap()
-        app.terminate()
     }
 
     @MainActor func testShelfGroupingAndGridListManagement() throws {
