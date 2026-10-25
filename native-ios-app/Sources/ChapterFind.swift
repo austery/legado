@@ -1,9 +1,22 @@
 import SwiftUI
+import UIKit
 
 struct ChapterFindContext: Equatable {
     let chapterKey: String
     let readingIdentity: String
     let text: String
+}
+
+struct ChapterFindRequest: Equatable {
+    let id: UUID
+    let range: NSRange
+}
+
+struct ChapterFindPresentation: Equatable {
+    let context: ChapterFindContext
+    let matches: [NSRange]
+    let selectedRange: NSRange?
+    let request: ChapterFindRequest?
 }
 
 @MainActor
@@ -12,7 +25,13 @@ final class ChapterFindSession: ObservableObject {
     @Published var query = "" { didSet { updateMatches() } }
     @Published private(set) var matches: [NSRange] = []
     @Published private(set) var selectedIndex: Int?
+    @Published private(set) var request: ChapterFindRequest?
     var isPresented: Bool { context != nil }
+    var presentation: ChapterFindPresentation? {
+        guard let context else { return nil }
+        return ChapterFindPresentation(context: context, matches: matches,
+                                       selectedRange: selectedIndex.map { matches[$0] }, request: request)
+    }
 
     func open(_ context: ChapterFindContext) {
         self.context = context
@@ -33,6 +52,7 @@ final class ChapterFindSession: ObservableObject {
     }
 
     private func updateMatches() {
+        request = nil
         selectedIndex = nil
         guard let context, !query.isEmpty else { matches = []; return }
         let body = context.text as NSString
@@ -55,6 +75,7 @@ final class ChapterFindSession: ObservableObject {
         } else {
             selectedIndex = forward ? 0 : matches.count - 1
         }
+        if let selectedIndex { request = ChapterFindRequest(id: UUID(), range: matches[selectedIndex]) }
     }
 }
 
@@ -92,5 +113,21 @@ struct ChapterFindPanel: View {
         if session.matches.isEmpty { return "No matches" }
         if let index = session.selectedIndex { return "\(index + 1) of \(session.matches.count)" }
         return "\(session.matches.count) matches"
+    }
+}
+
+/// Temporary display attributes leave the original body, layout metrics and UIKit selection intact.
+extension UITextView {
+    func updateFindHighlights(matches: [NSRange], selected: NSRange?, originalRange: NSRange) {
+        layoutManager.removeTemporaryAttribute(.backgroundColor,
+            forCharacterRange: NSRange(location: 0, length: textStorage.length))
+        for match in matches {
+            let intersection = NSIntersectionRange(match, originalRange)
+            guard intersection.length > 0 else { continue }
+            let local = NSRange(location: intersection.location - originalRange.location, length: intersection.length)
+            let color = match == selected ? UIColor.systemOrange.withAlphaComponent(0.65)
+                : UIColor.systemYellow.withAlphaComponent(0.4)
+            layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: local)
+        }
     }
 }

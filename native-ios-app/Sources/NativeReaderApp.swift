@@ -69,7 +69,7 @@ struct ReaderScreen: View {
                 if model.route == .reading && chapterFind.isPresented { ChapterFindPanel(session: chapterFind) }
                 ZStack {
                     if let content = model.content {
-                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() })
+                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() }, find: chapterFind.presentation)
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)

@@ -33,6 +33,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     private var displayScheduled = false
     private var renderGeneration = 0
     private var userScrolling = false
+    private var findPresentation: ChapterFindPresentation?
+    private var lastFindRequest: UUID?
     private var onDisplayed: ((String, Int) -> Void)?
     private var onParagraphScroll: ((String, Int) -> Void)?
 
@@ -202,17 +204,19 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         let wasRestoring = restoring
         restoring = true
         defer { restoring = wasRestoring }
+        let displayOffset = findPresentation?.selectedRange?.location ?? anchor
         if usesSpreads {
-            spreadView?.restore(anchor: anchor)
+            spreadView?.restore(anchor: displayOffset)
             needsAnchorRestoration = false
             return
         }
         layoutManager.ensureLayout(for: textContainer)
-        if let position = position(from: beginningOfDocument, offset: anchor) {
+        if let position = position(from: beginningOfDocument, offset: displayOffset) {
             // caretRect also represents the empty last paragraph after a trailing delimiter.
             let rect = caretRect(for: position)
             let maximum = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
-            let target = max(-adjustedContentInset.top, rect.minY - textContainerInset.top)
+            let top = findPresentation?.selectedRange == nil ? textContainerInset.top : max(96, textContainerInset.top)
+            let target = max(-adjustedContentInset.top, rect.minY - top)
             setContentOffset(CGPoint(x: 0, y: min(maximum, target)), animated: false)
         }
         needsAnchorRestoration = false
@@ -270,6 +274,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         previousSize = bounds.size
         restoring = wasRestoring
         scheduleDisplayed()
+        applyFindNavigation()
     }
 
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
@@ -283,6 +288,62 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         anchor = normalized
         guard let identity = restoration?.identity, displayedIdentity == identity, validRestoration else { return }
         onParagraphScroll?(identity, anchor)
+    }
+
+    func applyFind(_ candidate: ChapterFindPresentation?) {
+        let valid = candidate.flatMap { presentation -> ChapterFindPresentation? in
+            guard readingIsActive, presentation.context.chapterKey == chapterKey,
+                  presentation.context.readingIdentity == restoration?.identity,
+                  presentation.context.text == text,
+                  presentation.matches.allSatisfy(validFindRange),
+                  presentation.selectedRange.map(validFindRange) ?? true,
+                  presentation.request.map({ validFindRange($0.range) }) ?? true else { return nil }
+            return presentation
+        }
+        if findPresentation != valid {
+            findPresentation = valid
+            let wasRestoring = restoring
+            restoring = true
+            updateFindHighlights(matches: valid?.matches ?? [], selected: valid?.selectedRange,
+                                 originalRange: NSRange(location: 0, length: textStorage.length))
+            spreadView?.updateFindHighlights(matches: valid?.matches ?? [], selected: valid?.selectedRange)
+            restoring = wasRestoring
+            setNeedsLayout()
+        }
+        applyFindNavigation()
+    }
+
+    private func validFindRange(_ range: NSRange) -> Bool {
+        let body = text as NSString
+        guard range.location >= 0, range.length > 0, range.length <= body.length,
+              range.location <= body.length - range.length else { return false }
+        func splitsSurrogate(_ offset: Int) -> Bool {
+            offset > 0 && offset < body.length && (0xD800...0xDBFF).contains(body.character(at: offset - 1))
+                && (0xDC00...0xDFFF).contains(body.character(at: offset))
+        }
+        return !splitsSurrogate(range.location) && !splitsSurrogate(NSMaxRange(range))
+    }
+
+    private func applyFindNavigation() {
+        guard let findPresentation, let request = findPresentation.request,
+              lastFindRequest != request.id, readingIsActive, bodyIsVisible,
+              !restoring, !needsAnchorRestoration,
+              findPresentation.context.chapterKey == chapterKey,
+              findPresentation.context.readingIdentity == restoration?.identity,
+              findPresentation.context.text == text,
+              let offset = paragraphStart(request.range.location) else { return }
+        lastFindRequest = request.id
+        anchor = offset
+        restoreAnchor()
+        let identity = findPresentation.context.readingIdentity
+        let generation = renderGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.readingIsActive, self.bodyIsVisible,
+                  self.renderGeneration == generation, self.validRestoration,
+                  self.restoration?.identity == identity, self.displayedIdentity == identity,
+                  self.findPresentation?.request?.id == request.id else { return }
+            self.onParagraphScroll?(identity, offset)
+        }
     }
 
     private var bodyIsVisible: Bool {
@@ -327,6 +388,7 @@ struct ReadingText: UIViewRepresentable {
     var onParagraphScroll: ((String, Int) -> Void)? = nil
     var isReading = true
     var onToggleControls: (() -> Void)? = nil
+    var find: ChapterFindPresentation? = nil
 
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
@@ -344,5 +406,6 @@ struct ReadingText: UIViewRepresentable {
         view.onToggleControls = onToggleControls
         view.configure(chapterKey: chapterKey, body: text, style: style, restoration: restoration,
                        onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll, isReading: isReading)
+        view.applyFind(find)
     }
 }
