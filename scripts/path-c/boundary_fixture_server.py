@@ -1,4 +1,5 @@
 """Owned loopback gates for native reader integration tests."""
+import json
 from threading import Event, Lock
 from urllib.parse import urlsplit, parse_qs
 from c2_fixture_server import C2Handler
@@ -6,6 +7,7 @@ from discovery_fixture import discovery_response
 
 
 class BoundaryHandler(C2Handler):
+    observed_requests: dict[str, list[str]] = {}
     gates: dict[str, tuple[Event, Event, Event]] = {}
     lock = Lock()
     offline_runs: set[str] = set()
@@ -23,6 +25,13 @@ class BoundaryHandler(C2Handler):
         path = urlsplit(self.path).path
         run_prefix = '/'.join(path.split('/')[:3])
         route = path[len(run_prefix):]
+        if route == '/control/requests':
+            with self.lock:
+                observed = list(self.observed_requests.get(run_prefix, []))
+            self.reply(json.dumps(observed))
+            return
+        with self.lock:
+            self.observed_requests.setdefault(run_prefix, []).append(route)
         if route.startswith('/offline/'):
             with self.lock:
                 if route == '/offline/disable':

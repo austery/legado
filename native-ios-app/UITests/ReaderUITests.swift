@@ -1,16 +1,55 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
-    @MainActor func testChapterFindAcrossLayoutsAndDurablePosition() throws {
-        let app = XCUIApplication()
-        app.launchEnvironment["READER_UI_RESET"] = "1"
-        XCUIDevice.shared.orientation = .portrait
-        app.launch()
+    @MainActor func testChapterFindAcrossLayoutsAndDurablePosition() async throws {
+        let app = launchControlsReader()
+        let identity = readingIdentity(app)
+        waitForStableViewport(app)
+        let original = anchor(app)
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        let sourcePart = try XCTUnwrap(identity.first { $0.hasPrefix("source=") })
+        let source = String(sourcePart.dropFirst("source=".count))
+        let requestsURL = try XCTUnwrap(URL(string: source + "/control/requests"))
+        let (before, _) = try await URLSession.shared.data(from: requestsURL)
+        XCTAssertTrue(app.buttons["reader.find"].waitForExistence(timeout: 10)); app.buttons["reader.find"].tap()
+        let query = app.textFields["reader.find.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("第80段\n")
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 matches" }
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), original, "Typing must not navigate")
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored, "Typing/highlighting must not save progress")
+        app.buttons["reader.find.next"].tap()
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" && self.anchor(app) > original }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        XCTAssertGreaterThan(position, 0)
+        capture("find-portrait-explicit-match")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height && self.state(app).contains("layout=spread;") }
+        assertRenderedAnchor(app, identity: identity, position: position)
+        capture("find-landscape-same-occurrence")
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5)); app.buttons["typography.larger"].tap()
+        app.buttons["Done"].tap()
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" }
+        assertRenderedAnchor(app, identity: identity, position: position)
+        app.buttons["reader.find.previous"].tap()
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" && self.anchor(app) == position }
+        app.buttons["reader.find.close"].tap()
+        XCTAssertFalse(query.exists)
+        XCTAssertEqual(anchor(app), position, "Closing must not undo an explicit reading jump")
+        let (after, _) = try await URLSession.shared.data(from: requestsURL)
+        XCTAssertEqual(before, after, "Find and reflow must not request chapter/source data")
+        app.buttons["reader.shelf"].tap()
         let book = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 15)); book.tap()
+        wait(app) { self.state(app).contains("chapter=1;") && self.anchor(app) == position }
+        app.terminate(); app.launchEnvironment["READER_UI_RESET"] = "0"; app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"; app.launch()
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
-        XCTAssertTrue(app.buttons["reader.find"].waitForExistence(timeout: 15))
-        app.buttons["reader.find"].tap()
-        XCTAssertTrue(app.textFields["reader.find.query"].waitForExistence(timeout: 5))
+        wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertFalse(query.exists, "Find state is transient")
+        capture("find-relaunched-saved-paragraph")
         app.terminate()
     }
 
