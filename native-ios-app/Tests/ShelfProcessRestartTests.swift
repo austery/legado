@@ -13,6 +13,8 @@ final class ShelfProcessRestartTests: XCTestCase {
         let chapters: [String]
         let readingChapter: String
         let paragraphOffset: Int32
+        let groupIDs: [String]
+        let groupNames: [String]
     }
     private var manifestURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -80,8 +82,15 @@ final class ShelfProcessRestartTests: XCTestCase {
         XCTAssertGreaterThan(offset, 0)
         model.showShelf(); try await settle(model)
         XCTAssertNil(model.resumeNotice)
+        let groupNames = ["Later \(run)", "Reading \(run)"]
+        for name in groupNames { model.createShelfGroup(name); try await settle(model) }
+        let groupIDs = groupNames.compactMap { name in model.shelfGroups.first { $0.name == name }?.id }
+        XCTAssertEqual(groupIDs.count, 2)
+        let kept = try XCTUnwrap(model.shelf.first { $0.book.id == book.id && $0.book.sourceId == book.sourceId })
+        model.changeShelfGroups([kept], add: groupIDs, remove: []); try await settle(model)
         let manifest = Manifest(processID: getpid(), sourceID: book.sourceId, bookID: book.id,
-            chapters: model.chapters.map(\.id), readingChapter: readingChapter, paragraphOffset: Int32(offset))
+            chapters: model.chapters.map(\.id), readingChapter: readingChapter, paragraphOffset: Int32(offset),
+            groupIDs: groupIDs, groupNames: groupNames)
         try Data(json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false").utf8).write(to: file)
         model.importFile(file); try await settle(model); model.confirmFixtureImport(); try await settle(model)
         // XCTest reinstalls the host between phases; handoff must be on disk before that migration.
@@ -97,9 +106,16 @@ final class ShelfProcessRestartTests: XCTestCase {
         let model = ReaderModel()
         model.start(); try await settle(model)
         XCTAssertEqual(model.route, .shelf)
+        XCTAssertNil(model.shelfGroupID, "A cold launch starts at shelf home")
         XCTAssertFalse(model.sources.contains { $0.id == manifest.sourceID })
         let entry = try XCTUnwrap(model.shelf.first { $0.book.id == manifest.bookID && $0.book.sourceId == manifest.sourceID })
+        XCTAssertEqual(Set(entry.groupIds), Set(manifest.groupIDs))
+        XCTAssertEqual(Set(model.shelfGroups.filter { manifest.groupIDs.contains($0.id) }.map(\.name)), Set(manifest.groupNames))
+        XCTAssertFalse(model.visibleShelfBooks.contains { $0.book.id == manifest.bookID }, "Grouped books are not duplicated on home")
+        model.openShelfGroup(try XCTUnwrap(manifest.groupIDs.first))
+        XCTAssertTrue(model.visibleShelfBooks.contains { $0.book.id == manifest.bookID })
         model.openShelfBook(entry); try await settle(model)
+        XCTAssertEqual(model.shelfGroupID, manifest.groupIDs.first)
         XCTAssertEqual(model.chapters.map(\.id), manifest.chapters)
         XCTAssertEqual(model.route, .reading)
         XCTAssertEqual(model.content?.chapter.id, manifest.readingChapter)
