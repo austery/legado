@@ -18,6 +18,18 @@ final class ReaderModel: ObservableObject {
     }
 
     @Published var shelf: [ShelfBookSnapshot] = []
+    @Published private(set) var shelfGroups: [ShelfGroupSnapshot] = []
+    @Published private(set) var shelfToken = ""
+    @Published private(set) var shelfGroupID: String?
+    var currentShelfGroup: ShelfGroupSnapshot? { shelfGroups.first { $0.id == shelfGroupID } }
+    var visibleShelfBooks: [ShelfBookSnapshot] {
+        if let shelfGroupID { return shelf.filter { $0.groupIds.contains(shelfGroupID) } }
+        return shelf.filter { $0.groupIds.isEmpty }
+    }
+    func openShelfGroup(_ id: String?) {
+        guard id == nil || shelfGroups.contains(where: { $0.id == id }) else { return }
+        shelfGroupID = id
+    }
     @Published private(set) var offlineStatus: OfflineStatus?
     @Published private(set) var cacheProgress: CacheProgress?
     @Published private(set) var cacheNotice: String?
@@ -308,10 +320,68 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    func refreshShelf() {
+    func refreshShelf(preservingMessage: String? = nil) {
         perform(retry: { [weak self] in self?.refreshShelf() }, start: { self.engine.listShelf(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? ShelfReply else { return }
-            self.shelf = reply.books
+            self.acceptShelfOrganization(reply)
+            if let preservingMessage { self.message = preservingMessage }
+        }
+    }
+
+    private func acceptShelfOrganization(_ reply: ShelfReply) {
+        shelf = reply.books; shelfGroups = reply.groups; shelfToken = reply.token
+        if let shelfGroupID, !shelfGroups.contains(where: { $0.id == shelfGroupID }) { self.shelfGroupID = nil }
+    }
+
+    func createShelfGroup(_ name: String, expectedToken: String? = nil, completion: @escaping (Bool) -> Void = { _ in }) {
+        mutateShelf(expectedToken: expectedToken, completion: completion) { token, reply in
+            self.engine.createShelfGroup(name: name, expectedToken: token, completion: reply)
+        }
+    }
+
+    func renameShelfGroup(_ group: ShelfGroupSnapshot, name: String, expectedToken: String? = nil,
+                          completion: @escaping (Bool) -> Void = { _ in }) {
+        mutateShelf(expectedToken: expectedToken, completion: completion) { token, reply in
+            self.engine.renameShelfGroup(groupId: group.id, name: name, expectedToken: token, completion: reply)
+        }
+    }
+
+    func deleteShelfGroup(_ group: ShelfGroupSnapshot, expectedToken: String? = nil,
+                          completion: @escaping (Bool) -> Void = { _ in }) {
+        mutateShelf(expectedToken: expectedToken, completion: completion) { token, reply in
+            self.engine.deleteShelfGroup(groupId: group.id, expectedToken: token, completion: reply)
+        }
+    }
+
+    func changeShelfGroups(_ entries: [ShelfBookSnapshot], add: [String], remove: [String],
+                           expectedToken: String? = nil, completion: @escaping (Bool) -> Void = { _ in }) {
+        let targets = entries.map { ShelfBookTarget(sourceId: $0.book.sourceId, bookId: $0.book.id) }
+        mutateShelf(expectedToken: expectedToken, completion: completion) { token, reply in
+            self.engine.changeShelfGroups(targets: targets, addGroupIds: add, removeGroupIds: remove,
+                                          expectedToken: token, completion: reply)
+        }
+    }
+
+    func removeShelfBooks(_ entries: [ShelfBookSnapshot], expectedToken: String? = nil,
+                          completion: @escaping (Bool) -> Void = { _ in }) {
+        let targets = entries.map { ShelfBookTarget(sourceId: $0.book.sourceId, bookId: $0.book.id) }
+        mutateShelf(expectedToken: expectedToken, completion: completion) { token, reply in
+            self.engine.removeShelfBooks(targets: targets, expectedToken: token, completion: reply)
+        }
+    }
+
+    private func mutateShelf(expectedToken: String?, completion: @escaping (Bool) -> Void,
+                             start: @escaping (String, @escaping (EngineReply) -> Void) -> EngineRequest) {
+        guard !busy else { completion(false); return }
+        let token = expectedToken ?? shelfToken
+        perform(retry: { [weak self] in self?.refreshShelf() }, failure: { [weak self] failure in
+            self?.message = failure.message
+            completion(false)
+            if failure.code == .staleUpdate { self?.refreshShelf(preservingMessage: failure.message) }
+        }, start: { start(token, $0) }) { [weak self] reply in
+            guard let self, let state = reply as? ShelfReply else { completion(false); return }
+            self.acceptShelfOrganization(state)
+            completion(true)
         }
     }
 

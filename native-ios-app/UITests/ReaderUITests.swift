@@ -1,6 +1,49 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testShelfGroupingAndGridListManagement() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        XCTAssertTrue(app.buttons["shelf.newGroup"].waitForExistence(timeout: 40))
+        app.buttons["shelf.newGroup"].tap()
+        let name = app.textFields["shelf.groupName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Later")
+        app.buttons["shelf.group.save"].tap()
+        let group = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.group.")).firstMatch
+        XCTAssertTrue(group.waitForExistence(timeout: 10))
+        let menu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.bookMenu.")).firstMatch
+        XCTAssertTrue(menu.exists); menu.tap()
+        app.buttons["Set groups"].tap()
+        let membership = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.membership.group.")).firstMatch
+        XCTAssertTrue(membership.waitForExistence(timeout: 5)); membership.tap()
+        app.buttons["shelf.membership.save"].tap()
+        wait(app) { app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count == 0 }
+        capture("shelf-home-group-grid")
+        group.tap()
+        XCTAssertTrue(app.buttons["shelf.home"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count, 1)
+        app.buttons["shelf.layout.list"].tap()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height }
+        capture("shelf-group-list-landscape")
+        app.buttons["shelf.home"].tap()
+        let groupMenu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.groupMenu.")).firstMatch
+        groupMenu.tap(); app.buttons["Delete group"].tap()
+        let confirmDeletion = app.buttons.matching(identifier: "shelf.deleteGroup.confirm").firstMatch
+        XCTAssertTrue(confirmDeletion.waitForExistence(timeout: 5)); confirmDeletion.tap()
+        wait(app) { app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.group.")).count == 0 }
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count, 1)
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launch()
+        XCTAssertTrue(app.buttons["shelf.layout.list"].waitForExistence(timeout: 40))
+        XCTAssertEqual(app.buttons["shelf.layout.list"].value as? String, "Selected")
+        capture("shelf-ungrouped-list-relaunched")
+        app.terminate()
+    }
     @MainActor private func launchDiscovery(_ scenario: String = "discovery") -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"

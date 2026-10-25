@@ -1,6 +1,10 @@
 import SwiftUI
 import UIKit
 
+enum ShelfLayout: String, CaseIterable {
+    case grid, list
+}
+
 /// Presentation preferences belong to this app, independently of book progress.
 @MainActor
 final class ReadingPreferences: ObservableObject {
@@ -8,6 +12,10 @@ final class ReadingPreferences: ObservableObject {
     static let storageKey = "nativeReader.readingStyle.v1"
     private let defaults: UserDefaults
     static let prefetchKey = "nativeReader.prefetchNextTwo.v1"
+    static let shelfLayoutKey = "nativeReader.shelfLayout.v1"
+    @Published var shelfLayout: ShelfLayout {
+        didSet { defaults.set(shelfLayout.rawValue, forKey: Self.shelfLayoutKey) }
+    }
     @Published var prefetchNextTwo: Bool {
         didSet { defaults.set(prefetchNextTwo, forKey: Self.prefetchKey) }
     }
@@ -22,6 +30,7 @@ final class ReadingPreferences: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        shelfLayout = defaults.string(forKey: Self.shelfLayoutKey).flatMap(ShelfLayout.init(rawValue:)) ?? .grid
         prefetchNextTwo = defaults.bool(forKey: Self.prefetchKey)
         let saved = defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode(ReadingStyle.self, from: $0) }
