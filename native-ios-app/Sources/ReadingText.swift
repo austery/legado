@@ -35,6 +35,9 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     private var userScrolling = false
     private var findPresentation: ChapterFindPresentation?
     private var lastFindRequest: UUID?
+    private var findHighlightGeneration = -1
+    private var findRevealOffset: Int?
+    private var preservingFindAnchor = false
     private var onDisplayed: ((String, Int) -> Void)?
     private var onParagraphScroll: ((String, Int) -> Void)?
 
@@ -161,7 +164,13 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         userScrolling = false
         self.chapterKey = chapterKey
         self.style = style
-        if newChapter || newIdentity || newBody { displayedIdentity = nil }
+        if newChapter || newIdentity || newBody {
+            displayedIdentity = nil
+            findPresentation = nil
+            findRevealOffset = nil
+            preservingFindAnchor = false
+            lastFindRequest = nil
+        }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = style.lineSpacing
         paragraph.paragraphSpacing = style.paragraphSpacing
@@ -182,14 +191,19 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         setNeedsLayout()
     }
 
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { userScrolling = true }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        userScrolling = true
+        preservingFindAnchor = false
+        findRevealOffset = nil
+    }
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate { userScrolling = false }
     }
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { userScrolling = false }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !usesSpreads, readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty else { return }
+        guard !usesSpreads, readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty,
+              !preservingFindAnchor || userScrolling else { return }
         let point = CGPoint(x: textContainerInset.left + 1, y: contentOffset.y + textContainerInset.top + 1)
         guard let position = closestPosition(to: point),
               let normalized = paragraphStart(offset(from: beginningOfDocument, to: position)) else { return }
@@ -204,7 +218,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         let wasRestoring = restoring
         restoring = true
         defer { restoring = wasRestoring }
-        let displayOffset = findPresentation?.selectedRange?.location ?? anchor
+        let displayOffset = findRevealOffset ?? anchor
         if usesSpreads {
             spreadView?.restore(anchor: displayOffset)
             needsAnchorRestoration = false
@@ -215,7 +229,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
             // caretRect also represents the empty last paragraph after a trailing delimiter.
             let rect = caretRect(for: position)
             let maximum = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
-            let top = findPresentation?.selectedRange == nil ? textContainerInset.top : max(96, textContainerInset.top)
+            let top = findRevealOffset == nil ? textContainerInset.top : max(96, textContainerInset.top)
             let target = max(-adjustedContentInset.top, rect.minY - top)
             setContentOffset(CGPoint(x: 0, y: min(maximum, target)), animated: false)
         }
@@ -279,6 +293,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
 
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
         if usesSpreads { return spreadView?.accessibilityScroll(direction) ?? false }
+        preservingFindAnchor = false
+        findRevealOffset = nil
         return super.accessibilityScroll(direction)
     }
 
@@ -300,8 +316,11 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
                   presentation.request.map({ validFindRange($0.range) }) ?? true else { return nil }
             return presentation
         }
-        if findPresentation != valid {
+        if findPresentation != valid || findHighlightGeneration != renderGeneration {
+            if findPresentation != nil || valid != nil { preservingFindAnchor = true }
+            if findPresentation?.selectedRange != valid?.selectedRange { findRevealOffset = nil }
             findPresentation = valid
+            findHighlightGeneration = renderGeneration
             let wasRestoring = restoring
             restoring = true
             updateFindHighlights(matches: valid?.matches ?? [], selected: valid?.selectedRange,
@@ -334,6 +353,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
               let offset = paragraphStart(request.range.location) else { return }
         lastFindRequest = request.id
         anchor = offset
+        findRevealOffset = request.range.location
+        preservingFindAnchor = true
         restoreAnchor()
         let identity = findPresentation.context.readingIdentity
         let generation = renderGeneration
