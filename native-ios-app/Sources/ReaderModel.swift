@@ -380,6 +380,7 @@ final class ReaderModel: ObservableObject {
             if failure.code == .staleUpdate { self?.refreshShelf(preservingMessage: failure.message) }
         }, start: { start(token, $0) }) { [weak self] reply in
             guard let self, let state = reply as? ShelfReply else { completion(false); return }
+            self.shelfNotice = nil
             self.acceptShelfOrganization(state)
             completion(true)
         }
