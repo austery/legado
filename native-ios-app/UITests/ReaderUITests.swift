@@ -53,6 +53,52 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
+    @MainActor func testChapterFindNoMatchesCopyFailureAndChapterRetirement() throws {
+        let app = launchControlsReader()
+        let original = anchor(app)
+        app.buttons["reader.find"].tap()
+        let query = app.textFields["reader.find.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("missing-phrase")
+        wait(app) { app.staticTexts["reader.find.status"].label == "No matches" }
+        XCTAssertFalse(app.buttons["reader.find.next"].isEnabled)
+        XCTAssertFalse(app.buttons["reader.find.previous"].isEnabled)
+        query.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 14))
+        wait(app) { app.staticTexts["reader.find.status"].label == "Enter text to find" }
+        query.typeText("第120段\n")
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 matches" }
+        XCTAssertEqual(anchor(app), original)
+        let body = app.textViews["reader.text"]
+        body.coordinate(withNormalizedOffset: selectionPoint(app)).press(forDuration: 1.2)
+        wait(app) { self.selectionLength(app) > 0 }
+        wait(app) { app.menuItems["Copy"].exists || app.buttons["Copy"].exists }
+        let copy = app.menuItems["Copy"].exists ? app.menuItems["Copy"] : app.buttons["Copy"]
+        XCTAssertTrue(copy.isHittable); copy.tap()
+        capture("find-native-copy")
+        body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.60)).tap()
+        wait(app) { self.selectionLength(app) == 0 }
+        XCTAssertTrue(query.exists)
+        app.buttons["fixture.saveFailure"].tap()
+        app.buttons["reader.find.next"].tap()
+        wait(app) { self.anchor(app) > original }
+        let position = anchor(app)
+        XCTAssertTrue(app.buttons["Retry save"].waitForExistence(timeout: 15))
+        XCTAssertEqual(query.value as? String, "第120段")
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "1 of 1")
+        capture("find-position-save-rejection")
+        app.buttons["fixture.saveFailure"].tap(); app.buttons["Retry save"].tap()
+        wait(app) { !app.buttons["Retry save"].exists }
+        XCTAssertEqual(anchor(app), position)
+        app.buttons["reader.previous"].tap()
+        wait(app) { self.state(app).contains("chapter=0;") }
+        XCTAssertFalse(query.exists, "A chapter change must retire the find panel")
+        app.buttons["reader.find"].tap()
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "Enter text to find")
+        XCTAssertFalse(app.buttons["reader.find.next"].isEnabled)
+        app.buttons["reader.find.close"].tap()
+        app.terminate()
+    }
+
     @MainActor func testShelfGroupingAndGridListManagement() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
@@ -725,7 +771,12 @@ final class ReaderUITests: XCTestCase {
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.changeSource"].waitForExistence(timeout: 15))
+        app.buttons["reader.find"].tap()
+        let findQuery = app.textFields["reader.find.query"]
+        XCTAssertTrue(findQuery.waitForExistence(timeout: 5)); findQuery.tap(); findQuery.typeText("C1-FIRST\n")
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 matches" }
         app.buttons["reader.changeSource"].tap()
+        XCTAssertFalse(findQuery.exists, "Source preparation must retire old find state")
         let work = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "discovered sources")).firstMatch
         XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
         let alternate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
@@ -748,6 +799,10 @@ final class ReaderUITests: XCTestCase {
         capture("switch-prepared-landscape")
         app.buttons["switch.confirm"].tap()
         wait(app) { self.state(app).contains("-alternate") && self.state(app).contains("canSave=true;") && self.anchor(app) == 0 }
+        app.buttons["reader.find"].tap()
+        XCTAssertTrue(findQuery.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "Enter text to find")
+        app.buttons["reader.find.close"].tap()
         capture("switch-committed")
         app.buttons["reader.shelf"].tap()
         XCTAssertTrue(book.waitForExistence(timeout: 15))

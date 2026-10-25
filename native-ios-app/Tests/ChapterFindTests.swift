@@ -113,4 +113,36 @@ final class ChapterFindTests: XCTestCase {
         XCTAssertEqual(view.text, body)
     }
 
+    func testRetiredReadingContextRejectsQueuedNavigationAndOldHighlights() async throws {
+        let body = "Start\n" + String(repeating: "plain body text\n", count: 60) + "NEEDLE target"
+        let old = ChapterFindContext(chapterKey: "source/book/chapter", readingIdentity: "old", text: body)
+        let find = ChapterFindSession()
+        let view = AnchoredTextView(); view.delegate = view; view.isEditable = false
+        let host = UIViewController(); host.view = view
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1194, height: 834))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        var samples: [String] = []
+        view.configure(chapterKey: old.chapterKey, body: body, style: ReadingStyle(),
+            restoration: ReadingRestoration(identity: old.readingIdentity, utf16Offset: 0),
+            onDisplayed: { _, _ in }, onParagraphScroll: { token, _ in samples.append(token) })
+        view.layoutIfNeeded(); try await Task.sleep(nanoseconds: 150_000_000)
+        find.open(old); find.query = "NEEDLE"; find.move(forward: true)
+        let retired = find.presentation
+        view.applyFind(retired)
+        // Retire before the queued user-position publication can reach the coordinator.
+        view.configure(chapterKey: "source/book/new-chapter", body: "New chapter", style: ReadingStyle(),
+            restoration: ReadingRestoration(identity: "new", utf16Offset: 0),
+            onDisplayed: { _, _ in }, onParagraphScroll: { token, _ in samples.append(token) })
+        view.applyFind(retired); view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(samples.isEmpty)
+        XCTAssertEqual(view.anchor, 0)
+        XCTAssertEqual(view.text, "New chapter")
+        XCTAssertNil(view.textStorage.attribute(.backgroundColor, at: 0, effectiveRange: nil))
+        for page in view.spreadView?.subviews.compactMap({ $0 as? ReadingPageTextView }) ?? [] where page.textStorage.length > 0 {
+            XCTAssertNil(page.textStorage.attribute(.backgroundColor, at: 0, effectiveRange: nil))
+        }
+    }
+
 }
