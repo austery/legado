@@ -1,6 +1,6 @@
 # SPEC-009: Native in-chapter find
 
-Date:2026-10-25. Status: Implemented; acceptance incomplete (Copy H3 decision and landscape UI timeout). Lei approved the entire proposed H1 in this chat on2026-10-25, explicitly requested simulator acceptance and withheld merge permission. At approval no feature code or tests had changed.
+Date:2026-10-25. Status: Implemented; simulator revalidation and exact-head C1 pending. Copy follow-up separated under owner-approved H3 (Issue58). Lei approved the entire proposed H1 in this chat on2026-10-25, explicitly requested simulator acceptance and withheld merge permission. At approval no feature code or tests had changed.
 
 ## Outcome
 
@@ -45,7 +45,7 @@ Owner H1 approval -> task-owned feature branch based on current native-reader ->
 
 ## Current execution state
 
-Basebcf99c6e193e954a586f8d0f8e094c6c25d9bf9d; task branchcodex/chapter-find. Allowed seams: existing Swift public text/view/navigation behavior and actual NativeReaderUI iPad journeys with controlled fixture sources, as approved in H1. No new harness or storage seam. Reviewed production head81416a52f and UI head9268b1c15: Standards0 remaining code findings; Spec0 code deviations, native Copy acceptance gap retained. Ordinary product94/94 passed; main UI and prior source-switch/regression evidence is revision-bound in docs/evidence/2026-10-25-chapter-find-progress.md. Independent landscape journey timed out at the unchanged driver deadline. Whole UI acceptance, owner H3 decision and exact-head C1 remain pending. Risk: code/transient UI two-way; deliberate navigation writes existing paragraph progress and closing is not undo. Radius Branch within native text/layout, controls and save coordination; no engine/storage-format changes allowed.
+Basebcf99c6e193e954a586f8d0f8e094c6c25d9bf9d; task branchcodex/chapter-find. Allowed seams: existing Swift public text/view/navigation behavior and actual NativeReaderUI iPad journeys with controlled fixture sources, as approved in H1. No new harness or storage seam. Reviewed production head81416a52f and UI head9268b1c15: Standards0 remaining code findings; Spec0 code deviations, native Copy acceptance gap retained. Ordinary product94/94 passed; main UI and prior source-switch/regression evidence is revision-bound in docs/evidence/2026-10-25-chapter-find-progress.md. Independent landscape journey timed out at the unchanged driver deadline. Whole UI acceptance and exact-head C1 remain pending. Lei approved keeping Copy as a separate follow-up in Issue58; H3 scope decision is recorded below. Risk: code/transient UI two-way; deliberate navigation writes existing paragraph progress and closing is not undo. Radius Branch within native text/layout, controls and save coordination; no engine/storage-format changes allowed.
 
 ## H2 — owner assessment
 
