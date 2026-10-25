@@ -65,4 +65,52 @@ final class ChapterFindTests: XCTestCase {
         XCTAssertNil(find.selectedIndex)
     }
 
+    func testHighlightsSurviveReflowWithoutChangingBodySelectionOrSamplingTyping() async throws {
+        let body = "Start\n" + String(repeating: "plain body text\n", count: 100) + "NEEDLE target\n" + String(repeating: "following body\n", count: 100)
+        let context = ChapterFindContext(chapterKey: "source/book/chapter", readingIdentity: "reading", text: body)
+        let find = ChapterFindSession()
+        var style = ReadingStyle()
+        let view = AnchoredTextView(); view.delegate = view; view.isEditable = false
+        let host = UIViewController(); host.view = view
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 834, height: 1194))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        var samples: [Int] = []
+        func configure() {
+            view.configure(chapterKey: context.chapterKey, body: body, style: style,
+                restoration: ReadingRestoration(identity: context.readingIdentity, utf16Offset: 0),
+                onDisplayed: { _, _ in }, onParagraphScroll: { _, offset in samples.append(offset) })
+            view.applyFind(find.presentation); view.layoutIfNeeded()
+        }
+        configure(); try await Task.sleep(nanoseconds: 150_000_000)
+        view.selectedRange = NSRange(location: 0, length: 1)
+        find.open(context); find.query = "NEEDLE"; configure()
+        XCTAssertEqual(find.matches, [NSRange(location: 1606, length: 6)])
+        XCTAssertNotNil(view.textStorage.attribute(.backgroundColor, at: 1606, effectiveRange: nil))
+        XCTAssertEqual(view.selectedRange, NSRange(location: 0, length: 1), "Highlighting must preserve native selection")
+        XCTAssertEqual(view.anchor, 0)
+        XCTAssertTrue(samples.isEmpty, "Typing/highlighting is not a reading action")
+        find.move(forward: true); configure()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(samples, [1606])
+        XCTAssertEqual(view.anchor, 1606)
+        style.size = 30; configure()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertNotNil(view.textStorage.attribute(.backgroundColor, at: 1606, effectiveRange: nil), "Typography must retain the selected highlight")
+        XCTAssertEqual(view.text, body)
+        XCTAssertEqual(samples, [1606], "Reflow is not another reading action")
+        window.frame = CGRect(x: 0, y: 0, width: 1194, height: 834)
+        configure(); try await Task.sleep(nanoseconds: 150_000_000); view.layoutIfNeeded()
+        XCTAssertTrue(view.usesSpreads)
+        let pages = try XCTUnwrap(view.spreadView)
+        XCTAssertTrue(pages.visibleRanges.contains { NSLocationInRange(1606, $0) })
+        let page = try XCTUnwrap(pages.subviews.compactMap { $0 as? ReadingPageTextView }.first { NSLocationInRange(1606, $0.originalRange) })
+        XCTAssertNotNil(page.textStorage.attribute(.backgroundColor, at: 1606 - page.originalRange.location, effectiveRange: nil))
+        XCTAssertEqual(samples, [1606])
+        find.close(); configure()
+        XCTAssertNil(page.textStorage.attribute(.backgroundColor, at: 1606 - page.originalRange.location, effectiveRange: nil))
+        XCTAssertEqual(view.anchor, 1606)
+        XCTAssertEqual(view.text, body)
+    }
+
 }
