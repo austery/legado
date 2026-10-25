@@ -199,4 +199,15 @@ final class ChapterFindTests: XCTestCase {
         XCTAssertEqual(samples.count, sampleCount, "Reflow itself must not save another position")
     }
 
+    func testCanonicallyEquivalentBodyReplacementRetiresOriginalUtf16Results() {
+        let first = ChapterFindContext(chapterKey: "source/book/chapter", readingIdentity: "reading", text: "éX")
+        let replacement = ChapterFindContext(chapterKey: first.chapterKey, readingIdentity: first.readingIdentity, text: "e\u{301}X")
+        XCTAssertEqual(first.text, replacement.text, "Swift equality is canonically equivalent, unlike body coordinates")
+        let find = ChapterFindSession(); find.open(first); find.query = "X"
+        XCTAssertEqual(find.matches, [NSRange(location: 1, length: 1)])
+        find.updateContext(replacement)
+        XCTAssertFalse(find.isPresented, "A different original UTF-16 body must retire old ranges")
+        XCTAssertTrue(find.matches.isEmpty)
+    }
+
 }
