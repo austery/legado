@@ -263,6 +263,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         let modeChanged = wantsSpreads != usesSpreads
         if wantsSpreads, spreadView == nil {
             let pages = ReadingSpreadView()
+            pages.updateFindHighlights(matches: findPresentation?.matches ?? [], selected: findPresentation?.selectedRange)
             pages.onTurn = { [weak self] offset in self?.acceptPageTurn(offset) }
             controlsTap.require(toFail: pages.panGestureRecognizer)
             spreadView = pages
