@@ -33,6 +33,8 @@ struct FixtureReaderApp: App {
     @State private var positionStatus = "preparing"
     @State private var storedStatus = "preparing"
     @State private var switchCommitted = false
+    @State private var rejectingGroupSave = false
+    @State private var shelfMutation = "none"
     private var scenario: String { ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] ?? "shelf" }
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
     var body: some Scene {
@@ -91,6 +93,19 @@ struct FixtureReaderApp: App {
                             } catch { failure = error.localizedDescription }
                         }.accessibilityIdentifier("fixture.saveFailure")
                     }.padding(8)
+                    if scenario == "shelf-mixed" {
+                        HStack {
+                            Button(rejectingGroupSave ? "Allow group saves" : "Reject group saves") {
+                                do {
+                                    try sql(rejectingGroupSave ? "DROP TRIGGER IF EXISTS ui_group_rejection" : "CREATE TRIGGER ui_group_rejection BEFORE UPDATE OF `group` ON books BEGIN SELECT RAISE(ABORT, 'Synthetic group save rejection'); END")
+                                    rejectingGroupSave.toggle()
+                                } catch { failure = error.localizedDescription }
+                            }.accessibilityIdentifier("fixture.groupSaveFailure")
+                            Button("Rename group from another engine") { Task { await changeFixtureGroup() } }
+                                .accessibilityIdentifier("fixture.externalGroupChange")
+                            Text("Shelf mutation").accessibilityIdentifier("fixture.shelfMutation").accessibilityValue(shelfMutation)
+                        }.font(.caption).padding(.horizontal, 8).disabled(model.busy)
+                    }
                 } else { ProgressView("Preparing synthetic shelf…") }
                 if let failure { Text(failure).accessibilityIdentifier("fixture.failure") }
             }.onReceive(tick) { _ in
@@ -143,6 +158,27 @@ struct FixtureReaderApp: App {
         }
     }
 
+    @MainActor private func changeFixtureGroup() async {
+        let other = ReaderEngine(); defer { other.close() }
+        let ready = await withCheckedContinuation { continuation in
+            _ = other.initialize { continuation.resume(returning: $0) }
+        }
+        guard ready is EngineReady else { failure = "Other engine failed to initialize"; return }
+        let reply = await withCheckedContinuation { continuation in
+            _ = other.listShelf { continuation.resume(returning: $0) }
+        }
+        guard let state = reply as? ShelfReply, let group = state.groups.first else {
+            failure = "Synthetic shelf group is missing"; return
+        }
+        let changed = await withCheckedContinuation { continuation in
+            _ = other.renameShelfGroup(groupId: group.id, name: group.name + " updated", expectedToken: state.token) {
+                continuation.resume(returning: $0)
+            }
+        }
+        guard changed is ShelfReply else { failure = "Synthetic group mutation failed"; return }
+        shelfMutation = "changed"
+    }
+
     @MainActor private func settle() async throws {
         let deadline = Date().addingTimeInterval(20)
         while (model.busy || model.searchRunning || model.searchCommandPending) && Date() < deadline {
@@ -166,6 +202,7 @@ struct FixtureReaderApp: App {
             }
         }
         model.start(); try await settle()
+        if scenario.hasPrefix("shelf-"), ProcessInfo.processInfo.environment["READER_UI_RESET"] != "1" { model.showShelf(); try await settle(); return }
         if scenario == "shelf", !model.shelf.isEmpty { model.showShelf(); try await settle(); return }
         if scenario == "sources", ProcessInfo.processInfo.environment["READER_UI_RESET"] != "1" {
             model.navigate(.sources); try await settle(); return
@@ -190,6 +227,7 @@ struct FixtureReaderApp: App {
         model.importFile(file); try await settle()
         if scenario == "sources" { model.navigate(.sources); try await settle(); return }
         model.confirmSourceImport(); try await settle()
+        if scenario == "shelf-empty" { model.showShelf(); try await settle(); return }
         if scenario.hasPrefix("discovery") {
             searchFixtureBase = base
             if scenario == "discovery-held" {
@@ -214,6 +252,18 @@ struct FixtureReaderApp: App {
             model.read(model.chapters[1]); try await settle()
         } else {
             model.addCurrentBook(); try await settle()
+            if scenario == "shelf-mixed" {
+                let secondBase = base + "-second"
+                let (secondData, _) = try await URLSession.shared.data(from: URL(string: secondBase + "/sources.json")!)
+                let secondJSON = String(decoding: secondData, as: UTF8.self)
+                    .replacingOccurrences(of: "class.name@text", with: "class.name@text##$## Second")
+                    .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$## Second")
+                try Data(secondJSON.utf8).write(to: file)
+                model.importFile(file); try await settle(); model.confirmSourceImport(); try await settle()
+                model.selectedSourceIDs = [secondBase]; model.search(); try await settle()
+                guard let second = model.results.first else { throw NSError(domain: "FixtureSetup", code: 7) }
+                model.select(second); try await settle(); model.addCurrentBook(); try await settle()
+            }
             if scenario == "readonly" {
                 model.read(model.chapters[0]); try await settle()
                 guard let reading = model.content?.reading else { throw NSError(domain: "FixtureSetup", code: 3) }
