@@ -1,25 +1,30 @@
 {
-  "executedSource": "1bc52d26403967a641011fe1eced144af6942e2a",
-  "output": "/private/tmp/chapter-find-ui-regressions",
-  "selectedUIPassed": 3,
+  "executedSource": "388731d1294ee6d74aeb8a69fd0b1274568496b4",
+  "output": "/private/tmp/chapter-find-ui-approved-scope",
+  "selectedUIPassed": 4,
   "failed": 0,
   "skipped": 0,
   "synthetic": true,
   "images": [
     {
-      "file": "manual-turn-reflow.png",
-      "sha256": "a0933b6db5b2ed60fdf7f0807f3177814f3b041f157248a366a0c0ade4c21fd7",
-      "attachment": "394DDCB7-E4D9-487D-B708-E2D115D0F979.png"
+      "file": "portrait-match.png",
+      "sha256": "9ffc7449faf55652dbb7dc478a618138f8104f7a40b406275b5d4ff3cc803e61",
+      "attachment": "974214D1-121E-4F14-BEBC-9744EF59398E.png"
     },
     {
       "file": "landscape-match.png",
-      "sha256": "908ead7f9d332811557375b52374df918cc453bc8670ccc996af3508425a1f2c",
-      "attachment": "5B374B1C-2827-4152-942B-E36215E19C18.png"
+      "sha256": "ee25ece1bac9bd85c9ac74a8bb8d7cf048eaf0d9a11214ddefe72c9ec3d117f1",
+      "attachment": "87DB6692-CA91-4E21-A51F-2F0097A6C53E.png"
     },
     {
-      "file": "portrait-match.png",
-      "sha256": "4e79dc18389b9acdf4e5c5a532daf24dbc9e3ed22dcd296c58b7d5009a5d9367",
-      "attachment": "461AEE6E-D37F-4204-99A0-8331CA61CCE1.png"
+      "file": "manual-turn-reflow.png",
+      "sha256": "5db46998ea296ce5e224351eb45ef7e54a7a9df8444ebb959a099c3c2695ac8f",
+      "attachment": "210C748C-9E24-41A2-9461-4BB5614A435C.png"
+    },
+    {
+      "file": "save-rejection-landscape.png",
+      "sha256": "a090c65daad005a3975027c0f8b32b25bea6a5af3b3ace9b0914c3aaa40f743e",
+      "attachment": "FFFD2EAB-CF13-47C0-91A6-2C248A68273B.png"
     }
   ]
 }

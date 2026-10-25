@@ -1,4 +1,4 @@
-# In-chapter find implementation evidence (in progress)
+# In-chapter find implementation evidence
 
 Issue57; approved SPEC-009. Basebcf99c6e193e954a586f8d0f8e094c6c25d9bf9d. User explicitly withheld merge. No PR publication or complete feature acceptance is claimed here.
 
@@ -52,3 +52,14 @@ The timed-out UI bundle lacks Info.plist; xcresulttool cannot read or export its
 Lei's2026-10-25 answer explicitly keeps this scope and follows up Copy separately. Issue58 preserves baseline reproduction, failed touch-menu evidence and future actual clipboard acceptance. The feature journey now asserts real native selection and retains no-match/clear, save rejection/retry and chapter retirement; it no longer certifies the deferred touch Copy menu. This is an owner-approved acceptance amendment, not an inferred waiver. The previous failed Copy runs remain failed.
 
 The independent landscape timeout is investigated by changing only input order: enter the query in portrait, then rotate into landscape before the unchanged save-rejection/retry/chapter assertions. Main previously passed this input/rotation order. Candidate hypotheses are a landscape keyboard animation, panel layout animation, or simulator idleness reporting; no lower-level cause is claimed. The driver deadline and result/count gates remain unchanged.
+
+
+## Canonical amended-scope acceptance
+
+Source388731d1294ee6d74aeb8a69fd0b1274568496b4, canonical scripts/path-c/reader_ui_ci.py, Xcode27.1/iOS27.0 owned iPad Pro11(M4), output/private/tmp/chapter-find-ui-approved-scope:4/4 passed, zero failures/skips. Executed methods: testChapterFindAcrossLayoutsAndDurablePosition70.119s; testChapterFindLandscapeRejectedSaveAndChapterRetirement24.694s; testChapterFindNoMatchesSelectionFailureAndChapterRetirement32.471s; testExplicitSourceSwitchAndRelaunch (exact timing in retained test log). This covers offscreen match/count/no typing-save, explicit next/previous, both layouts, typography/manual-page interleaving, accepted paragraph relaunch, real native selection, no-match/clear, rejected save/retry, chapter/source retirement and no find-triggered network requests. Raw screenshots were visually inspected and hash-copied into the adjacent evidence directory; manifest binds source and attachments. This is synthetic simulator evidence, not owner H2, physical-device comfort or Copy certification.
+
+Changing only query input order (portrait input then rotation) allowed the independent landscape journey to finish24.694s without changing its assertions or900-second driver deadline. This narrows the prior idleness symptom to the interaction sequence but does not establish its lower-level cause. The earlier timed-out aggregate remains failed. No product workaround or timeout relaxation was added.
+
+The first lightweight62-test run accidentally overlapped the actual UI listener; test_occupied_reading_port_is_not_reused_or_terminated failed to bind its deliberately occupied-port fixture with EADDRINUSE. It did not terminate/reuse the running UI listener. Its failed log is retained/private/tmp/chapter-find-python-final.log. After canonical UI teardown, the identical command ran sequentially:62/62 passed in9.254s, log/private/tmp/chapter-find-python-serial.log. No source/test changes were made to obtain that rerun.
+
+Review source388731d12: Standards0 code/validator findings, Spec0 deviations under the explicit H3 amendment. The Standards P3 stale current-status document was fixed and independently rechecked at88935f85f. Production remains81416a52f, covered by the94/94 ordinary-product run at8e0a6e451. No engine/KMP/persistence/schema/dependency change. Exact-head C1 will run on the published task revision; subsequent CI/PR records belong to Issue57 and the exact commit check suite. No merge is authorized; owner H2 remains pending.
