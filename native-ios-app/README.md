@@ -52,6 +52,35 @@ this description is not an assertion that validation or physical acceptance pass
 The formal north star's 14-day iPad use and independent community sources remain
 separate owner acceptance. H2 and merge approval remain pending.
 
+## Shelf organization (Issue #51)
+
+Library home shows named groups and ungrouped books together. Groups have one level;
+a book may appear in several groups while keeping one active source and reading
+record. New shelf admissions are ungrouped. Trial reading and caching remain
+independent of shelf admission.
+
+Use **New group** on home, a group's action menu to rename or delete it, and a
+book's visible action menu or long press to **Set groups**. The checklist saves
+explicit changes; Cancel keeps existing memberships. Batch editing shows mixed
+memberships and preserves groups left untouched. **Select all** applies only to
+the books in the current home or group, excluding books inside closed groups.
+Grid and list views share these operations; the selected view persists globally.
+Missing or unsupported cover images use a readable placeholder.
+
+**Remove from this group** keeps the book on the shelf and in its other groups.
+Deleting a group keeps its books; those with no remaining group appear on home.
+**Remove from shelf** removes every group membership but retains reading records
+and cached content. Explicit re-admission preserves the reading record and starts
+ungrouped. Group and shelf removal require distinct actions; clearing cached text
+remains a separate book operation.
+
+The existing KMP representation supports at most 63 custom groups. Native commands
+validate a coherent organization state and commit targeted changes atomically.
+A stale editor requires Cancel and reopening to review the current groups; it never
+silently reapplies old choices. See [Issue #51](https://github.com/austery/legado/issues/51)
+for scope, acceptance and recovery limits. Simulator evidence does not establish
+physical-device comfort, live-source acceptance or owner H2.
+
 ## Incremental search (SPEC-004)
 
 Search starts with **All enabled sources**, using the engine's enabled, supported

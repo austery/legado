@@ -21,9 +21,226 @@ import kotlinx.coroutines.withTimeout
 import io.legado.app.constant.BookType
 import io.legado.app.data.dao.NativeShelfException
 import io.legado.app.data.dao.NativeShelfFailure
+import io.legado.app.data.dao.NativeShelfTarget
 
 /** Native shelf persistence only; all databases and book records are synthetic. */
 class NativeShelfIntegrationTest {
+    @Test
+    fun reusedGroupIdentifiersNeverReattachOldMemberships() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            for (id in listOf("kept", "removed")) dao.addToShelf(
+                Book(bookUrl = id, origin = "source", name = id),
+                listOf(BookChapter(bookUrl = id, url = "chapter-$id")))
+            dao.createGroup("Growing", dao.organization().token)
+            val kept = NativeShelfTarget("source", "kept")
+            val removed = NativeShelfTarget("source", "removed")
+            dao.changeGroups(listOf(kept, removed), listOf(1L), emptyList(), dao.organization().token)
+            dao.removeBooks(listOf(removed), dao.organization().token)
+            val beforeDelete = dao.organization()
+            dao.deleteGroup(1L, beforeDelete.token)
+            val replacement = dao.createGroup("Replacement", dao.organization().token)
+            assertEquals(1L, replacement.groups.single().groupId)
+            assertEquals(0L, replacement.books.single().group)
+            val readmitted = dao.addToShelf(Book(bookUrl = "removed", origin = "source", name = "removed"), emptyList())
+            assertEquals(0L, readmitted.book.group)
+            assertEquals(NativeShelfFailure.STALE_ORGANIZATION, assertFailsWith<NativeShelfException> {
+                dao.deleteGroup(1L, beforeDelete.token)
+            }.failure)
+        }
+    }
+
+    @Test
+    fun groupNamesCapacityAndDeletedSlotReuseRespectExistingRepresentation() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            dao.createGroup("  Growing  ", dao.organization().token)
+            val before = dao.organization()
+            for (name in listOf("", "  ", " Growing ")) {
+                assertEquals(NativeShelfFailure.INVALID_INPUT, assertFailsWith<NativeShelfException> {
+                    dao.createGroup(name, before.token)
+                }.failure)
+                assertEquals(before, dao.organization())
+            }
+            repeat(62) { index -> dao.createGroup("Group $index", dao.organization().token) }
+            val full = dao.organization()
+            assertEquals(63, full.groups.size)
+            assertEquals(4611686018427387904L, full.groups.last().groupId)
+            assertEquals(NativeShelfFailure.GROUP_CAPACITY, assertFailsWith<NativeShelfException> {
+                dao.createGroup("Overflow", full.token)
+            }.failure)
+            assertEquals(full, dao.organization())
+            dao.deleteGroup(2L, full.token)
+            val reused = dao.createGroup("Replacement", dao.organization().token)
+            assertEquals(2L, reused.groups.single { it.groupName == "Replacement" }.groupId)
+        }
+    }
+
+    @Test
+    fun failedBatchMembershipAndGroupDeletionRollBackEveryWrittenRelationship() = runBlocking {
+        withDatabase { database, path ->
+            val dao = database.nativeShelfDao
+            for (id in listOf("a", "b")) dao.addToShelf(
+                Book(bookUrl = id, origin = "source", name = id, durChapterPos = 41),
+                listOf(BookChapter(bookUrl = id, url = "chapter-$id")))
+            dao.createGroup("Growing", dao.organization().token)
+            val before = dao.organization()
+            val targets = listOf(NativeShelfTarget("source", "a"), NativeShelfTarget("source", "b"))
+            BundledSQLiteDriver().open(path).use { connection ->
+                connection.execSQL("CREATE TRIGGER fail_second_membership BEFORE UPDATE OF `group` ON books WHEN NEW.bookUrl = 'b' BEGIN SELECT RAISE(ABORT, 'Synthetic second membership failure'); END")
+            }
+            assertFailsWith<Exception> { dao.changeGroups(targets, listOf(1L), emptyList(), before.token) }
+            assertEquals(before, dao.organization())
+            BundledSQLiteDriver().open(path).use { connection -> connection.execSQL("DROP TRIGGER fail_second_membership") }
+            val grouped = dao.changeGroups(targets, listOf(1L), emptyList(), before.token)
+            BundledSQLiteDriver().open(path).use { connection ->
+                connection.execSQL("CREATE TRIGGER fail_group_delete BEFORE DELETE ON book_groups BEGIN SELECT RAISE(ABORT, 'Synthetic group delete failure'); END")
+            }
+            assertFailsWith<Exception> { dao.deleteGroup(1L, grouped.token) }
+            assertEquals(grouped, dao.organization())
+            assertEquals(41, dao.openBook("source", "a").book.durChapterPos)
+        }
+    }
+
+    @Test
+    fun batchRemovalAndInvalidTargetsCannotPartiallyRemoveShelfBooks() = runBlocking {
+        withDatabase { database, path ->
+            val dao = database.nativeShelfDao
+            for (id in listOf("a", "b")) dao.addToShelf(
+                Book(bookUrl = id, origin = "source", name = id),
+                listOf(BookChapter(bookUrl = id, url = "chapter-$id")))
+            dao.createGroup("Growing", dao.organization().token)
+            val targets = listOf(NativeShelfTarget("source", "a"), NativeShelfTarget("source", "b"))
+            val before = dao.changeGroups(targets, listOf(1L), emptyList(), dao.organization().token)
+            val wrong = listOf(targets.first(), NativeShelfTarget("wrong-source", "b"))
+            assertEquals(NativeShelfFailure.IDENTITY_CONFLICT, assertFailsWith<NativeShelfException> {
+                dao.removeBooks(wrong, before.token)
+            }.failure)
+            assertEquals(before, dao.organization())
+            BundledSQLiteDriver().open(path).use { connection ->
+                connection.execSQL("CREATE TRIGGER fail_second_remove BEFORE UPDATE OF type ON books WHEN NEW.bookUrl = 'b' BEGIN SELECT RAISE(ABORT, 'Synthetic second removal failure'); END")
+            }
+            assertFailsWith<Exception> { dao.removeBooks(targets, before.token) }
+            assertEquals(before, dao.organization())
+        }
+    }
+
+    @Test
+    fun staleOrganizationFailsWhileReadingProgressDoesNotInvalidateMembershipEditing() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            val book = Book(bookUrl = "book", origin = "source", name = "Book")
+            dao.addToShelf(book, listOf(BookChapter(bookUrl = "book", url = "chapter", title = "Chapter")))
+            val emptyGroups = dao.organization()
+            val created = dao.createGroup("Growing", emptyGroups.token)
+            assertEquals(NativeShelfFailure.STALE_ORGANIZATION, assertFailsWith<NativeShelfException> {
+                dao.renameGroup(1L, "Stale", emptyGroups.token)
+            }.failure)
+            val saved = database.nativeResumeDao.save("source", "book", "chapter", 0, "first\nsecond", 6, 0,
+                io.legado.app.data.dao.NativeChapterProjection.from(book))
+            assertEquals(created.token, dao.organization().token)
+            val changed = dao.changeGroups(listOf(NativeShelfTarget("source", "book")), listOf(1L), emptyList(), created.token)
+            assertEquals(1L, changed.books.single().group)
+            assertEquals(saved, dao.resume("book"))
+            assertEquals(NativeShelfFailure.STALE_ORGANIZATION, assertFailsWith<NativeShelfException> {
+                dao.deleteGroup(1L, created.token)
+            }.failure)
+        }
+    }
+
+    @Test
+    fun shelfRemovalClearsEveryMembershipButReAdmissionKeepsReadingRecord() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            val book = Book(bookUrl = "book", origin = "source", name = "Book", durChapterPos = 53)
+            dao.addToShelf(book, listOf(BookChapter(bookUrl = "book", url = "chapter")))
+            dao.createGroup("Growing", dao.organization().token)
+            dao.createGroup("Reading", dao.organization().token)
+            val target = NativeShelfTarget("source", "book")
+            dao.changeGroups(listOf(target), listOf(1L, 2L), emptyList(), dao.organization().token)
+            assertEquals(3L, dao.addToShelf(book, emptyList()).book.group)
+            val removed = dao.removeBooks(listOf(target), dao.organization().token)
+            assertEquals(emptyList(), removed.books)
+            val restored = dao.addToShelf(book, emptyList())
+            assertEquals(0L, restored.book.group)
+            assertEquals(53, restored.book.durChapterPos)
+            assertEquals(listOf("chapter"), restored.chapters.map { it.url })
+            dao.changeGroups(listOf(target), listOf(1L), emptyList(), dao.organization().token)
+            dao.removeFromShelf("source", "book")
+            assertEquals(0L, dao.addToShelf(book, emptyList()).book.group)
+        }
+    }
+
+    @Test
+    fun renamedAndDeletedGroupsPreserveBooksAndOtherGroups() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            dao.addToShelf(Book(bookUrl = "book", origin = "source", name = "Book", durChapterPos = 29),
+                listOf(BookChapter(bookUrl = "book", url = "chapter")))
+            dao.createGroup("Growing", dao.organization().token)
+            dao.createGroup("Reading", dao.organization().token)
+            dao.changeGroups(listOf(NativeShelfTarget("source", "book")), listOf(1L, 2L), emptyList(), dao.organization().token)
+            val renamed = dao.renameGroup(1L, "  Later  ", dao.organization().token)
+            assertEquals(listOf("Later", "Reading"), renamed.groups.map { it.groupName })
+            val deleted = dao.deleteGroup(1L, renamed.token)
+            assertEquals(listOf("Reading"), deleted.groups.map { it.groupName })
+            assertEquals(2L, deleted.books.single().group)
+            assertEquals(29, dao.openBook("source", "book").book.durChapterPos)
+            val ungrouped = dao.deleteGroup(2L, deleted.token)
+            assertEquals(0L, ungrouped.books.single().group)
+            assertEquals(1, dao.listBooks().size)
+        }
+    }
+
+    @Test
+    fun groupMembershipEditingPreservesBooksAndUntouchedMemberships() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            for (id in listOf("a", "b")) dao.addToShelf(
+                Book(bookUrl = id, origin = "source", name = id, durChapterPos = 37),
+                listOf(BookChapter(bookUrl = id, url = "chapter-$id")))
+            dao.createGroup("Growing", dao.organization().token)
+            dao.createGroup("Reading", dao.organization().token)
+            val a = NativeShelfTarget("source", "a")
+            val b = NativeShelfTarget("source", "b")
+            dao.changeGroups(listOf(a), listOf(1L), emptyList(), dao.organization().token)
+            val together = dao.changeGroups(listOf(a, b), listOf(2L), emptyList(), dao.organization().token)
+            assertEquals(3L, together.books.single { it.bookUrl == "a" }.group)
+            assertEquals(2L, together.books.single { it.bookUrl == "b" }.group)
+            val removed = dao.changeGroups(listOf(a), emptyList(), listOf(1L), together.token)
+            assertEquals(2L, removed.books.single { it.bookUrl == "a" }.group)
+            assertEquals(37, dao.openBook("source", "a").book.durChapterPos)
+            assertEquals(listOf("chapter-a"), dao.openBook("source", "a").chapters.map { it.url })
+        }
+    }
+
+    @Test
+    fun creatingGroupsReturnsAStableCoherentOrganization() = runBlocking {
+        withDatabase { database, _ ->
+            val dao = database.nativeShelfDao
+            val empty = dao.organization()
+            assertEquals(emptyList(), empty.groups)
+            val first = dao.createGroup("  Growing  ", empty.token)
+            assertEquals(listOf("Growing"), first.groups.map { it.groupName })
+            assertEquals(listOf(1L), first.groups.map { it.groupId })
+            val second = dao.createGroup("Reading", first.token)
+            assertEquals(listOf("Growing", "Reading"), second.groups.map { it.groupName })
+            assertEquals(listOf(1L, 2L), second.groups.map { it.groupId })
+            assertEquals(second, dao.organization())
+        }
+    }
+
+    @Test
+    fun freshAdmissionDoesNotInheritSourceGroupMembership() = runBlocking {
+        withDatabase { database, _ ->
+            val candidate = Book(bookUrl = "incoming-groups", origin = "source", name = "Incoming", group = 7)
+            val added = database.nativeShelfDao.addToShelf(candidate,
+                listOf(BookChapter(bookUrl = candidate.bookUrl, url = "chapter")))
+            assertEquals(0L, added.book.group)
+            assertEquals(0L, database.nativeShelfDao.openBook("source", candidate.bookUrl).book.group)
+        }
+    }
+
     @Test
     fun sameKnownIdentityReusesOriginalBookAndCatalogWithoutReplacing() = runBlocking {
         val directory = Files.createTempDirectory("PROTOTYPE-spec003-shelf-").toFile()

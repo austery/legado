@@ -148,7 +148,7 @@ struct ReaderScreen: View {
 
     private var title: String {
         switch model.route {
-        case .shelf: return "Library"
+        case .shelf: return model.currentShelfGroup?.name ?? "Library"
         case .search: return "Search"
         case .sources: return "Sources"
         case .discovery: return "Discover"
@@ -160,34 +160,7 @@ struct ReaderScreen: View {
     }
 
     private var shelf: some View {
-        List {
-            if let notice = model.shelfNotice {
-                Label(notice, systemImage: "checkmark.circle")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("shelf.notice")
-            }
-            if model.shelf.isEmpty {
-                Text("Your shelf is empty. Find a book, try a chapter, and keep it here for later.").foregroundStyle(.secondary)
-            }
-            if model.shelf.isEmpty {
-                Button("Find a book") { model.navigate(.search) }
-            }
-            ForEach(model.shelf, id: \.book.id) { entry in
-                Button { model.openShelfBook(entry) } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(entry.book.title).font(.headline).foregroundStyle(.primary)
-                        Text(ReaderModel.authorLabel(entry.book.author)).font(.subheadline).foregroundStyle(.secondary)
-                        if !entry.lastChapter.isEmpty {
-                            Label(entry.lastChapter, systemImage: "bookmark")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(entry.sourceName).font(.caption2).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 6).contentShape(Rectangle())
-                }.buttonStyle(.plain).disabled(model.busy)
-                    .swipeActions { Button("Remove", role: .destructive) { model.removeShelfBook(entry) } }
-            }
-        }.refreshable { model.refreshShelf() }
+        ShelfView(model: model, preferences: preferences)
     }
 
     private var libraryNavigation: some View {

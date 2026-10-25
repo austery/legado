@@ -1,4 +1,4 @@
-"""Kill only the explicitly dedicated synthetic test host at four storage boundaries."""
+"""Kill only the dedicated synthetic test host at reading and shelf-group storage boundaries."""
 from __future__ import annotations
 
 import argparse
@@ -44,6 +44,8 @@ def owned_documents(container: str, simulator: str) -> Path:
         raise ValueError("Container is outside the newly created simulator")
     return value / "Documents"
 BUNDLE = "io.legado.pathc.nativereader"
+INTERRUPTION_CASES: tuple[str, ...] = ("before-file", "after-file", "before-db", "after-db",
+                                     "group-before-db", "group-after-db")
 PlistValue = Union[str, int, float, bool, bytes, datetime.datetime, List["PlistValue"], Dict[str, "PlistValue"]]
 
 
@@ -52,7 +54,7 @@ def main() -> None:
     parser.add_argument("--xctestrun", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--shelf-restart", action="store_true", help="Run the two-process offline shelf journey instead of interruption cases")
-    parser.add_argument("--case", choices=("before-file", "after-file", "before-db", "after-db"), action="append")
+    parser.add_argument("--case", choices=INTERRUPTION_CASES, action="append")
     parser.add_argument("--runtime-version", help="Require this exact iOS runtime")
     args = parser.parse_args()
     template = plistlib.loads(args.xctestrun.read_bytes())
@@ -188,7 +190,7 @@ def main() -> None:
             require_one_pass(config)
             (args.output / "results.json").write_text(json.dumps({"prepare": "passed", "offlineVerify": "passed"}))
             return
-        for phase in args.case or ["before-file", "after-file", "before-db", "after-db"]:
+        for phase in args.case or INTERRUPTION_CASES:
             gate.clear()
             run = str(uuid.uuid4()).upper()
             phase_by_run[run] = phase

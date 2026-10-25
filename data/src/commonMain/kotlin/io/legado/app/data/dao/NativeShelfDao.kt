@@ -7,6 +7,7 @@ import androidx.room3.Query
 import androidx.room3.Transaction
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.NativeReadingResume
 import io.legado.app.data.entities.BookSource
@@ -15,6 +16,129 @@ import io.legado.app.utils.systemCurrentTimeMillis
 /** Native shelf policy; deliberately separate from the legacy replacement writer. */
 @Dao
 abstract class NativeShelfDao {
+    @Query("SELECT * FROM book_groups ORDER BY `order`, groupId")
+    protected abstract suspend fun storedGroups(): List<BookGroup>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract suspend fun insertGroup(group: BookGroup)
+
+    @Query("UPDATE books SET `group` = `group` & :retainedMask WHERE (`group` & :retainedMask) != `group`")
+    protected abstract suspend fun retainGroupBits(retainedMask: Long)
+
+    /** Organization tokens exclude reading progress, but include every membership authority. */
+    @Transaction
+    open suspend fun organization(): NativeShelfOrganization {
+        val records = storedGroups().filter { isCustomGroup(it.groupId) }
+        val shelf = listBooks()
+        val identity = buildString {
+            fun field(value: String) { append(value.length).append(':').append(value) }
+            records.forEach { field(it.groupId.toString()); field(it.groupName); field(it.order.toString()) }
+            append('|')
+            shelf.sortedBy { it.bookUrl }.forEach {
+                field(it.bookUrl); field(it.origin); field(it.group.toString())
+            }
+        }
+        return NativeShelfOrganization(shelf, records, NativeBodyCoordinates.sha256(identity))
+    }
+
+    @Transaction
+    open suspend fun createGroup(name: String, expectedToken: String): NativeShelfOrganization {
+        val before = requireOrganization(expectedToken)
+        val trimmed = requireGroupName(name, before.groups)
+        val occupied = storedGroups().filter { it.groupId > 0 }.fold(0L) { mask, group -> mask or group.groupId }
+        val id = (0..62).map { 1L shl it }.firstOrNull { it and occupied == 0L }
+            ?: throw NativeShelfException(NativeShelfFailure.GROUP_CAPACITY, "The shelf supports at most 63 custom groups")
+        val order = before.groups.maxOfOrNull { it.order } ?: 0
+        if (order == Int.MAX_VALUE) invalidGroup("Group ordering capacity is exhausted")
+        // Stale membership bits cannot become membership in a newly allocated group.
+        retainGroupBits(id.inv())
+        insertGroup(BookGroup(groupId = id, groupName = trimmed, order = order + 1))
+        return organization()
+    }
+
+    @Query("UPDATE book_groups SET groupName = :name WHERE groupId = :id")
+    protected abstract suspend fun patchGroupName(id: Long, name: String)
+
+    @Query("DELETE FROM book_groups WHERE groupId = :id")
+    protected abstract suspend fun deleteGroupRecord(id: Long)
+
+    @Transaction
+    open suspend fun renameGroup(id: Long, name: String, expectedToken: String): NativeShelfOrganization {
+        val before = requireOrganization(expectedToken)
+        requireGroup(id, before)
+        patchGroupName(id, requireGroupName(name, before.groups, id))
+        return organization()
+    }
+
+    @Transaction
+    open suspend fun deleteGroup(id: Long, expectedToken: String): NativeShelfOrganization {
+        val before = requireOrganization(expectedToken)
+        requireGroup(id, before)
+        retainGroupBits(id.inv())
+        deleteGroupRecord(id)
+        return organization()
+    }
+
+    private fun requireGroup(id: Long, state: NativeShelfOrganization) {
+        if (state.groups.none { it.groupId == id }) {
+            throw NativeShelfException(NativeShelfFailure.STALE_ORGANIZATION, "The group no longer exists; refresh the shelf")
+        }
+    }
+
+    @Query("UPDATE books SET `group` = (`group` | :addedMask) & :retainedMask WHERE bookUrl = :bookUrl")
+    protected abstract suspend fun patchGroups(bookUrl: String, addedMask: Long, retainedMask: Long)
+
+    /** Only explicitly changed groups are patched; untouched mixed memberships survive. */
+    @Transaction
+    open suspend fun changeGroups(targets: List<NativeShelfTarget>, added: List<Long>, removed: List<Long>,
+        expectedToken: String): NativeShelfOrganization {
+        val before = requireOrganization(expectedToken)
+        val selected = requireTargets(targets)
+        val known = before.groups.map { it.groupId }.toSet()
+        if (added.any { it !in known } || removed.any { it !in known } || added.any { it in removed }) {
+            invalidGroup("Choose existing groups without conflicting changes")
+        }
+        val addedMask = added.fold(0L) { mask, id -> mask or id }
+        val removedMask = removed.fold(0L) { mask, id -> mask or id }
+        selected.forEach { patchGroups(it.bookUrl, addedMask, removedMask.inv()) }
+        return organization()
+    }
+
+    @Transaction
+    open suspend fun removeBooks(targets: List<NativeShelfTarget>, expectedToken: String): NativeShelfOrganization {
+        requireOrganization(expectedToken)
+        val selected = requireTargets(targets)
+        selected.forEach { markRemoved(it.bookUrl) }
+        return organization()
+    }
+
+    private suspend fun requireTargets(targets: List<NativeShelfTarget>): List<Book> {
+        if (targets.isEmpty() || targets.distinct().size != targets.size) invalidGroup("Select distinct shelf books")
+        return targets.map { target -> openBook(target.sourceId, target.bookUrl).book }
+    }
+
+    private suspend fun requireOrganization(expectedToken: String): NativeShelfOrganization {
+        val state = organization()
+        if (expectedToken.isEmpty() || expectedToken != state.token) {
+            throw NativeShelfException(NativeShelfFailure.STALE_ORGANIZATION, "Shelf organization changed; refresh and try again")
+        }
+        return state
+    }
+
+    private fun requireGroupName(name: String, groups: List<BookGroup>, except: Long? = null): String {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) invalidGroup("Enter a group name")
+        if (groups.any { it.groupId != except && it.groupName.trim() == trimmed }) {
+            invalidGroup("A group with that name already exists")
+        }
+        return trimmed
+    }
+
+    private fun isCustomGroup(id: Long): Boolean = id > 0 && id and (id - 1) == 0L
+
+    private fun invalidGroup(message: String): Nothing =
+        throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, message)
+
     /** Include removed entries when checking physical cache ownership. */
     @Query("SELECT * FROM books")
     abstract suspend fun cacheOwners(): List<Book>
@@ -111,13 +235,13 @@ abstract class NativeShelfDao {
         return NativeShelfEntry(replacement, chapters(replacement.bookUrl))
     }
 
-    @Query("UPDATE books SET type = type & ${BookType.notShelf.inv()} WHERE bookUrl = :bookUrl")
+    @Query("UPDATE books SET type = type & ${BookType.notShelf.inv()}, `group` = 0 WHERE bookUrl = :bookUrl")
     protected abstract suspend fun restoreShelfFlag(bookUrl: String)
 
     @Query("SELECT * FROM books WHERE type & ${BookType.text} != 0 AND type & ${BookType.local} = 0 AND type & ${BookType.notShelf} = 0 AND origin != '${BookType.localTag}' AND origin NOT LIKE '${BookType.webDavTag}%' ORDER BY durChapterTime DESC, bookUrl ASC")
     abstract suspend fun listBooks(): List<Book>
 
-    @Query("UPDATE books SET type = type | ${BookType.notShelf} WHERE bookUrl = :bookUrl")
+    @Query("UPDATE books SET type = type | ${BookType.notShelf}, `group` = 0 WHERE bookUrl = :bookUrl")
     protected abstract suspend fun markRemoved(bookUrl: String)
 
     @Transaction
@@ -170,7 +294,7 @@ abstract class NativeShelfDao {
             catalog.map { it.index }.distinct().size != catalog.size) {
             throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "A valid catalog for this exact book is required")
         }
-        val added = candidate.copy(type = candidate.type and BookType.notShelf.inv())
+        val added = candidate.copy(type = candidate.type and BookType.notShelf.inv(), group = 0)
         insertBook(added)
         insertChapters(catalog)
         return NativeShelfEntry(added, chapters(added.bookUrl))
@@ -178,8 +302,10 @@ abstract class NativeShelfDao {
 
     private suspend fun reuse(existing: Book): NativeShelfEntry {
         requireTextBook(existing)
-        if (existing.type and BookType.notShelf != 0) restoreShelfFlag(existing.bookUrl)
-        return NativeShelfEntry(existing.copy(type = existing.type and BookType.notShelf.inv()), chapters(existing.bookUrl))
+        val removed = existing.type and BookType.notShelf != 0
+        if (removed) restoreShelfFlag(existing.bookUrl)
+        return NativeShelfEntry(existing.copy(type = existing.type and BookType.notShelf.inv(),
+            group = if (removed) 0 else existing.group), chapters(existing.bookUrl))
     }
 
     private fun requireTextBook(book: Book) {
@@ -194,6 +320,10 @@ abstract class NativeShelfDao {
 data class NativeShelfEntry(val book: Book, val chapters: List<BookChapter>)
 data class NativeWorkIdentity(val bookUrl: String, val name: String, val author: String)
 
-enum class NativeShelfFailure { INVALID_INPUT, IDENTITY_CONFLICT, AMBIGUOUS_IDENTITY, UNSUPPORTED_BOOK, NOT_ON_SHELF }
+data class NativeShelfTarget(val sourceId: String, val bookUrl: String)
+
+data class NativeShelfOrganization(val books: List<Book>, val groups: List<BookGroup>, val token: String)
+
+enum class NativeShelfFailure { INVALID_INPUT, IDENTITY_CONFLICT, AMBIGUOUS_IDENTITY, UNSUPPORTED_BOOK, NOT_ON_SHELF, STALE_ORGANIZATION, GROUP_CAPACITY }
 
 class NativeShelfException(val failure: NativeShelfFailure, message: String) : IllegalStateException(message)
