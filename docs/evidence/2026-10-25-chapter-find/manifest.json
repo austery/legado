@@ -1,0 +1,25 @@
+{
+  "executedSource": "1bc52d26403967a641011fe1eced144af6942e2a",
+  "output": "/private/tmp/chapter-find-ui-regressions",
+  "selectedUIPassed": 3,
+  "failed": 0,
+  "skipped": 0,
+  "synthetic": true,
+  "images": [
+    {
+      "file": "manual-turn-reflow.png",
+      "sha256": "a0933b6db5b2ed60fdf7f0807f3177814f3b041f157248a366a0c0ade4c21fd7",
+      "attachment": "394DDCB7-E4D9-487D-B708-E2D115D0F979.png"
+    },
+    {
+      "file": "landscape-match.png",
+      "sha256": "908ead7f9d332811557375b52374df918cc453bc8670ccc996af3508425a1f2c",
+      "attachment": "5B374B1C-2827-4152-942B-E36215E19C18.png"
+    },
+    {
+      "file": "portrait-match.png",
+      "sha256": "4e79dc18389b9acdf4e5c5a532daf24dbc9e3ed22dcd296c58b7d5009a5d9367",
+      "attachment": "461AEE6E-D37F-4204-99A0-8331CA61CCE1.png"
+    }
+  ]
+}
