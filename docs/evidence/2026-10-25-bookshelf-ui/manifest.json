@@ -1,0 +1,20 @@
+{
+  "productionCode": "703697c28b015a3e54699488af9ba60b7e17af86",
+  "images": {
+    "group-list-landscape.png": {
+      "test": "ReaderUITests/testShelfGroupingAndGridListManagement()",
+      "sha256": "041e321606c77e0ff04902bcd32c5b52548fc51685c6aa6e9f99637ffd113a53",
+      "original": "/private/tmp/bookshelf-validation-final-ui/screenshots/A261CAA4-6430-4EEA-9443-3E3AEB20EE48.png"
+    },
+    "membership-checklist.png": {
+      "test": "ReaderUITests/testShelfMixedMembershipBatchScopeAndRemoval()",
+      "sha256": "18764ec5efb3b41f5cf069c68fbca7bd50f511849cac91e7219a6215ac45899a",
+      "original": "/private/tmp/bookshelf-validation-final-ui/screenshots/14122C50-7105-42A3-8A94-2592CFDBF074.png"
+    },
+    "home-grid.png": {
+      "test": "ReaderUITests/testShelfMixedMembershipBatchScopeAndRemoval()",
+      "sha256": "c3804e9404e1c9cd94cb74c79d1628fcebc4376e05f64d19103ee86cf988158b",
+      "original": "/private/tmp/bookshelf-validation-final-ui/screenshots/B157A16E-563A-4C69-A72F-528600ABB1E0.png"
+    }
+  }
+}
