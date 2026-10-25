@@ -149,7 +149,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         self.onParagraphScroll = onParagraphScroll
         let newChapter = self.chapterKey != chapterKey
         let newIdentity = self.restoration?.identity != restoration?.identity
-        let newBody = text != body
+        let newBody = !text.utf16.elementsEqual(body.utf16)
         let newStyle = self.style != style
         // Keep the original restoration offset for this token even if SwiftUI supplies a later sample.
         if newIdentity || newChapter { self.restoration = restoration }
@@ -311,9 +311,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
 
     func applyFind(_ candidate: ChapterFindPresentation?) {
         let valid = candidate.flatMap { presentation -> ChapterFindPresentation? in
-            guard readingIsActive, presentation.context.chapterKey == chapterKey,
-                  presentation.context.readingIdentity == restoration?.identity,
-                  presentation.context.text == text,
+            guard readingIsActive, presentation.context.matches(chapterKey: chapterKey,
+                      readingIdentity: restoration?.identity, text: text),
                   presentation.matches.allSatisfy(validFindRange),
                   presentation.selectedRange.map(validFindRange) ?? true,
                   presentation.request.map({ validFindRange($0.range) }) ?? true else { return nil }
@@ -350,9 +349,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         guard let findPresentation, let request = findPresentation.request,
               lastFindRequest != request.id, readingIsActive, bodyIsVisible,
               !restoring, !needsAnchorRestoration,
-              findPresentation.context.chapterKey == chapterKey,
-              findPresentation.context.readingIdentity == restoration?.identity,
-              findPresentation.context.text == text,
+              findPresentation.context.matches(chapterKey: chapterKey,
+                  readingIdentity: restoration?.identity, text: text),
               let offset = paragraphStart(request.range.location) else { return }
         lastFindRequest = request.id
         anchor = offset

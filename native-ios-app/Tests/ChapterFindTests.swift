@@ -205,9 +205,19 @@ final class ChapterFindTests: XCTestCase {
         XCTAssertEqual(first.text, replacement.text, "Swift equality is canonically equivalent, unlike body coordinates")
         let find = ChapterFindSession(); find.open(first); find.query = "X"
         XCTAssertEqual(find.matches, [NSRange(location: 1, length: 1)])
+        let stale = find.presentation
         find.updateContext(replacement)
         XCTAssertFalse(find.isPresented, "A different original UTF-16 body must retire old ranges")
         XCTAssertTrue(find.matches.isEmpty)
+        let view = AnchoredTextView(); view.delegate = view
+        for context in [first, replacement] {
+            view.configure(chapterKey: context.chapterKey, body: context.text, style: ReadingStyle(),
+                restoration: ReadingRestoration(identity: context.readingIdentity, utf16Offset: 0),
+                onDisplayed: nil, onParagraphScroll: nil)
+            view.applyFind(stale)
+        }
+        XCTAssertEqual(view.text.utf16.count, 3, "The real view must replace canonically equal but differently encoded body text")
+        XCTAssertNil(view.textStorage.attribute(.backgroundColor, at: 1, effectiveRange: nil), "Old coordinates cannot highlight the new combining mark")
     }
 
 }

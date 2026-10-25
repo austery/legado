@@ -5,6 +5,18 @@ struct ChapterFindContext: Equatable {
     let chapterKey: String
     let readingIdentity: String
     let text: String
+
+    // Canonical String equality can hide different UTF-16 lengths/locations.
+    func matches(chapterKey: String, readingIdentity: String?, text: String) -> Bool {
+        guard let readingIdentity else { return false }
+        return self.chapterKey.utf16.elementsEqual(chapterKey.utf16)
+            && self.readingIdentity.utf16.elementsEqual(readingIdentity.utf16)
+            && self.text.utf16.elementsEqual(text.utf16)
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.matches(chapterKey: rhs.chapterKey, readingIdentity: rhs.readingIdentity, text: rhs.text)
+    }
 }
 
 struct ChapterFindRequest: Equatable {
