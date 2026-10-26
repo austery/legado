@@ -63,3 +63,10 @@ Changing only query input order (portrait input then rotation) allowed the indep
 The first lightweight62-test run accidentally overlapped the actual UI listener; test_occupied_reading_port_is_not_reused_or_terminated failed to bind its deliberately occupied-port fixture with EADDRINUSE. It did not terminate/reuse the running UI listener. Its failed log is retained/private/tmp/chapter-find-python-final.log. After canonical UI teardown, the identical command ran sequentially:62/62 passed in9.254s, log/private/tmp/chapter-find-python-serial.log. No source/test changes were made to obtain that rerun.
 
 Review source388731d12: Standards0 code/validator findings, Spec0 deviations under the explicit H3 amendment. The Standards P3 stale current-status document was fixed and independently rechecked at88935f85f. Production remains81416a52f, covered by the94/94 ordinary-product run at8e0a6e451. No engine/KMP/persistence/schema/dependency change. Exact-head C1 will run on the published task revision; subsequent CI/PR records belong to Issue57 and the exact commit check suite. No merge is authorized; owner H2 remains pending.
+
+
+## External review E01 — direct landscape input reopened
+
+PR59 review-v1 at84c23a8c0 correctly distinguishes a successful portrait-input-then-rotation journey from the earlier timed-out direct-landscape-input sequence. Disposition: accept the evidence gap; no confirmed code defect or speculative production repair. Review source: https://github.com/austery/legado/pull/59#issuecomment-6405269726. Copy remains Issue58; H2 and explicit no-merge hold remain.
+
+Restore the existing landscape recovery test to rotate before opening Find and typing. Run it after the existing main find journey, matching the previous failed two-method sequence, with the same literal query, real save rejection/retry/chapter retirement assertions, strict selected count and900-second driver deadline. No driver/fixture gate or production code change. A fresh run must finish before any claim that E01 is closed; old4/4 and C1 evidence certify their recorded revisions/orders only.

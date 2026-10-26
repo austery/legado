@@ -92,12 +92,12 @@ final class ReaderUITests: XCTestCase {
     @MainActor func testChapterFindLandscapeRejectedSaveAndChapterRetirement() throws {
         let app = launchControlsReader()
         let original = anchor(app)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") && app.frame.width > app.frame.height }
         app.buttons["reader.find"].tap()
         let query = app.textFields["reader.find.query"]
         XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("第120段\n")
         wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
-        XCUIDevice.shared.orientation = .landscapeLeft
-        wait(app) { self.state(app).contains("layout=spread;") && app.frame.width > app.frame.height }
         verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
         app.terminate()
     }
