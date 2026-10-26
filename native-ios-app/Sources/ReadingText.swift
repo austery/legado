@@ -412,13 +412,6 @@ struct ReadingText: UIViewRepresentable {
     var onToggleControls: (() -> Void)? = nil
     var find: ChapterFindPresentation? = nil
 
-    // Fill the proposed viewport without measuring the chapter text during layout.
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: AnchoredTextView, context: Context) -> CGSize? {
-        guard let width = proposal.width, let height = proposal.height,
-              width.isFinite, height.isFinite else { return nil }
-        return CGSize(width: width, height: height)
-    }
-
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
         view.delegate = view
