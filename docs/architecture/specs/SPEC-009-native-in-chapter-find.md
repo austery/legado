@@ -1,6 +1,6 @@
 # SPEC-009: Native in-chapter find
 
-Date:2026-10-25. Status: Implemented; amended local simulator acceptance passed4/4 at388731d12. Copy follow-up separated under owner-approved H3 (Issue58). Exact-head C1 and owner H2 remain separate delivery gates; subsequent results are tracked in Issue57 and the PR checks. Lei approved the entire proposed H1 in this chat on2026-10-25, explicitly requested simulator acceptance and withheld merge permission. At approval no feature code or tests had changed.
+Date:2026-10-25. Status: Implemented; PR59 is DRAFT again while review E01 remains open. Local5ed restores direct-landscape input and has two terminal2/2 passes plus an intermittent900-second confirmation timeout; no production fix or cause is established. Remote84c23a8c0 C1 success remains revision-bound. Copy follow-up is separated under owner-approved H3 (Issue58); owner H2 and explicit no-merge hold remain. Lei approved the entire proposed H1 in this chat on2026-10-25; no feature code/tests had changed at approval.
 
 ## Outcome
 
@@ -59,3 +59,8 @@ The selected occurrence identity/query survives reflow while the chapter remains
 ## H3 — owner-approved Copy follow-up
 
 On2026-10-25 Lei explicitly answered: keep this scope and follow up the Copy menu separately. Native selection must remain usable; this slice does not certify that the touch Copy menu appears or writes the clipboard. The pre-feature baseline reproduction and remaining obligation are tracked in https://github.com/austery/legado/issues/58. The prior native Copy criterion is superseded only to this extent; no engine/storage budget expansion, timeout relaxation or merge authorization is granted. The actual no-match/clear/selection/save-failure/chapter-retirement journey retains its other assertions. Its Copy-menu assertions move to the separately tracked reproduction at source9268b1c15; no passing Copy claim is made. The earlier landscape timeout remains preserved evidence; the subsequent canonical landscape recovery journey passed with the unchanged deadline and assertion set. Direct-landscape-input animation/idleness remains unexplained; this does not certify every gesture order or physical-device behavior.
+
+
+## External review E01 current state
+
+Review-v1: https://github.com/austery/legado/pull/59#issuecomment-6405269726. Accept the direct-landscape input evidence gap. Local5ed now rotates before opening Find/typing with original failure/retry/chapter assertions and900-second driver deadline. Two clean main/direct runs passed; a fresh four-method confirmation reproduced animation-idleness waits and timed out. Temporary existing-host contrasts were saved and removed without a production fix. The same original observer later passed again, so no experimental change is attributed as a fix. E01 remains open, PR stays draft, and no continuation is pushed while acceptance is incomplete. Full diagnostic ledger is in the evidence report. Neither this mixed result nor old C1 supplies owner H2 or merge permission.
