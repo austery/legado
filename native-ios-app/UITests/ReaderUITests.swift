@@ -92,12 +92,21 @@ final class ReaderUITests: XCTestCase {
     @MainActor func testChapterFindLandscapeRejectedSaveAndChapterRetirement() throws {
         let app = launchControlsReader()
         let original = anchor(app)
+        let stored = app.staticTexts["fixture.stored"].value as? String
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { self.state(app).contains("layout=spread;") && app.frame.width > app.frame.height }
         app.buttons["reader.find"].tap()
         let query = app.textFields["reader.find.query"]
-        XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("第120段\n")
-        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        for attempt in 0..<3 {
+            if attempt > 0 { app.buttons["reader.find.clear"].tap() }
+            query.tap(); query.typeText("第120段\n")
+            wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+            XCTAssertTrue(app.frame.width > app.frame.height)
+            XCTAssertEqual(anchor(app), original, "Typing must not navigate")
+            XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored, "Typing must not save progress")
+        }
+        capture("find-direct-landscape-query")
         verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
         app.terminate()
     }
