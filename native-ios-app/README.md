@@ -28,6 +28,25 @@ not establish default values, active interaction wiring or physical iPad comfort
 The approved scope and device acceptance are in local `SPEC-002`; its `docs/`
 directory is ignored by the inherited repository policy.
 
+## Find in the current chapter (Issue #57)
+
+Use **Find in chapter** in the reader controls to search the complete loaded chapter,
+including off-screen text. Queries are literal and case sensitive. Typing highlights
+matches and shows their count; **Previous match** and **Next match** explicitly
+reveal an occurrence and wrap at the ends. **Clear** removes the query. Closing the
+panel clears transient find state without undoing an intentional reading jump.
+
+Only explicit navigation follows the existing paragraph-save path; typing, highlights,
+rotation and typography do not write reading progress. Portrait and two-page landscape
+share original UTF-16 ranges, including matches crossing a page boundary. Manual scrolling or page turning supersedes temporary find reveal focus; reflow
+follows the latest accepted reading paragraph until another explicit find jump. Native
+selection and Copy remain UIKit-owned. Source/book/chapter/session changes retire old
+find state and queued publications. Find reads loaded text without network requests,
+new engine exports, dependencies, schema changes or query history. It does not search
+other chapters/books. See [SPEC-009](../docs/architecture/specs/SPEC-009-native-in-chapter-find.md)
+for the approved H1 and acceptance limits. Owner H2 and merge approval remain pending;
+merge is explicitly withheld.
+
 ## Two-page iPad reading (Issue #46)
 
 The owner approved [H1](https://github.com/austery/legado/issues/46) on 2026-10-23.
@@ -382,6 +401,17 @@ the changed behavior and risk rather than a historical test count. Both director
 for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
+
+The chapter-find journeys require a full-size iPad software keyboard with Simplified
+Pinyin and its Roman layout available, using English system accessibility labels.
+They compose the original Chinese queries through visible keys/candidate cells, type
+Latin queries through Roman keys, and tap the visible Return key. Missing keyboards,
+keys or candidates fail the test; there is no bulk-input fallback or skipped gate.
+This input route avoids the transient virtual-hardware-keyboard changes observed in
+XCTest bulk `typeText` diagnostics. These journeys certify software-keyboard input;
+they do not certify physical/hardware-keyboard input or repair UIKit's internal
+animation callback tracking. See [the E01 continuation](../docs/evidence/2026-10-26-chapter-find-software-keyboard.md)
+for source-bound evidence and the retained diagnostic limitation.
 
 ## Everyday native UI (PLAN-005)
 

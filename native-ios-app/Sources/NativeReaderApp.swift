@@ -25,6 +25,7 @@ struct ReaderScreen: View {
     @State private var settings = false
     @State private var menu = true
     @State private var catalogQuery = ""
+    @StateObject private var chapterFind = ChapterFindSession()
     private var style: ReadingStyle { preferences.style }
     @State private var expandedWorks: Set<String> = []
 
@@ -65,9 +66,10 @@ struct ReaderScreen: View {
                             .disabled(model.committingSwitch).accessibilityIdentifier("switch.cancel")
                     }.padding()
                 }
+                if model.route == .reading && chapterFind.isPresented { ChapterFindPanel(session: chapterFind) }
                 ZStack {
                     if let content = model.content {
-                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() })
+                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() }, find: chapterFind.presentation)
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)
@@ -140,10 +142,18 @@ struct ReaderScreen: View {
             .onChange(of: model.route) { route in
                 if route == .reading { menu = true }
             }
+            .onChange(of: findContext) { chapterFind.updateContext($0) }
             .onChange(of: model.book?.id) { _ in catalogQuery = "" }
             .onChange(of: model.book?.sourceId) { _ in catalogQuery = "" }
             .preferredColorScheme(style.dark ? .dark : .light)
         }
+    }
+
+    private var findContext: ChapterFindContext? {
+        guard model.route == .reading, let content = model.content,
+              let restoration = model.readingRestoration else { return nil }
+        return ChapterFindContext(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id,
+                                  readingIdentity: restoration.identity, text: content.text)
     }
 
     private var title: String {
@@ -444,6 +454,9 @@ struct ReaderScreen: View {
     private var readingControls: some View {
         VStack(spacing: 12) {
             if menu {
+                Button("Find in chapter") {
+                    if let context = findContext { chapterFind.open(context) }
+                }.accessibilityIdentifier("reader.find").disabled(model.busy || findContext == nil)
                 if model.canChangeSource {
                     Button("Change source") { model.beginSourceSwitch() }
                         .disabled(model.busy).accessibilityIdentifier("reader.changeSource")

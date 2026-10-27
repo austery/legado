@@ -43,6 +43,8 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
     private var margin: CGFloat = 28
     private var reflowing = false
     private var userPaging = false
+    private var findMatches: [NSRange] = []
+    private var selectedFindRange: NSRange?
     var onTurn: ((Int) -> Void)?
     var firstVisibleOffset: Int { pagination?.ranges[spread * 2].location ?? 0 }
     var visibleRanges: [NSRange] {
@@ -86,6 +88,15 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
         renderNeighbors()
     }
 
+    func updateFindHighlights(matches: [NSRange], selected: NSRange?) {
+        findMatches = matches
+        selectedFindRange = selected
+        for page in pages.values {
+            guard let page = page as? ReadingPageTextView else { continue }
+            page.updateFindHighlights(matches: matches, selected: selected, originalRange: page.originalRange)
+        }
+    }
+
     private func renderNeighbors() {
         guard let pagination else { return }
         let wanted = Set(max(0, (spread - 1) * 2)..<min(pagination.ranges.count, (spread + 2) * 2))
@@ -109,6 +120,9 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
                 view.accessibilityIdentifier = index % 2 == 0 ? "reader.page.left" : "reader.page.right"
                 pages[index] = view
                 addSubview(view)
+            }
+            if let page = view as? ReadingPageTextView {
+                page.updateFindHighlights(matches: findMatches, selected: selectedFindRange, originalRange: page.originalRange)
             }
             view.textContainer.size = pageSize
             view.frame = CGRect(x: CGFloat(index / 2) * bounds.width + margin + CGFloat(index % 2) * (pageSize.width + 40),

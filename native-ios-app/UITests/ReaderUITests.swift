@@ -1,6 +1,186 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testChapterFindAcrossLayoutsAndDurablePosition() async throws {
+        let app = launchControlsReader()
+        let identity = readingIdentity(app)
+        waitForStableViewport(app)
+        let original = anchor(app)
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        let sourcePart = try XCTUnwrap(identity.first { $0.hasPrefix("source=") })
+        let source = String(sourcePart.dropFirst("source=".count))
+        let requestsURL = try XCTUnwrap(URL(string: source + "/control/requests"))
+        let (before, _) = try await URLSession.shared.data(from: requestsURL)
+        XCTAssertTrue(app.buttons["reader.find"].waitForExistence(timeout: 10)); app.buttons["reader.find"].tap()
+        let query = app.textFields["reader.find.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5)); enterParagraphFindQuery(app, query: query, number: "80")
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), original, "Typing must not navigate")
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored, "Typing/highlighting must not save progress")
+        app.buttons["reader.find.next"].tap()
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" && self.anchor(app) > original }
+        waitForStableViewport(app)
+        var position = anchor(app)
+        XCTAssertGreaterThan(position, 0)
+        capture("find-portrait-explicit-match")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height && self.state(app).contains("layout=spread;") }
+        assertRenderedAnchor(app, identity: identity, position: position)
+        capture("find-landscape-same-occurrence")
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5)); app.buttons["typography.larger"].tap()
+        app.buttons["Done"].tap()
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" }
+        assertRenderedAnchor(app, identity: identity, position: position)
+        app.buttons["reader.find.previous"].tap()
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 of 1" && self.anchor(app) == position }
+        let foundPosition = position
+        app.textViews["reader.text"].swipeLeft()
+        wait(app) { self.anchor(app) > foundPosition }
+        position = anchor(app)
+        app.buttons["reader.typography"].tap()
+        XCTAssertTrue(app.buttons["typography.larger"].waitForExistence(timeout: 5)); app.buttons["typography.larger"].tap()
+        app.buttons["Done"].tap()
+        assertRenderedAnchor(app, identity: identity, position: position)
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "1 of 1", "Manual reading retains the query and selected result identity")
+        capture("find-manual-page-turn-survives-reflow")
+        app.buttons["reader.find.close"].tap()
+        XCTAssertFalse(query.exists)
+        XCTAssertEqual(anchor(app), position, "Closing must not undo an explicit reading jump")
+        let (after, _) = try await URLSession.shared.data(from: requestsURL)
+        XCTAssertEqual(before, after, "Find and reflow must not request chapter/source data")
+        app.buttons["reader.shelf"].tap()
+        let book = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 15)); book.tap()
+        wait(app) { self.state(app).contains("chapter=1;") && self.anchor(app) == position }
+        app.terminate(); app.launchEnvironment["READER_UI_RESET"] = "0"; app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"; app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        wait(app) { self.anchor(app) == position && self.state(app).contains("chapter=1;") }
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertFalse(query.exists, "Find state is transient")
+        capture("find-relaunched-saved-paragraph")
+        app.terminate()
+    }
+
+    @MainActor func testChapterFindNoMatchesSelectionFailureAndChapterRetirement() throws {
+        let app = launchControlsReader()
+        let original = anchor(app)
+        app.buttons["reader.find"].tap()
+        let query = app.textFields["reader.find.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5)); enterRomanFindQuery(app, query: query, text: "missing-phrase", submit: false)
+        wait(app) { app.staticTexts["reader.find.status"].label == "No matches" }
+        XCTAssertFalse(app.buttons["reader.find.next"].isEnabled)
+        XCTAssertFalse(app.buttons["reader.find.previous"].isEnabled)
+        app.buttons["reader.find.clear"].tap()
+        wait(app) { app.staticTexts["reader.find.status"].label == "Enter text to find" }
+        enterParagraphFindQuery(app, query: query, number: "120")
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+        XCTAssertEqual(anchor(app), original)
+        let body = app.textViews["reader.text"]
+        let selectedPoint = selectionPoint(app)
+        body.coordinate(withNormalizedOffset: selectedPoint).press(forDuration: 1.2)
+        wait(app) { self.selectionLength(app) > 0 }
+        capture("find-native-selection")
+        body.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.60)).tap()
+        wait(app) { self.selectionLength(app) == 0 }
+        XCTAssertTrue(query.exists)
+        verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
+        app.terminate()
+    }
+
+    @MainActor func testChapterFindLandscapeRejectedSaveAndChapterRetirement() throws {
+        let app = launchControlsReader()
+        let original = anchor(app)
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") && app.frame.width > app.frame.height }
+        app.buttons["reader.find"].tap()
+        let query = app.textFields["reader.find.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        for attempt in 0..<3 {
+            if attempt > 0 { app.buttons["reader.find.clear"].tap() }
+            enterParagraphFindQuery(app, query: query, number: "120")
+            wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+            XCTAssertTrue(app.frame.width > app.frame.height)
+            XCTAssertEqual(anchor(app), original, "Typing must not navigate")
+            XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored, "Typing must not save progress")
+        }
+        capture("find-direct-landscape-query")
+        verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
+        app.terminate()
+    }
+
+    @MainActor private func selectFindKeyboardScript(_ app: XCUIApplication, roman: Bool) {
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        if !app.keyboards.keys["d"].exists && !app.keyboards.keys["D"].exists {
+            app.keyboards.keys["more"].firstMatch.tap()
+        }
+        if app.keyboards.keys["D"].exists { app.keyboards.buttons["shift"].tap() }
+        if app.otherElements["Typing Predictions"].exists != roman {
+            let script = app.keyboards.keys["Switch from Roman keys"]
+            XCTAssertTrue(script.exists, "This journey requires the Simplified Pinyin keyboard with its Roman layout")
+            script.tap()
+            wait(app) { app.otherElements["Typing Predictions"].exists == roman }
+        }
+    }
+
+    @MainActor private func enterParagraphFindQuery(_ app: XCUIApplication, query: XCUIElement, number: String) {
+        // Use the software keyboard and native IME, avoiding synthetic hardware-keyboard transitions.
+        query.tap(); selectFindKeyboardScript(app, roman: false)
+        for key in ["d", "i"] { app.keyboards.keys[key].tap() }
+        XCTAssertTrue(app.cells["第"].waitForExistence(timeout: 5)); app.cells["第"].tap()
+        app.keyboards.keys["more"].firstMatch.tap()
+        XCTAssertTrue(app.keyboards.keys["1"].waitForExistence(timeout: 5))
+        for digit in number { app.keyboards.keys[String(digit)].tap() }
+        app.keyboards.keys["more"].firstMatch.tap()
+        for key in ["d", "u", "a", "n"] { app.keyboards.keys[key].tap() }
+        XCTAssertTrue(app.cells["段"].waitForExistence(timeout: 5)); app.cells["段"].tap()
+        XCTAssertEqual(query.value as? String, "第\(number)段")
+        capture("find-software-keyboard-query")
+        app.keyboards.buttons["Return"].tap()
+    }
+
+    @MainActor private func enterRomanFindQuery(_ app: XCUIApplication, query: XCUIElement, text: String, submit: Bool = true) {
+        query.tap(); selectFindKeyboardScript(app, roman: true)
+        for character in text {
+            let key = String(character)
+            if character.isLetter {
+                if !app.keyboards.keys[key.lowercased()].exists && !app.keyboards.keys[key.uppercased()].exists {
+                    app.keyboards.keys["more"].firstMatch.tap()
+                }
+                if !app.keyboards.keys[key].exists { app.keyboards.buttons["shift"].tap() }
+            } else if !app.keyboards.keys[key].exists {
+                app.keyboards.keys["more"].firstMatch.tap()
+            }
+            XCTAssertTrue(app.keyboards.keys[key].exists); app.keyboards.keys[key].tap()
+        }
+        XCTAssertEqual(query.value as? String, text)
+        if submit { app.keyboards.buttons["Return"].tap() }
+    }
+
+    @MainActor private func verifyFindRejectedSaveAndChapterRetirement(_ app: XCUIApplication, query: XCUIElement, original: Int) {
+        app.buttons["fixture.saveFailure"].tap()
+        app.buttons["reader.find.next"].tap()
+        wait(app) { self.anchor(app) > original }
+        let position = anchor(app)
+        XCTAssertTrue(app.buttons["Retry save"].waitForExistence(timeout: 15))
+        XCTAssertEqual(query.value as? String, "第120段")
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "1 of 1")
+        capture("find-position-save-rejection")
+        app.buttons["fixture.saveFailure"].tap(); app.buttons["Retry save"].tap()
+        wait(app) { !app.buttons["Retry save"].exists }
+        XCTAssertEqual(anchor(app), position)
+        app.buttons["reader.previous"].tap()
+        wait(app) { self.state(app).contains("chapter=0;") }
+        XCTAssertFalse(query.exists, "A chapter change must retire the find panel")
+        app.buttons["reader.find"].tap()
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "Enter text to find")
+        XCTAssertFalse(app.buttons["reader.find.next"].isEnabled)
+        app.buttons["reader.find.close"].tap()
+    }
+
     @MainActor func testShelfGroupingAndGridListManagement() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
@@ -673,7 +853,12 @@ final class ReaderUITests: XCTestCase {
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.changeSource"].waitForExistence(timeout: 15))
+        app.buttons["reader.find"].tap()
+        let findQuery = app.textFields["reader.find.query"]
+        XCTAssertTrue(findQuery.waitForExistence(timeout: 5)); enterRomanFindQuery(app, query: findQuery, text: "C1-FIRST")
+        wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         app.buttons["reader.changeSource"].tap()
+        XCTAssertFalse(findQuery.exists, "Source preparation must retire old find state")
         let work = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "discovered sources")).firstMatch
         XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
         let alternate = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier CONTAINS %@", "search.candidate.", "-alternate")).firstMatch
@@ -696,6 +881,10 @@ final class ReaderUITests: XCTestCase {
         capture("switch-prepared-landscape")
         app.buttons["switch.confirm"].tap()
         wait(app) { self.state(app).contains("-alternate") && self.state(app).contains("canSave=true;") && self.anchor(app) == 0 }
+        app.buttons["reader.find"].tap()
+        XCTAssertTrue(findQuery.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["reader.find.status"].label, "Enter text to find")
+        app.buttons["reader.find.close"].tap()
         capture("switch-committed")
         app.buttons["reader.shelf"].tap()
         XCTAssertTrue(book.waitForExistence(timeout: 15))
