@@ -13,7 +13,7 @@ final class ReaderUITests: XCTestCase {
         let (before, _) = try await URLSession.shared.data(from: requestsURL)
         XCTAssertTrue(app.buttons["reader.find"].waitForExistence(timeout: 10)); app.buttons["reader.find"].tap()
         let query = app.textFields["reader.find.query"]
-        XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("第80段\n")
+        XCTAssertTrue(query.waitForExistence(timeout: 5)); enterParagraphFindQuery(app, query: query, number: "80")
         wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         waitForStableViewport(app)
         XCTAssertEqual(anchor(app), original, "Typing must not navigate")
@@ -68,13 +68,13 @@ final class ReaderUITests: XCTestCase {
         let original = anchor(app)
         app.buttons["reader.find"].tap()
         let query = app.textFields["reader.find.query"]
-        XCTAssertTrue(query.waitForExistence(timeout: 5)); query.tap(); query.typeText("missing-phrase")
+        XCTAssertTrue(query.waitForExistence(timeout: 5)); enterRomanFindQuery(app, query: query, text: "missing-phrase", submit: false)
         wait(app) { app.staticTexts["reader.find.status"].label == "No matches" }
         XCTAssertFalse(app.buttons["reader.find.next"].isEnabled)
         XCTAssertFalse(app.buttons["reader.find.previous"].isEnabled)
         app.buttons["reader.find.clear"].tap()
         wait(app) { app.staticTexts["reader.find.status"].label == "Enter text to find" }
-        query.typeText("第120段\n")
+        enterParagraphFindQuery(app, query: query, number: "120")
         wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         XCTAssertEqual(anchor(app), original)
         let body = app.textViews["reader.text"]
@@ -100,7 +100,7 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(query.waitForExistence(timeout: 5))
         for attempt in 0..<3 {
             if attempt > 0 { app.buttons["reader.find.clear"].tap() }
-            query.tap(); query.typeText("第120段\n")
+            enterParagraphFindQuery(app, query: query, number: "120")
             wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
             XCTAssertTrue(app.frame.width > app.frame.height)
             XCTAssertEqual(anchor(app), original, "Typing must not navigate")
@@ -109,6 +109,54 @@ final class ReaderUITests: XCTestCase {
         capture("find-direct-landscape-query")
         verifyFindRejectedSaveAndChapterRetirement(app, query: query, original: original)
         app.terminate()
+    }
+
+    @MainActor private func selectFindKeyboardScript(_ app: XCUIApplication, roman: Bool) {
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        if !app.keyboards.keys["d"].exists && !app.keyboards.keys["D"].exists {
+            app.keyboards.keys["more"].firstMatch.tap()
+        }
+        if app.keyboards.keys["D"].exists { app.keyboards.buttons["shift"].tap() }
+        if app.otherElements["Typing Predictions"].exists != roman {
+            let script = app.keyboards.keys["Switch from Roman keys"]
+            XCTAssertTrue(script.exists, "This journey requires the Simplified Pinyin keyboard with its Roman layout")
+            script.tap()
+            wait(app) { app.otherElements["Typing Predictions"].exists == roman }
+        }
+    }
+
+    @MainActor private func enterParagraphFindQuery(_ app: XCUIApplication, query: XCUIElement, number: String) {
+        // Use the software keyboard and native IME, avoiding synthetic hardware-keyboard transitions.
+        query.tap(); selectFindKeyboardScript(app, roman: false)
+        for key in ["d", "i"] { app.keyboards.keys[key].tap() }
+        XCTAssertTrue(app.cells["第"].waitForExistence(timeout: 5)); app.cells["第"].tap()
+        app.keyboards.keys["more"].firstMatch.tap()
+        XCTAssertTrue(app.keyboards.keys["1"].waitForExistence(timeout: 5))
+        for digit in number { app.keyboards.keys[String(digit)].tap() }
+        app.keyboards.keys["more"].firstMatch.tap()
+        for key in ["d", "u", "a", "n"] { app.keyboards.keys[key].tap() }
+        XCTAssertTrue(app.cells["段"].waitForExistence(timeout: 5)); app.cells["段"].tap()
+        XCTAssertEqual(query.value as? String, "第\(number)段")
+        capture("find-software-keyboard-query")
+        app.keyboards.buttons["Return"].tap()
+    }
+
+    @MainActor private func enterRomanFindQuery(_ app: XCUIApplication, query: XCUIElement, text: String, submit: Bool = true) {
+        query.tap(); selectFindKeyboardScript(app, roman: true)
+        for character in text {
+            let key = String(character)
+            if character.isLetter {
+                if !app.keyboards.keys[key.lowercased()].exists && !app.keyboards.keys[key.uppercased()].exists {
+                    app.keyboards.keys["more"].firstMatch.tap()
+                }
+                if !app.keyboards.keys[key].exists { app.keyboards.buttons["shift"].tap() }
+            } else if !app.keyboards.keys[key].exists {
+                app.keyboards.keys["more"].firstMatch.tap()
+            }
+            XCTAssertTrue(app.keyboards.keys[key].exists); app.keyboards.keys[key].tap()
+        }
+        XCTAssertEqual(query.value as? String, text)
+        if submit { app.keyboards.buttons["Return"].tap() }
     }
 
     @MainActor private func verifyFindRejectedSaveAndChapterRetirement(_ app: XCUIApplication, query: XCUIElement, original: Int) {
@@ -807,7 +855,7 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.buttons["reader.changeSource"].waitForExistence(timeout: 15))
         app.buttons["reader.find"].tap()
         let findQuery = app.textFields["reader.find.query"]
-        XCTAssertTrue(findQuery.waitForExistence(timeout: 5)); findQuery.tap(); findQuery.typeText("C1-FIRST\n")
+        XCTAssertTrue(findQuery.waitForExistence(timeout: 5)); enterRomanFindQuery(app, query: findQuery, text: "C1-FIRST")
         wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
         app.buttons["reader.changeSource"].tap()
         XCTAssertFalse(findQuery.exists, "Source preparation must retire old find state")
