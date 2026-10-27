@@ -402,6 +402,17 @@ for unshelved and read-only sessions at nonzero anchors, with SQLite assertions 
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
 
+The chapter-find journeys require a full-size iPad software keyboard with Simplified
+Pinyin and its Roman layout available, using English system accessibility labels.
+They compose the original Chinese queries through visible keys/candidate cells, type
+Latin queries through Roman keys, and tap the visible Return key. Missing keyboards,
+keys or candidates fail the test; there is no bulk-input fallback or skipped gate.
+This input route avoids the transient virtual-hardware-keyboard changes observed in
+XCTest bulk `typeText` diagnostics. These journeys certify software-keyboard input;
+they do not certify physical/hardware-keyboard input or repair UIKit's internal
+animation callback tracking. See [the E01 continuation](../docs/evidence/2026-10-26-chapter-find-software-keyboard.md)
+for source-bound evidence and the retained diagnostic limitation.
+
 ## Everyday native UI (PLAN-005)
 
 Library, Search and Sources have distinct top-level destinations. Source files are

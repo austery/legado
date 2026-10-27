@@ -1,5 +1,7 @@
 # E01: keyboard animation callback imbalance
 
+Historical diagnostic snapshot. The [2026-10-26 continuation](2026-10-26-chapter-find-software-keyboard.md) supersedes execution/acceptance status; the mechanism and failed experiments below remain preserved evidence.
+
 Date: 2026-10-25 (America/Toronto). Investigation baseline: local2f4a1630f55d06eafc58f2d74332e8505d8e1689; remote PR59 remains draft at84c23a8c0d4befd52434def9a765d64593fd0006. No production repair, E01 acceptance waiver, owner H2 or merge approval follows from this report.
 
 ## Confirmed mechanism

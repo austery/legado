@@ -1,0 +1,28 @@
+{
+  "sourceHead": "a100ae199791f76aaa5af1ce96548d0b632b37c8",
+  "run": "e01-20261026-software-four-1",
+  "deviceUUID": "5137346A-EC33-4C2E-8DB4-443ADD4F3782",
+  "result": "4 passed, 0 failed, 0 skipped; no animation wait or observer interruption",
+  "test": "ReaderUITests/testChapterFindLandscapeRejectedSaveAndChapterRetirement",
+  "visualReview": "Author inspected raw exported screenshots; synthetic host, not physical device",
+  "files": [
+    {
+      "file": "direct-keyboard.png",
+      "sourceAttachment": "EAF19241-C76B-45A4-BB21-643DDD79843F.png",
+      "sha256": "ca792645e09558ff6764fc467dad5979d9ff8f5717df1aef3dbe6ebd723b2c34",
+      "caption": "Original Chinese query entered in landscape through native Pinyin before Return"
+    },
+    {
+      "file": "direct-query.png",
+      "sourceAttachment": "5356F35F-6027-45AD-8F3B-400D737583B3.png",
+      "sha256": "cc975874af299d0360dba4eb07989a3dd3ee2a07ea996e2451f6cdfb1c8178eb",
+      "caption": "After three direct-landscape inputs; one match and unchanged original paragraph"
+    },
+    {
+      "file": "save-rejection.png",
+      "sourceAttachment": "B0D0076F-8E72-4862-8BB2-AAF97AE67AB5.png",
+      "sha256": "aba21ae153cb6afa5e8141143799e30a4b972ca42b385b2b14b71cbc905c58fa",
+      "caption": "Explicit Next reveals original match; injected save failure retains position and exposes Retry"
+    }
+  ]
+}
