@@ -51,7 +51,7 @@ final class ReadingRestorationTests: XCTestCase {
                        "Deep restoration must align the paragraph with the top inset")
     }
 
-    func testFinalParagraphRestoresAtBottomLimitWithoutForcedLayout() async throws {
+    func testFinalParagraphRestoresAtBottomLimit() async throws {
         let body = (0..<160).map { "Paragraph \($0) 中文 😀 with enough text to fill a long chapter." }.joined(separator: "\n")
         let target = (body as NSString).range(of: "Paragraph 159 ").location
         let host = UIHostingController(rootView: ReadingText(chapterKey: "last", text: body, style: ReadingStyle(),
