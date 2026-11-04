@@ -1,7 +1,7 @@
 ---
 specId: ADR-004
 title: Native Bookmark Identity and Storage
-status: draft
+status: accepted
 creationDate: 2026-11-04
 lastUpdateDate: 2026-11-04
 relatedSpecs: [ADR-001, ADR-002, ADR-003, SPEC-005, SPEC-009]
@@ -13,7 +13,7 @@ relatedSpecs: [ADR-001, ADR-002, ADR-003, SPEC-005, SPEC-009]
 
 Lei approved the minimal bookmark outcome on 2026-11-04 and requested identity and storage design before implementation, with final independent review through Copilot Opus 5.5. The requested outcome covers saving the visible paragraph, listing, navigating, deleting and retaining bookmarks across restart and layout changes.
 
-Lei approved proceeding with the proposed budget, then requested an upstream-first assessment before implementation. The separate native table below remains a candidate while that assessment runs. Product implementation and schema migration have not started. Merge approval remains separate.
+Lei approved proceeding with the proposed budget, then requested an upstream-first assessment before implementation. The owner approved executing the upstream-first check and continuing on 2026-11-04. Four real Room/SQLite characterization tests passed. They show restart/delete support, combined lookup for distinct unknown-author books, unchanged legacy anchors after a source switch, and replacement on timestamp collision. The approved separate-table budget is retained to isolate exact native anchors while leaving the upstream bookmark and annotation contracts intact. Merge approval remains separate.
 
 Baseline is `bfbbc434f70eb31bb0aac5cef1e493b241f07178`, the merged Copy repair. PR-head and merged-head C1 passed. The integrated upstream remains the pinned revision recorded in [MAINTENANCE](../../MAINTENANCE.md).
 
@@ -50,15 +50,15 @@ Upstream master uses Room schema 89 while the native product uses 91. Schema num
 
 The governing strategy in ADR-001 is continued integration of KMP execution and community source rules, with bounded native adaptations when an observed requirement needs them. The upstream mirror script advances only the mirror branch. Product integration remains a separately reviewed and validated change.
 
-Next, characterize three boundaries before selecting storage.
+The assessment covered the following boundaries.
 
-1. Compare upstream chapter positions to the native reader's unmodified UTF-16 paragraph coordinates using Chinese, emoji, CRLF and formatting cases.
-2. Exercise title/author bookmark lookup with known-author work identity and same-title unknown-author entries, preserving the native coexistence policy.
-3. Trace and exercise bookmark navigation after source switching and changed chapter content, including whether the excerpt affects positioning or only display.
+1. Source inspection found that upstream renders processed text while native coordinates address the retained original body. Coordinate equivalence across the upstream processing pipeline has not been executed. The adapter therefore uses the existing native coordinate contract.
+2. Executed title/author lookup tests demonstrated that distinct same-title unknown-author entries share upstream bookmark results.
+3. Executed source-switch tests demonstrated that title/author resolution changes the active source while the legacy bookmark retains its original positional fields. Source inspection found that navigation passes those positional fields directly.
 
 These source findings establish implemented code paths. They do not establish current simulator behavior or complete feature acceptance. Prefer direct reuse when the characterization satisfies the contract, then evaluate narrow metadata adaptation for demonstrated gaps. Reconsider the separate table only after recording that comparison.
 
-## Proposed identity
+## Accepted identity
 
 A bookmark has an opaque UUID and two distinct references.
 
@@ -69,7 +69,7 @@ Chapter title and a short original-text excerpt are display snapshots. They do n
 
 The visible offset comes from the existing portrait or spread reading callback. The engine resolves it to a valid paragraph boundary against its retained body. Swift submits a reading token and offset, rather than a trusted body or caller-supplied hash.
 
-## Proposed storage budget
+## Accepted storage budget
 
 Add one Room entity and table named `native_bookmarks` to the existing database. Upgrade schema 91 to 92 through one additive migration. Add zero external dependencies and zero separate database or preferences stores.
 
@@ -121,7 +121,7 @@ Use a compact reader action and current-book sheet. Display chapter title and ex
 | Reuse legacy rows as-is | Small apparent schema cost | Title/author lookup cannot prove exact native identity or body compatibility | Reject |
 | Add native fields to legacy bookmarks | One nominal bookmark table | Changes annotation, serialization and backup contracts and still needs native-aware filtering | Reject for this slice |
 | Put native bookmarks in Swift preferences or a second database | Avoids a shared schema version | Splits storage authority and cannot atomically follow source switching | Reject |
-| Add one native table in existing Room database | Reuses native coordinate validation, transactions and migration infrastructure | Adds a shared schema migration and explicit source-switch transfer | Candidate pending upstream characterization |
+| Add one native table in existing Room database | Reuses native coordinate validation, transactions and migration infrastructure | Adds a shared schema migration and explicit source-switch transfer | Selected after upstream characterization |
 
 ## Migration and recovery
 
@@ -145,6 +145,10 @@ Demonstrate the recovery procedure on disposable fixtures. Code reversal alone d
 
 Issue 60's intermittent lock during native rollback-test setup remains a separate defect. Retain its atomicity assertions and investigate an observed recurrence rather than adding retries or longer deadlines to this feature.
 
-## Owner decision requested
+## Implementation authorization
 
-Complete the upstream-first characterization requested after approval. Compare direct reuse, reuse with narrowly scoped metadata, and the separate-table candidate against the approved native identity and position behavior. Record the smallest proven adaptation and surface any changed storage or user-facing contract before implementation. Final independent review remains Copilot Opus 5.5.
+Lei approved the proposed one-table schema-92 budget and minimum user journey, then requested the upstream-first assessment. The assessment now has four passing executable characterizations in `UpstreamBookmarkCharacterizationTest`. Implement the approved identity safeguards through the native adaptation boundary. Final independent review remains Copilot Opus 5.5. H2 and merge approval remain pending.
+
+## Characterization result
+
+The JVM test report contains 4 executed tests with zero failures, errors or skips. Direct upstream DAO reuse supplies persistence and deletion but cannot isolate same-title unknown-author shelf entries. Source switching retains the legacy bookmark and resolves its title/author to the new source while retaining the old positional fields. This would bypass the approved exact-body navigation contract. The separate native table costs one additive migration and a source-switch transfer, and keeps the upstream bookmark entity, DAO, annotation writers and backup representation untouched. Extending legacy rows or adding sidecar metadata would require guarding the existing replace-on-timestamp and cross-consumer mutation semantics. No source parser or shared reader layout subsystem is reimplemented.

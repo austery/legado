@@ -124,6 +124,7 @@ struct ReaderScreen: View {
                 Text("The latest unsaved position will be lost. Previously saved progress is kept; reopen the book from the shelf to continue.")
             }
             .sheet(isPresented: $settings) { typography }
+            .sheet(isPresented: $model.bookmarksPresented, onDismiss: model.closeBookmarks) { BookmarkSheet(model: model) }
             .alert("Clear optional cached chapters?", isPresented: Binding(
                 get: { model.cacheClearPlan != nil },
                 set: { if !$0 { model.cacheClearPlan = nil } })) {
@@ -141,6 +142,7 @@ struct ReaderScreen: View {
             }
             .onChange(of: model.route) { route in
                 if route == .reading { menu = true }
+                else { model.closeBookmarks() }
             }
             .onChange(of: findContext) { chapterFind.updateContext($0) }
             .onChange(of: model.book?.id) { _ in catalogQuery = "" }
@@ -457,6 +459,23 @@ struct ReaderScreen: View {
                 Button("Find in chapter") {
                     if let context = findContext { chapterFind.open(context) }
                 }.accessibilityIdentifier("reader.find").disabled(model.busy || findContext == nil)
+                if model.isShelved {
+                    HStack {
+                        Button("Save bookmark", action: model.saveCurrentBookmark)
+                            .accessibilityIdentifier("reader.addBookmark").disabled(!model.canSaveBookmark)
+                        Button("Bookmarks", action: model.showBookmarks)
+                            .accessibilityIdentifier("reader.bookmarks").disabled(model.busy || model.bookmarkBusy)
+                    }
+                } else {
+                    Button("Add to shelf from book details") { model.navigate(.details) }
+                        .accessibilityIdentifier("reader.bookmarkAdmission").disabled(model.busy)
+                }
+                if let notice = model.bookmarkNotice {
+                    Text(notice).font(.caption).accessibilityIdentifier("reader.bookmarkNotice")
+                    if model.canRetryBookmark {
+                        Button("Retry bookmark", action: model.retryBookmark).disabled(model.bookmarkBusy)
+                    }
+                }
                 if model.canChangeSource {
                     Button("Change source") { model.beginSourceSwitch() }
                         .disabled(model.busy).accessibilityIdentifier("reader.changeSource")

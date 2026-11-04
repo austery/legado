@@ -30,9 +30,10 @@ def main() -> None:
         raise RuntimeError('No iPad Pro 11-inch M4 simulator type')
     (output / 'commit.txt').write_text(subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True))
     (output / 'scope.json').write_text(json.dumps({
-        'app': 'io.legado.pathc.ui-fixture', 'expectedTests': 28,
+        'app': 'io.legado.pathc.ui-fixture', 'expectedTests': 29,
         'fixture': 'owned loopback only', 'physicalDevice': False,
-        'suites': ['ReaderUITests/testNativeTouchCopyPortrait',
+        'suites': ['ReaderUITests/testBookmarkSaveNavigateRelaunchAndDelete',
+                   'ReaderUITests/testNativeTouchCopyPortrait',
                    'ReaderUITests/testNativeTouchCopyWithChapterFind',
                    'ReaderUITests/testNativeTouchCopyLandscapeLeftPage',
                    'ReaderUITests/testNativeTouchCopyLandscapeRightPage',

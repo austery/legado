@@ -7,6 +7,8 @@ import androidx.room3.Database
 import androidx.room3.RoomDatabase
 import androidx.room3.RoomDatabaseConstructor
 import androidx.room3.TypeConverters
+import io.legado.app.data.dao.NativeBookmarkDao
+import io.legado.app.data.entities.NativeBookmark
 import io.legado.app.data.dao.NativeResumeDao
 import io.legado.app.data.entities.NativeReadingResume
 import io.legado.app.data.dao.BookChapterDao
@@ -57,9 +59,9 @@ import io.legado.app.data.entities.TxtTocRule
  *   (官方 room3 的 migrate 是 suspend, 鸿蒙 CPF fork 不是)
  */
 @Database(
-    version = 91,
+    version = 92,
     exportSchema = true,
-    entities = [NativeReadingResume::class, Book::class, BookGroup::class, BookSource::class, BookChapter::class,
+    entities = [NativeBookmark::class, NativeReadingResume::class, Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchKeyword::class, Cookie::class,
         Bookmark::class, TxtTocRule::class, ReadRecord::class,
         HttpTTS::class, Cache::class,
@@ -73,6 +75,7 @@ import io.legado.app.data.entities.TxtTocRule
         AutoMigration(from = 86, to = 87),
         AutoMigration(from = 87, to = 88),
         AutoMigration(from = 90, to = 91),
+        AutoMigration(from = 91, to = 92),
     ]
 )
 // DATABASE 作用域注册 Book.Converters: iOS/ohos KSP 处理 BookChapter.ForeignKey 跨实体解析时,
@@ -89,6 +92,7 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract val bookDao: BookDao
     abstract val nativeResumeDao: NativeResumeDao
+    abstract val nativeBookmarkDao: NativeBookmarkDao
     abstract val nativeShelfDao: NativeShelfDao
     abstract val bookGroupDao: BookGroupDao
     abstract val bookSourceDao: BookSourceDao

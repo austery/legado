@@ -9,6 +9,7 @@ import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.NativeBookmark
 import io.legado.app.data.entities.NativeReadingResume
 import io.legado.app.data.entities.BookSource
 import io.legado.app.utils.systemCurrentTimeMillis
@@ -173,6 +174,12 @@ abstract class NativeShelfDao {
     @Query("SELECT * FROM book_sources WHERE bookSourceUrl = :sourceId")
     protected abstract suspend fun switchSourceRecord(sourceId: String): BookSource?
 
+    @Query("SELECT * FROM native_bookmarks WHERE ownerBookUrl = :bookUrl")
+    protected abstract suspend fun ownedBookmarks(bookUrl: String): List<NativeBookmark>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract suspend fun insertBookmarks(bookmarks: List<NativeBookmark>)
+
     /** Publish and verify the body under the transaction's URL-ownership guard before committing. */
     @Transaction
     open suspend fun switchSource(sourceId: String, bookUrl: String, expectedRevision: Long,
@@ -225,10 +232,12 @@ abstract class NativeShelfDao {
             syncTime = 0L
         )
         // Acquire the write lock before publishing. Failure rolls back this deletion and its cascades.
+        val bookmarks = ownedBookmarks(bookUrl)
         deleteBook(bookUrl)
         publishBody()
         insertBook(replacement)
         insertChapters(catalog)
+        insertBookmarks(bookmarks.map { it.copy(ownerBookUrl = replacement.bookUrl) })
         insertResume(NativeReadingResume(replacement.bookUrl, replacement.origin, chapter.url,
             chapter.index, NativeBodyCoordinates.VERSION, NativeBodyCoordinates.sha256(body),
             body.length, 0, expectedRevision + 1, now))

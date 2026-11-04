@@ -11,6 +11,7 @@ import io.legado.app.data.dao.NativeShelfException
 import io.legado.app.data.dao.NativeShelfFailure
 import io.legado.app.data.dao.NativeShelfOrganization
 import io.legado.app.data.dao.NativeShelfTarget
+import io.legado.app.data.entities.NativeBookmark
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
@@ -511,13 +512,76 @@ class ReaderEngine {
         chapterContent(sourceId, bookId, chapter.url, cacheOnly, true)
     }
 
+    fun listBookmarks(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) {
+            val rows = AppDatabaseProviders.get().appDb.nativeBookmarkDao.list(sourceId, bookId)
+            BookmarksReply(rows.map { bookmarkSnapshot(it, sourceId, bookId) })
+        }
+
+    fun saveBookmark(token: String, utf16Offset: Int, completion: (EngineReply) -> Unit) {
+        persistence(completion) {
+            if (!initialized || closed.value) throw StaleReading("Reading session is closed")
+            val reading = ReadingSessions.tokens[token] ?: throw StaleReading("Reading token expired")
+            if (reading.owner != sessionId) throw StaleReading("Reading token belongs to another session")
+            if (!reading.canSave || reading.storageNotice.isNotEmpty()) throw CacheUnavailable("Save the chapter safely before adding a bookmark")
+            val database = AppDatabaseProviders.get().appDb
+            val entry = database.nativeShelfDao.openBook(reading.sourceId, reading.bookId)
+            val chapter = entry.chapters.singleOrNull { it.url == reading.chapter.url && it.index == reading.chapter.index }
+                ?: throw MissingEntity("Chapter identity changed")
+            if (BookStorageProviders.get().getContent(entry.book, chapter) != reading.body) {
+                throw CacheUnavailable("Displayed text changed in the cache; reopen the chapter before saving a bookmark")
+            }
+            val saved = database.nativeBookmarkDao.save(NSUUID().UUIDString, reading.sourceId, reading.bookId,
+                chapter.url, chapter.index, reading.body, utf16Offset, reading.projection)
+            BookmarkSaved(bookmarkSnapshot(saved, reading.sourceId, reading.bookId))
+        }
+    }
+
+    fun deleteBookmark(sourceId: String, bookId: String, bookmarkId: String,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion, interruptCache = false) {
+        val dao = AppDatabaseProviders.get().appDb.nativeBookmarkDao
+        dao.remove(sourceId, bookId, bookmarkId)
+        BookmarksReply(dao.list(sourceId, bookId).map { bookmarkSnapshot(it, sourceId, bookId) })
+    }
+
+    fun openBookmark(sourceId: String, bookId: String, bookmarkId: String,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        val database = AppDatabaseProviders.get().appDb
+        val bookmark = database.nativeBookmarkDao.list(sourceId, bookId).singleOrNull { it.id == bookmarkId }
+            ?: throw MissingEntity("Bookmark was removed")
+        if (bookmark.sourceId != sourceId || bookmark.sourceBookUrl != bookId) {
+            throw MissingEntity("This bookmark belongs to another source. Switch back to its saved source to open it")
+        }
+        if (bookmark.textVersion != NativeBodyCoordinates.VERSION) throw UnsupportedOperationException("Bookmark text version is unsupported")
+        val entry = database.nativeShelfDao.openBook(sourceId, bookId)
+        if (entry.chapters.none { it.url == bookmark.chapterUrl && !it.isVolume }) throw MissingEntity("Bookmarked chapter is no longer in the catalog")
+        acceptShelfEntry(entry)
+        chapterContent(sourceId, bookId, bookmark.chapterUrl, false, false, bookmark)
+    }
+
+    private fun bookmarkSnapshot(bookmark: NativeBookmark, sourceId: String, bookId: String) =
+        BookmarkSnapshot(bookmark.id, bookmark.chapterTitle, bookmark.excerpt, bookmark.createdAt,
+            bookmark.sourceId == sourceId && bookmark.sourceBookUrl == bookId && bookmark.textVersion == NativeBodyCoordinates.VERSION)
+
+    private fun bookmarkMatches(bookmark: NativeBookmark, body: String): Boolean =
+        bookmark.textVersion == NativeBodyCoordinates.VERSION && body.length == bookmark.textUtf16Length &&
+            NativeBodyCoordinates.sha256(body) == bookmark.textSha256
+
+    private fun validateBookmarkBody(bookmark: NativeBookmark?, body: String) {
+        if (bookmark == null) return
+        if (!bookmarkMatches(bookmark, body)) throw CacheUnavailable("Chapter text has changed since this bookmark was saved")
+        if (NativeBodyCoordinates.paragraphStart(body, bookmark.paragraphUtf16Offset) != bookmark.paragraphUtf16Offset) {
+            throw InvalidInput("Bookmark paragraph is invalid")
+        }
+    }
+
     fun loadChapter(sourceId: String, bookId: String, chapterId: String, cacheOnly: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         chapterContent(sourceId, bookId, chapterId, cacheOnly, false)
     }
 
     private suspend fun chapterContent(sourceId: String, bookId: String, chapterId: String,
-        cacheOnly: Boolean, restore: Boolean): EngineReply {
+        cacheOnly: Boolean, restore: Boolean, bookmark: NativeBookmark? = null): EngineReply {
         val book = book(sourceId, bookId)
         val toc = chapters[sourceId to bookId] ?: throw MissingEntity("Load the table of contents first")
         val position = toc.indexOfFirst { it.url == chapterId }
@@ -526,8 +590,10 @@ class ReaderEngine {
         val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.get(bookId)
         val cached = BookStorageProviders.get().getContent(book, chapter)?.takeIf { it.isNotEmpty() }
         val expected = saved?.takeIf { it.chapterUrl == chapterId }
-        val usable = cached?.takeIf { expected == null ||
-            (NativeBodyCoordinates.sha256(it) == expected.textSha256 && it.length == expected.textUtf16Length) }
+        val usable = cached?.takeIf {
+            if (bookmark != null) bookmarkMatches(bookmark, it)
+            else expected == null || (NativeBodyCoordinates.sha256(it) == expected.textSha256 && it.length == expected.textUtf16Length)
+        }
         var storageNotice = ""
         val content = usable ?: run {
             if (cacheOnly) throw CacheUnavailable("Chapter cache is missing or differs from saved progress")
@@ -541,6 +607,7 @@ class ReaderEngine {
             currentCoroutineContext().ensureActive()
             EngineHost.interactionFailure()?.let { return it }
             if (downloaded.isEmpty()) throw CacheUnavailable("Chapter returned an empty body")
+            validateBookmarkBody(bookmark, downloaded)
             try {
                 BookHelpProviders.get().saveContent(source, book, chapter, downloaded)
                 if (BookStorageProviders.get().getContent(book, chapter) != downloaded) {
@@ -553,10 +620,12 @@ class ReaderEngine {
             }
             downloaded
         }
+        validateBookmarkBody(bookmark, content)
+        if (bookmark != null && storageNotice.isNotEmpty()) throw CacheUnavailable(storageNotice)
         val shelf = try { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
             catch (error: NativeShelfException) { if (error.failure == NativeShelfFailure.NOT_ON_SHELF) null else throw error }
         val reading = shelf?.let {
-            var offset = 0
+            var offset = bookmark?.paragraphUtf16Offset ?: 0
             var notice = ""
             var canSave = storageNotice.isEmpty()
             if (saved != null && saved.textVersion != NativeBodyCoordinates.VERSION) {
@@ -580,6 +649,7 @@ class ReaderEngine {
                     }
                 }
             }
+            if (bookmark != null && !canSave) throw UnsupportedOperationException(notice)
             val token = NSUUID().UUIDString
             ReadingSessions.tokens[token] = ReadingSession(sessionId, sourceId, bookId, chapter,
                 content, saved?.revision ?: 0, canSave, NativeChapterProjection.from(it.book), storageNotice)
@@ -765,6 +835,11 @@ private data class CommittedSourceSwitch(val entry: NativeShelfEntry, val oldBoo
 private data class PreparedSourceSwitch(val original: Book, val revision: Long,
     val projection: NativeChapterProjection, val candidate: Book, val catalog: List<BookChapter>,
     val chapter: BookChapter, val body: String, val source: BookSource)
+
+class BookmarkSnapshot internal constructor(val id: String, val chapterTitle: String,
+    val excerpt: String, val createdAt: Long, val availableInCurrentSource: Boolean)
+class BookmarksReply internal constructor(val bookmarks: List<BookmarkSnapshot>) : EngineReply()
+class BookmarkSaved internal constructor(val bookmark: BookmarkSnapshot) : EngineReply()
 
 class ReadingSnapshot internal constructor(val token: String, val revision: Long,
     val paragraphUtf16Offset: Int, val restoreNotice: String, val canSave: Boolean)
