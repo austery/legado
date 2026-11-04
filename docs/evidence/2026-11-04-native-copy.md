@@ -5,7 +5,8 @@
 Issue: https://github.com/austery/legado/issues/58.
 Base: `97f5808c3bd79f773be81f4b51b736135749150f`.
 Test-only baseline: `183b4a4cea4610191b97cbae3423b7d0c5130576`.
-Repair source: `551569f7fc26eaa4cb9099f071c3d4ab67033bc4`.
+Initial repair source: `551569f7fc26eaa4cb9099f071c3d4ab67033bc4`.
+First review snapshot: `08af92ccb37a607394cd66ed3a2c90ec19b22247`.
 
 Lei requested reproduction, a minimal repair, validation, and final independent
 GitHub Copilot Claude Opus 5.5 review. Owner H2 and explicit PR merge approval
@@ -37,11 +38,16 @@ Single-variable experiments retained their source patches and result bundles:
 A four-case restoration experiment then ran one primitive per fresh view.
 Clearing the restoration flag, resolving the initial text position, and setting
 zero content offset each preserved the menu. Calling
-`layoutManager.ensureLayout(for: textContainer)` alone suppressed it. Trace output
+Reading `layoutManager` and calling `ensureLayout(for: textContainer)` during
+restoration suppressed it. That experiment combines a TextKit compatibility
+switch with whole-container layout; it does not isolate those two effects. Trace output
 places that call in initial restoration, before the user's selection. This does
 not support a claim that repeated scrolling during selection caused the failure.
 
-The repair removes that one whole-container layout call. The existing
+The repair removes that restoration-time call and explicitly creates the reader
+with TextKit 1 by accessing `layoutManager` immediately after its normal
+initializer, before any layout or restoration. This preserves the base text
+system mode without relying on a later compatibility switch. The existing
 `position(from:offset:)`, `caretRect(for:)`, bounds clamp, content-offset update,
 and restoration callback remain. The observed causal claim is limited to
 Xcode 27.1 / iOS 27.0; it does not identify an internal UIKit defect.
@@ -52,9 +58,10 @@ Four named UI tests cover portrait, both landscape pages, and the open chapter-f
 panel. They use actual long press, require a visible and hittable native Copy menu,
 and tap it. A test-host observer reads selection and clipboard state. It never
 sets selection, becomes first responder, invokes Copy, or writes the clipboard.
+The observer leaves pre-existing clipboard text unread until its count changes.
 The clipboard change count must increase, and its UTF-16 text must exactly equal
 the selected original chapter text. Book/source/chapter identity, anchor, viewport,
-and reading-control availability must remain intact.
+native selection after Copy, and reading-control availability must remain intact.
 
 The driver inventory changes from 24 to 28 methods. Existing failure, skip, count,
 and 900-second timeout gates remain intact. Temporary diagnostic experiments
@@ -101,6 +108,31 @@ The engine framework was rebuilt from this task checkout using the project wrapp
 JDK 21/17, Android SDK, Xcode 27.1, and iOS 27.0 ARM64 simulator target. Binary SHA256:
 `456003c81586f754f7965f3838053e242a6ab3a1fe6a860cb7f26d288ddffe4a`.
 The primary checkout's older framework was not used.
+
+## First independent review and response
+
+GitHub Copilot Claude Opus 5.5 reviewed `97f5808c...08af92ccb` read-only and
+requested changes. The report is retained as `copilot-final-review.md` in the
+archive. It found that the old host's layout probe forces TextKit 1, while the
+initial repair left the production view on TextKit 2. The initial passing UI
+results therefore did not cover the production text-system configuration.
+
+| Item | Evidence and decision | Action |
+| --- | --- | --- |
+| F1: product/host text-system mismatch | Accepted. The deleted access was the product's compatibility switch; the host still reads `layoutManager`. | Explicitly select TextKit 1 before layout, preserving the base mode. Add a mode assertion to the real restoration test. Rerun four Copy tests and ordinary product tests. |
+| F2: TextKit 2 end-of-chapter geometry | Conditional on adopting TextKit 2. That migration is outside this repair. | Keep TextKit 1; retain existing geometry/restoration coverage. |
+| F3: combined-variable causal wording | Accepted. Reading the manager and forcing layout were combined. | Narrow the comment and diagnosis wording. |
+| F4: selection after Copy | Accepted. The issue asks for before/after selection comparison. | Assert exact selected ranges/text after Copy. |
+| F5: pre-existing clipboard content | Accepted as bounded observer hardening. | Read clipboard text only after its count differs from the initial sample. |
+
+The reviewer found no fabricated Copy action or weakened execution gate. It did
+not treat the two keyboard-input failures as a blocker for this scoped repair.
+The proposed inherited `usingTextLayoutManager: false` factory compiled but the
+fixture app crashed on first chapter configuration. Its source patch, crash logs,
+and failed result are retained in `textkit1-copy`; no acceptance is claimed.
+The candidate instead retains the normal Swift subclass initializer, then reads
+`layoutManager` before layout. The SDK documents this compatibility switch.
+The corrected candidate still needs its own passing results and re-review.
 
 ## Retained screenshots
 

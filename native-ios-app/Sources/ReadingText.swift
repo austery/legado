@@ -224,8 +224,8 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
             needsAnchorRestoration = false
             return
         }
-        // Let UIKit lay out the requested caret; forcing the entire container
-        // here suppresses the native selection edit menu on iOS 27.
+        // Query the caret without accessing layoutManager or forcing the whole
+        // container during restoration; that path suppressed Copy on iOS 27.
         if let position = position(from: beginningOfDocument, offset: displayOffset) {
             // caretRect also represents the empty last paragraph after a trailing delimiter.
             let rect = caretRect(for: position)
@@ -415,6 +415,8 @@ struct ReadingText: UIViewRepresentable {
 
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
+        // Select the existing TextKit 1 mode before layout, not during restoration.
+        _ = view.layoutManager
         view.delegate = view
         view.enableControlsTap()
         view.isEditable = false

@@ -1399,6 +1399,7 @@ final class ReaderUITests: XCTestCase {
         }
         let after = try XCTUnwrap(copyObservation(app))
         XCTAssertGreaterThan(after.changeCount, before.changeCount, "Old clipboard text cannot pass")
+        XCTAssertEqual(after.selections, selected.selections, "Copy must preserve the native selection")
         XCTAssertEqual(Array(try XCTUnwrap(after.clipboard).utf16), Array(selection.original.utf16))
         XCTAssertEqual(readingIdentity(app), identity)
         XCTAssertEqual(anchor(app), position)

@@ -37,6 +37,7 @@ struct FixtureReaderApp: App {
     @State private var shelfMutation = "none"
     @State private var copyObservation = "{}"
     @State private var copySample = 0
+    @State private var initialCopyChangeCount: Int?
     private var observesCopy: Bool { ProcessInfo.processInfo.environment["READER_UI_OBSERVE_COPY"] == "1" }
     private var scenario: String { ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] ?? "shelf" }
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
@@ -198,8 +199,12 @@ struct FixtureReaderApp: App {
                                  original: original.substring(with: range), rendered: rendered.substring(with: local))
         }
         copySample += 1
-        let observation = CopyObservation(sample: copySample, changeCount: UIPasteboard.general.changeCount,
-                                          clipboard: UIPasteboard.general.string, selections: selections)
+        let changeCount = UIPasteboard.general.changeCount
+        if initialCopyChangeCount == nil { initialCopyChangeCount = changeCount }
+        // Do not inspect another app's pre-existing clipboard content.
+        let clipboard = changeCount == initialCopyChangeCount ? nil : UIPasteboard.general.string
+        let observation = CopyObservation(sample: copySample, changeCount: changeCount,
+                                          clipboard: clipboard, selections: selections)
         if let data = try? JSONEncoder().encode(observation) {
             copyObservation = String(decoding: data, as: UTF8.self)
         }

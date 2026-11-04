@@ -42,6 +42,7 @@ final class ReadingRestorationTests: XCTestCase {
         XCTAssertEqual(displayed.map(\.1), [target])
         XCTAssertTrue(samples.isEmpty)
         let view = try XCTUnwrap(textView(host.view))
+        XCTAssertNil(view.textLayoutManager, "Production restoration must retain TextKit 1")
         XCTAssertGreaterThan(view.contentOffset.y, 0)
         let position = try XCTUnwrap(view.position(from: view.beginningOfDocument, offset: target))
         XCTAssertTrue(view.bounds.intersects(view.caretRect(for: position)))
