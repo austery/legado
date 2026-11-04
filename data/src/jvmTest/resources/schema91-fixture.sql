@@ -23,3 +23,5 @@ CREATE VIEW `book_sources_part` AS select bookSourceUrl, bookSourceName, bookSou
     (ifnull(trim(loginUrl), '') <> '' or ifnull(trim(loginUi), '') <> '') hasLoginUrl, lastUpdateTime, respondTime, weight,
     (ifnull(trim(exploreUrl), '') <> '') hasExploreUrl, bookSourceIcon
     from book_sources;
+CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT);
+INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '134b0acf4bbd6718b499cf67cf74553b');

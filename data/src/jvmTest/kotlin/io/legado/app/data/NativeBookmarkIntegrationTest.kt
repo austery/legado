@@ -6,6 +6,7 @@ import androidx.sqlite.execSQL
 import io.legado.app.data.dao.NativeChapterProjection
 import io.legado.app.data.dao.NativeResumeException
 import io.legado.app.data.dao.NativeShelfException
+import io.legado.app.data.dao.NativeShelfTarget
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
@@ -71,6 +72,26 @@ class NativeBookmarkIntegrationTest {
                     NativeChapterProjection.from(b))
             }
             assertTrue(db.nativeBookmarkDao.list("source", "b").isEmpty())
+        }
+    }
+
+    @Test
+    fun groupChangesPreserveBookmarksAndTrueBookDeletionCascades() = runBlocking {
+        withDatabase { db ->
+            val book = seed(db)
+            val saved = save(db, book)
+            val groups = db.nativeShelfDao.createGroup("Keep", db.nativeShelfDao.organization().token)
+            val group = groups.groups.single()
+            val assigned = db.nativeShelfDao.changeGroups(
+                listOf(NativeShelfTarget(book.origin, book.bookUrl)), listOf(group.groupId), emptyList(), groups.token)
+            assertEquals(listOf(saved), db.nativeBookmarkDao.list(book.origin, book.bookUrl))
+            db.nativeShelfDao.deleteGroup(group.groupId, assigned.token)
+            assertEquals(listOf(saved), db.nativeBookmarkDao.list(book.origin, book.bookUrl))
+            assertNull(db.nativeResumeDao.get(book.bookUrl))
+            db.bookDao.delete(assertNotNull(db.bookDao.getBook(book.bookUrl)))
+            assertNull(db.bookDao.getBook(book.bookUrl))
+            seed(db)
+            assertTrue(db.nativeBookmarkDao.list(book.origin, book.bookUrl).isEmpty())
         }
     }
 

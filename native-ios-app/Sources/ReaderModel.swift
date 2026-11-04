@@ -22,13 +22,14 @@ final class ReaderModel: ObservableObject {
     @Published private(set) var bookmarkNotice: String?
     @Published private(set) var bookmarkBusy = false
     @Published private(set) var canRetryBookmark = false
-    @Published private var bookmarkOffset: Int?
+    private var bookmarkOffset: Int?
+    @Published private var bookmarkPositionAvailable = false
     private var bookmarkRequest: EngineRequest?
     private var bookmarkGeneration = UUID()
     private var bookmarkRetry: (() -> Void)?
 
     var canSaveBookmark: Bool {
-        isShelved && !busy && !bookmarkBusy && bookmarkOffset != nil && content?.reading?.canSave == true
+        isShelved && !busy && !bookmarkBusy && bookmarkPositionAvailable && activeReadingToken != nil && content?.reading?.canSave == true
     }
 
     func showBookmarks() {
@@ -44,8 +45,6 @@ final class ReaderModel: ObservableObject {
         bookmarkRequest = nil
         bookmarkGeneration = UUID()
         bookmarkBusy = false
-        bookmarkRetry = nil
-        canRetryBookmark = false
     }
 
     func refreshBookmarks() {
@@ -840,6 +839,7 @@ final class ReaderModel: ObservableObject {
 
     private func acceptContent(_ reply: ContentReply) {
         bookmarkOffset = nil
+        bookmarkPositionAvailable = false
         bookmarkBusy = false
         content = reply; route = .reading
         saveNotice = reply.storageNotice.isEmpty ? nil : reply.storageNotice
@@ -858,12 +858,14 @@ final class ReaderModel: ObservableObject {
     func readingDisplayed(_ token: String, _ offset: Int) {
         guard route == .reading, activeReadingToken == token, content?.reading?.canSave == true else { return }
         bookmarkOffset = offset
+        if !bookmarkPositionAvailable { bookmarkPositionAvailable = true }
         positionSaver.displayed(token: token, offset: offset)
     }
 
     func readingScrolled(_ token: String, _ offset: Int) {
         guard route == .reading, activeReadingToken == token, content?.reading?.canSave == true else { return }
         bookmarkOffset = offset
+        if !bookmarkPositionAvailable { bookmarkPositionAvailable = true }
         positionSaver.sample(token: token, offset: offset)
     }
 
@@ -935,7 +937,7 @@ final class ReaderModel: ObservableObject {
         generation = UUID(); request?.cancel(); request = nil
         bookmarkRequest?.cancel(); bookmarkRequest = nil
         bookmarkGeneration = UUID(); bookmarkBusy = false
-        bookmarkRetry = nil; canRetryBookmark = false
+        bookmarkRetry = nil; canRetryBookmark = false; bookmarkNotice = nil
         busy = false; message = nil; retryAction = nil
     }
 

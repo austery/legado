@@ -5,8 +5,16 @@ final class ReaderUITests: XCTestCase {
         let app = launchControlsReader()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         waitForStableViewport(app)
+        app.textViews["reader.text"].swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
         let position = anchor(app)
         let identity = readingIdentity(app)
+        XCTAssertGreaterThan(position, 0)
+        wait(app) {
+            let columns = (app.staticTexts["fixture.stored"].value as? String ?? "").components(separatedBy: "|")
+            return columns.count > 7 && Int(columns[7]) == position
+        }
         let stored = app.staticTexts["fixture.stored"].value as? String
         let save = app.buttons["reader.addBookmark"]
         XCTAssertTrue(save.waitForExistence(timeout: 10))
@@ -36,7 +44,12 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.bookmarks"].tap()
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
         capture("bookmark-landscape-list")
-        app.buttons["bookmarks.done"].tap()
+        rows.firstMatch.tap()
+        wait(app) { !app.buttons["bookmarks.done"].exists }
+        assertRenderedAnchor(app, identity: identity, position: position)
+        wait(app) { save.isEnabled }
+        save.tap()
+        wait(app) { app.staticTexts["reader.bookmarkNotice"].label == "Bookmark saved." }
         app.terminate()
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
