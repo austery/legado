@@ -13,7 +13,7 @@ relatedSpecs: [ADR-001, ADR-002, ADR-003, SPEC-005, SPEC-009]
 
 Lei approved the minimal bookmark outcome on 2026-11-04 and requested identity and storage design before implementation, with final independent review through Copilot Opus 5.5. The requested outcome covers saving the visible paragraph, listing, navigating, deleting and retaining bookmarks across restart and layout changes.
 
-This draft proposes the persistent-data budget and lifecycle choices for owner confirmation. Product implementation and schema migration have not started. Merge approval remains separate.
+Lei approved proceeding with the proposed budget, then requested an upstream-first assessment before implementation. The separate native table below remains a candidate while that assessment runs. Product implementation and schema migration have not started. Merge approval remains separate.
 
 Baseline is `bfbbc434f70eb31bb0aac5cef1e493b241f07178`, the merged Copy repair. PR-head and merged-head C1 passed. The integrated upstream remains the pinned revision recorded in [MAINTENANCE](../../MAINTENANCE.md).
 
@@ -26,6 +26,37 @@ Baseline is `bfbbc434f70eb31bb0aac5cef1e493b241f07178`, the merged Copy repair. 
 - [AppDatabase](../../../data/src/commonMain/kotlin/io/legado/app/data/AppDatabase.kt) has schema version 91. The existing database is shared by native adaptation and upstream consumers.
 
 These are source observations at the baseline. Migration, interruption and runtime behavior need executable characterization before acceptance.
+
+## Upstream-first reassessment on 2026-11-04
+
+The owner requested that upstream behavior be inspected before selecting a local implementation. The first draft compared stored fields without tracing the complete upstream feature. Its separate-table recommendation was premature.
+
+The integrated KMP baseline is `d31c0a270e7c8610e9679dbbda5a6bee06927952`. The inspected upstream master is `83657e54829b7603aa392bf072283805769ad385`, dated 2026-11-02. Fetching that snapshot changed only a remote-tracking ref. The product base remains `bfbbc434f`.
+
+Upstream already implements bookmarks through these paths.
+
+| Operation | Upstream implementation |
+| --- | --- |
+| Add while reading | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/read/ReadMenu.kt`, `ADD_BOOKMARK`, captures book title/author, chapter index, current chapter position, chapter title and page text |
+| Save, edit, delete | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/bookmark/BookmarkEditScreenModel.kt` calls the existing `bookmarkDao` |
+| List for a book | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/toc/TocScreenModel.kt`, `upBookmarks`, subscribes by title and author |
+| Open from all bookmarks | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/BookmarkRoute.kt:88` resolves the book by title/author and passes chapter index/position to the reader |
+| Open from the current book | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/TocRoute.kt:278` passes the saved chapter index/position to chapter navigation |
+| Apply position | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/read/ReaderScreenModel.kt:805` saves the previous reading position and loads the requested chapter/position |
+
+Bookmark entity blob `1731333e7a6644755a12283b85585e12746fdfa4` and DAO blob `c1a0b60e5523c3c9cc530ede188a82bd214c68a7` are identical at the integrated and inspected upstream revisions. The inspected bookmark edit model and bookmark/TOC route files also have no changes between these revisions. These capabilities are already present in the product source tree, but the Swift bridge exposes no bookmark operations.
+
+Upstream master uses Room schema 89 while the native product uses 91. Schema numbers belong to divergent migration histories and cannot be reconciled by choosing the larger number. A future integration must explicitly preserve both histories and the application data contract.
+
+The governing strategy in ADR-001 is continued integration of KMP execution and community source rules, with bounded native adaptations when an observed requirement needs them. The upstream mirror script advances only the mirror branch. Product integration remains a separately reviewed and validated change.
+
+Next, characterize three boundaries before selecting storage.
+
+1. Compare upstream chapter positions to the native reader's unmodified UTF-16 paragraph coordinates using Chinese, emoji, CRLF and formatting cases.
+2. Exercise title/author bookmark lookup with known-author work identity and same-title unknown-author entries, preserving the native coexistence policy.
+3. Trace and exercise bookmark navigation after source switching and changed chapter content, including whether the excerpt affects positioning or only display.
+
+These source findings establish implemented code paths. They do not establish current simulator behavior or complete feature acceptance. Prefer direct reuse when the characterization satisfies the contract, then evaluate narrow metadata adaptation for demonstrated gaps. Reconsider the separate table only after recording that comparison.
 
 ## Proposed identity
 
@@ -90,7 +121,7 @@ Use a compact reader action and current-book sheet. Display chapter title and ex
 | Reuse legacy rows as-is | Small apparent schema cost | Title/author lookup cannot prove exact native identity or body compatibility | Reject |
 | Add native fields to legacy bookmarks | One nominal bookmark table | Changes annotation, serialization and backup contracts and still needs native-aware filtering | Reject for this slice |
 | Put native bookmarks in Swift preferences or a second database | Avoids a shared schema version | Splits storage authority and cannot atomically follow source switching | Reject |
-| Add one native table in existing Room database | Reuses native coordinate validation, transactions and migration infrastructure | Adds a shared schema migration and explicit source-switch transfer | Recommend |
+| Add one native table in existing Room database | Reuses native coordinate validation, transactions and migration infrastructure | Adds a shared schema migration and explicit source-switch transfer | Candidate pending upstream characterization |
 
 ## Migration and recovery
 
@@ -116,4 +147,4 @@ Issue 60's intermittent lock during native rollback-test setup remains a separat
 
 ## Owner decision requested
 
-Approve the one-table schema-92 budget, four bridge operations, explicit shelf admission before saving, and retention of original-source anchors across source switching. After approval, record the H1 contract in an implementation Issue and implement on the isolated bookmark branch.
+Complete the upstream-first characterization requested after approval. Compare direct reuse, reuse with narrowly scoped metadata, and the separate-table candidate against the approved native identity and position behavior. Record the smallest proven adaptation and surface any changed storage or user-facing contract before implementation. Final independent review remains Copilot Opus 5.5.
