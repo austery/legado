@@ -1,169 +1,151 @@
 # Native Copy repair
 
-## Scope and authorization
+## Scope and final change
 
 Issue: https://github.com/austery/legado/issues/58.
 Base: `97f5808c3bd79f773be81f4b51b736135749150f`.
-Test-only baseline: `183b4a4cea4610191b97cbae3423b7d0c5130576`.
-Initial repair source: `551569f7fc26eaa4cb9099f071c3d4ab67033bc4`.
-First review snapshot: `08af92ccb37a607394cd66ed3a2c90ec19b22247`.
+Final executable candidate: `8c33e84b630e6604a48be02376e1aa5615d4b201`.
 
-Lei requested reproduction, a minimal repair, validation, and final independent
+Lei authorized reproduction, a minimal repair, validation, and final independent
 GitHub Copilot Claude Opus 5.5 review. Owner H2 and explicit PR merge approval
 remain pending. This record does not claim physical-device acceptance.
 
-## Failure and causal comparison
+The final production diff adds one `layoutManager` read immediately after the
+normal `AnchoredTextView()` initializer. This selects TextKit 1 before the first
+layout. The original `restoreAnchor()` algorithm, including full-container
+`ensureLayout`, remains byte-for-byte unchanged from base. Gestures, saved-offset
+formats, engine/storage interfaces and dependencies do not change.
 
-The canonical UI driver reproduced the missing native Copy menu on the test-only
-baseline. A real long press produced a nonempty original-text selection, but
-`app.menuItems["Copy"]` was absent. The screenshot shows selection handles without
-an edit menu. The test failed after 26.769 seconds; xcodebuild returned 65 after
-supplemental system diagnostics.
+The UIKit SDK header documents that UITextView defaults to TextKit 2 and falls
+back to TextKit 1 when `layoutManager` is read. At base this switch occurred inside
+anchor restoration during the first layout. Moving it before layout preserves the
+base steady-state mode and avoids the observed missing Copy menu on iOS 27.0.
+This is evidence for a repair at the reader boundary, not a claim about UIKit's
+internal defect or every supported OS version.
 
-Single-variable experiments retained their source patches and result bundles:
+## Reproduction and causal correction
 
-| Comparison | Actual native Copy menu |
+The test-only baseline `183b4a4cea4610191b97cbae3423b7d0c5130576` adds an actual-touch
+Copy test without changing product code. Its long press selects original text,
+but `app.menuItems["Copy"]` is absent. The screenshot shows handles without a menu.
+The test fails after 26.769 seconds; xcodebuild returns 65.
+
+| Comparison | Observed result |
 | --- | --- |
-| Baseline reader | Missing |
-| Remove only the controls tap recognizer | Missing |
-| Move its delegate to a separate object | Missing |
-| Plain selectable UITextView | Visible and hittable |
-| Plain UITextView after TextKit 1 access | Visible and hittable |
-| Standalone ReadingText, without the surrounding reader screen | Missing |
-| Suppress repeated pan-enabled writes or omit the text delegate | Missing |
-| Skip custom layout, or skip anchor restoration | Visible and hittable |
-| Skip equal content-offset writes | Missing |
-| Replace only the caret query with an equivalent initial rectangle | Missing |
+| Base product, actual long press | Real selection; Copy menu missing. |
+| Remove only the controls recognizer, or move its delegate | Copy still missing. Both experiments withdrawn. |
+| Plain UITextView, including a TextKit 1 variant | Copy visible and hittable. |
+| Standalone ReadingText without surrounding reader screen | Copy missing. |
+| Skip restoration or custom layout | Copy appears. Diagnostic only. |
+| Restoration primitive: read manager and force full layout | Copy missing; three other primitive controls retain it. This combines a compatibility switch and layout, so it does not isolate the two. |
+| Delete full layout, then explicitly select TextKit 1 early | Copy passes, but the new final-paragraph test fails: offset 4801 instead of bottom limit 5389; last caret not fully visible. This candidate is rejected. |
+| Restore original product source with the new geometry tests | 95/95 ordinary tests pass. This confirms that deleting full layout introduced the geometry regression. |
+| Select TextKit 1 early and retain original full layout | Portrait and both landscape Copy tests pass 3/3. Full UI follow-up passes 4/4. |
 
-A four-case restoration experiment then ran one primitive per fresh view.
-Clearing the restoration flag, resolving the initial text position, and setting
-zero content offset each preserved the menu. Reading `layoutManager` and calling `ensureLayout(for: textContainer)` during
-restoration suppressed it. That experiment combines a TextKit compatibility
-switch with whole-container layout; it does not isolate those two effects. Trace output
-places that call in initial restoration, before the user's selection. This does
-not support a claim that repeated scrolling during selection caused the failure.
+The final repair therefore keeps full layout. Earlier records in this branch and
+archive that describe deleting `ensureLayout` are superseded by this result.
+The final product diff is only early mode selection, not a layout-engine migration.
 
-The repair removes that restoration-time call and explicitly creates the reader
-with TextKit 1 by accessing `layoutManager` immediately after its normal
-initializer, before any layout or restoration. This preserves the base text
-system mode without relying on a later compatibility switch. The existing
-`position(from:offset:)`, `caretRect(for:)`, bounds clamp, content-offset update,
-and restoration callback remain. The observed causal claim is limited to
-Xcode 27.1 / iOS 27.0; it does not identify an internal UIKit defect.
+## Acceptance tests and probes
 
-## Test contract
+Four UI methods cover portrait, both landscape pages, and an open chapter-find
+panel. They require real long press, a visible and hittable native Copy menu,
+an actual tap, a new clipboard write, and exact selected original UTF-16 text.
+They compare selection before and after Copy and preserve reader identity,
+anchor, viewport and reading-control availability.
 
-Four named UI tests cover portrait, both landscape pages, and the open chapter-find
-panel. They use actual long press, require a visible and hittable native Copy menu,
-and tap it. A test-host observer reads selection and clipboard state. It never
-sets selection, becomes first responder, invokes Copy, or writes the clipboard.
-The observer leaves pre-existing clipboard text unread until its count changes.
-The clipboard change count must increase, and its UTF-16 text must exactly equal
-the selected original chapter text. Book/source/chapter identity, anchor, viewport,
-native selection after Copy, and reading-control availability must remain intact.
+The opt-in test-host observer never sets selection, becomes first responder,
+invokes Copy, or writes the clipboard. It leaves existing clipboard text unread
+until the change count differs from the first sample. The pre-existing host
+layout probe reads `layoutManager`; the product now selects the same TextKit mode
+before any host tick, so that probe does not change the product configuration.
 
-The driver inventory changes from 24 to 28 methods. Existing failure, skip, count,
-and 900-second timeout gates remain intact. Temporary diagnostic experiments
-suppressed supplemental system collection only; the final driver restores its
-original collection policy. No dependency, engine interface, or persisted format
-changes.
+The UI inventory changes from 24 to 28 methods. Existing failure, skip, count,
+and 900-second timeout gates remain unchanged. Ordinary product discovery adds
+one method (94 to 95). The new geometry checks require deep-paragraph top alignment
+within 2 points, and a fully visible final caret at the bottom scroll boundary.
+The tests do not call `ensureLayout` or read `layoutManager` to prepare the result.
 
-## Executed evidence
+## Final validation
 
-Evidence root during execution: `/private/tmp/legado-copy-20261104-evidence`.
+- `early-mode-full-layout-copy`: portrait, landscape-left and landscape-right
+  pass 3/3, zero failures/skips, with original full layout retained. The source
+  manifest matches the final executable candidate.
+- `early-mode-final-ui`: 4/4, zero failures/skips; find-panel Copy, main
+  find/durable journey, controls/selection across layouts, and two-page
+  reflow/durable reopening. Final portrait Copy, find/Copy and reopened spread
+  screenshots were inspected. Together the two UI runs cover seven distinct
+  methods on the same final executable source.
+- `early-mode-native-product`: 95/95, zero failures/skips, at `8c33e84b6`.
+  Both deep top alignment and final-paragraph visibility/bottom-limit checks pass.
+  This closes the demonstrated geometry regression while retaining working Copy.
+- Driver/fixture Python discovery: 62/62. No Python executable change followed
+  that run. The UI inventory matches 28 distinct declared/source methods.
+- Published-head C1 and its separate interruption/offline-restart suites: pending.
+  C1 does not execute the UI lane. No full 28-method UI aggregate is claimed.
+
+## Retained failed and intermediate runs
+
+The archive keeps all failures. Passing reruns do not replace them.
+
+- `copy-candidate`: 3/3 on the first deletion candidate; not final acceptance.
+- `ui-regressions`: 5/7, with two failures inside software-keyboard helpers before
+  target assertions. `find-copy-isolated` passes those same two methods 2/2 on a
+  fresh simulator without assertion changes.
+- `textkit1-copy`: an inherited `usingTextLayoutManager: false` factory compiles
+  but crashes on first chapter configuration. It is withdrawn; 0/5 is retained
+  with its source patch and crash logs.
+- `textkit1-early-access`: 4/5 on the early-mode/deleted-layout candidate. The
+  find-panel method fails in the Pinyin script-switch helper; it passes alone in
+  `textkit1-find-copy`. Supplemental diagnostics were stopped only after all five
+  tests finished. The failed result bundle remains valid and is not a green run.
+- `textkit1-native-product`: 94/94 before the stronger geometry test existed.
+- `final-controls-paging`: 2/2 on that intermediate candidate; screenshots checked.
+- `final-native-product`: 94/95 after adding geometry coverage; end restoration
+  fails. `geometry-original-baseline` passes 95/95 with original product source.
+
+Keyboard-input intermittency remains unexplained. Hidden failure/cancel,
+landscape find/rejected-save and no-match/failure/retirement were exercised only
+on the initial repair, not rerun on the final candidate. These limits are separate
+from the final named journeys and from published-head CI.
+
+## Independent review
+
+GitHub Copilot Claude Opus 5.5 reviewed `08af92ccb` and requested changes because
+product and test host selected different text systems. The report is retained
+as `copilot-final-review.md`. Early mode selection and the runtime mode assertion
+address that gap. Causal wording, post-Copy selection comparison and clipboard
+observation were also corrected.
+
+The second report, `copilot-corrected-review.md`, approves code at `89a500c6a` but
+asks for stronger geometry evidence. Implementing that suggestion reveals the
+real regression above. That approval does not certify the final candidate.
+Final independent review on the final fixed head remains pending.
+
+## Provenance, recovery and limits
+
+Execution root: `/private/tmp/legado-copy-20261104-evidence`.
 Retained archive: `/Users/leipeng/Documents/Codex/legado-issue-58-20261104`.
-Completed run files are hash-verified against that archive; reproducible
-DerivedData is excluded.
-Each run records its command, simulator UUID, log, and available `.xcresult` and
-screenshots. `final-source-manifest.json` records source hashes and the relationship
-between pre-commit runs and the committed repair. The later source edit only
-clarifies the comment; executable production code remains identical.
+Completed logs, commands, source manifests/patches, `.xcresult` bundles and
+screenshots are hash-verified against the archive. Reproducible DerivedData is
+excluded from the evidence copy; build diagnostics are retained separately.
 
-- `portrait-baseline`: reproduced failure described above.
-- `restoration-primitives`: three controls show the menu; whole-container layout
-  suppresses it. The aggregate intentionally fails and is diagnostic evidence only.
-- `copy-candidate`: portrait, landscape-left, and landscape-right Copy tests pass
-  3/3 with zero failures or skips. All three menu screenshots were inspected.
-  Production and observer sources equal the repair commit. This run preceded
-  adding the fourth, find-panel test.
-- C1 scope/gate Python tests: 19/19 pass. Full driver/fixture Python discovery
-  also passes 62/62. The UI inventory matches 28 distinct source methods.
-- `ui-regressions`: 5/7 pass, 2 fail, zero skips. Controls/selection, hidden
-  failure/cancel actions, two-page turns/reflow/durable recovery, landscape find
-  with rejected save, and no-match/failure/retirement pass. The main find journey
-  fails to switch back from numeric keys; the new find/Copy journey fails to
-  switch from Roman to Pinyin. Both fail before their target assertions.
-- `find-copy-isolated`: a new simulator runs those same two methods unchanged;
-  2/2 pass with zero failures or skips. The find-panel Copy menu screenshot was
-  inspected. Retain the first failures as keyboard-input intermittency; this
-  does not establish their internal cause or a completely green seven-test run.
-- `native-product`: canonical ordinary-product driver passes 94/94, zero failures
-  or skips. This includes real UIKit restoration, Unicode/delimiter boundaries,
-  pagination/reflow, and reading/save journeys. The process-interruption and
-  offline-restart external suites are not run in this local lane; published-head
-  C1 must run them separately.
-
-The engine framework was rebuilt from this task checkout using the project wrapper,
-JDK 21/17, Android SDK, Xcode 27.1, and iOS 27.0 ARM64 simulator target. Binary SHA256:
+ARM64 Mac, Xcode 27.1 build 27A9275, iOS 27.0, invocation-owned M4 iPad simulators.
+ReaderEngine was rebuilt from the task source with the project wrapper and JDK
+21/17. Framework SHA256:
 `456003c81586f754f7965f3838053e242a6ab3a1fe6a860cb7f26d288ddffe4a`.
 The primary checkout's older framework was not used.
 
-## First independent review and response
-
-GitHub Copilot Claude Opus 5.5 reviewed `97f5808c...08af92ccb` read-only and
-requested changes. The report is retained as `copilot-final-review.md` in the
-archive. It found that the old host's layout probe forces TextKit 1, while the
-initial repair left the production view on TextKit 2. The initial passing UI
-results therefore did not cover the production text-system configuration.
-
-| Item | Evidence and decision | Action |
-| --- | --- | --- |
-| F1: product/host text-system mismatch | Accepted. The deleted access was the product's compatibility switch; the host still reads `layoutManager`. | Explicitly select TextKit 1 before layout, preserving the base mode. Add a mode assertion to the real restoration test. Rerun four Copy tests and ordinary product tests. |
-| F2: TextKit 2 end-of-chapter geometry | Conditional on adopting TextKit 2. That migration is outside this repair. | Keep TextKit 1; retain existing geometry/restoration coverage. |
-| F3: combined-variable causal wording | Accepted. Reading the manager and forcing layout were combined. | Narrow the comment and diagnosis wording. |
-| F4: selection after Copy | Accepted. The issue asks for before/after selection comparison. | Assert exact selected ranges/text after Copy. |
-| F5: pre-existing clipboard content | Accepted as bounded observer hardening. | Read clipboard text only after its count differs from the initial sample. |
-
-The reviewer found no fabricated Copy action or weakened execution gate. It did
-not treat the two keyboard-input failures as a blocker for this scoped repair.
-The proposed inherited `usingTextLayoutManager: false` factory compiled but the
-fixture app crashed on first chapter configuration. Its source patch, crash logs,
-and failed result are retained in `textkit1-copy`; no acceptance is claimed.
-The candidate instead retains the normal Swift subclass initializer, then reads
-`layoutManager` before layout. The SDK documents this compatibility switch.
-Corrected source: `4cd2377b8ef6d5ce537b2692f5c9de7d21599071`.
-
-- `textkit1-early-access`: three Copy methods and the main find/durable-position
-  journey pass. The find-panel Copy method fails before input at the same Pinyin
-  script-switch helper. Result: 4 passed, 1 failed, 0 skipped. All five tests had
-  finished before supplemental system diagnostics were stopped; the valid result
-  bundle retains the failure and is not reported as a passing aggregate.
-- `textkit1-find-copy`: the unchanged find-panel Copy method passes alone on a
-  new simulator: 1 passed, 0 failed, 0 skipped. All four corrected Copy menu
-  screenshots were inspected. The retained after image comes from this run.
-- `textkit1-native-product`: 94/94 ordinary tests pass with zero failures or
-  skips, including the new production TextKit 1 assertion and all restoration,
-  pagination, find, and save tests. Process suites remain for published-head C1.
-- The next commit updates only this record and the retained screenshot; executable
-  sources remain identical to `4cd2377b8`. Final independent re-review is pending.
-
-## Retained screenshots
-
 [Baseline selection without Copy](native-copy-20261104/before-missing-menu.png).
-[Repaired native Copy with chapter find open](native-copy-20261104/after-find-copy.png).
-These images show synthetic simulator UI. Clipboard correctness comes from the
-executed assertion and observations, not the image alone.
+[Native Copy with chapter find open](native-copy-20261104/after-find-copy.png).
+Images show synthetic simulator UI. Clipboard correctness comes from executed
+assertions, not screenshots alone.
 
-## Recovery and remaining acceptance
+Recovery is a normal commit restoring `ReadingText.swift` from the base revision,
+or reverting the complete final squash. Do not selectively revert intermediate
+experimental commits. Base restoration requires no data migration and restores
+the known Copy failure. The affected subsystem is native reader layout/selection;
+existing storage and engine contracts remain unchanged.
 
-The changed production consumer is the scroll-layout anchor restoration inside
-ReadingText. Its effect stays within native reader layout and text selection;
-related consumers include chapter find, typography/reflow, and resumed reading.
-Existing saved paragraph offsets and engine/storage contracts remain unchanged.
-Reverting both production commits (`551569f7f` and `4cd2377b8`) together restores
-prior layout behavior without a data
-migration; it also restores the observed Copy failure.
-
-Final Copilot review, published-head C1, owner H2, and merge remain pending.
-Synthetic simulator results do not establish physical iPad comfort, other OS
-versions, live-source behavior, or hardware-keyboard input.
+Physical iPad comfort, other OS versions, live sources, hardware-keyboard input,
+owner H2 and explicit merge approval remain unverified or pending.
