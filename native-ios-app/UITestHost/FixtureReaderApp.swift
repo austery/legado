@@ -35,6 +35,9 @@ struct FixtureReaderApp: App {
     @State private var switchCommitted = false
     @State private var rejectingGroupSave = false
     @State private var shelfMutation = "none"
+    @State private var copyObservation = "{}"
+    @State private var copySample = 0
+    private var observesCopy: Bool { ProcessInfo.processInfo.environment["READER_UI_OBSERVE_COPY"] == "1" }
     private var scenario: String { ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] ?? "shelf" }
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
     var body: some Scene {
@@ -93,6 +96,10 @@ struct FixtureReaderApp: App {
                             } catch { failure = error.localizedDescription }
                         }.accessibilityIdentifier("fixture.saveFailure")
                     }.padding(8)
+                    if observesCopy {
+                        Text("Copy observation").font(.caption2)
+                            .accessibilityIdentifier("fixture.copyObservation").accessibilityValue(copyObservation)
+                    }
                     if scenario == "shelf-mixed" {
                         HStack {
                             Button(rejectingGroupSave ? "Allow group saves" : "Reject group saves") {
@@ -139,6 +146,7 @@ struct FixtureReaderApp: App {
                             $0.frame.intersects(text.spreadView!.bounds)
                         }.sorted { $0.frame.minX < $1.frame.minX } ?? []
                         : [text]
+                    if observesCopy { observeCopy(selectionViews) }
                     for (index, page) in selectionViews.enumerated() {
                         if let target = selectionTarget(in: page, root: text) {
                             let prefix = index == 0 ? "selection" : "selectionRight"
@@ -155,6 +163,45 @@ struct FixtureReaderApp: App {
                 do { try await prepare(); prepared = true }
                 catch { failure = error.localizedDescription }
             }
+        }
+    }
+
+    private struct CopySelection: Encodable {
+        let page: String
+        let location: Int
+        let length: Int
+        let original: String
+        let rendered: String
+    }
+
+    private struct CopyObservation: Encodable {
+        let sample: Int
+        let changeCount: Int
+        let clipboard: String?
+        let selections: [CopySelection]
+    }
+
+    /// Read only: never select text, become first responder, invoke Copy or seed the pasteboard.
+    @MainActor private func observeCopy(_ pages: [UITextView]) {
+        let original = (model.content?.text ?? "") as NSString
+        let selections = pages.compactMap { page -> CopySelection? in
+            let local = page.selectedRange
+            let rendered = page.text as NSString
+            let base = (page as? ReadingPageTextView)?.originalRange.location ?? 0
+            guard local.location != NSNotFound, local.length > 0,
+                  local.location <= rendered.length, local.length <= rendered.length - local.location,
+                  base <= original.length, local.location <= original.length - base,
+                  local.length <= original.length - base - local.location else { return nil }
+            let range = NSRange(location: base + local.location, length: local.length)
+            return CopySelection(page: page.accessibilityIdentifier ?? "unknown",
+                                 location: range.location, length: range.length,
+                                 original: original.substring(with: range), rendered: rendered.substring(with: local))
+        }
+        copySample += 1
+        let observation = CopyObservation(sample: copySample, changeCount: UIPasteboard.general.changeCount,
+                                          clipboard: UIPasteboard.general.string, selections: selections)
+        if let data = try? JSONEncoder().encode(observation) {
+            copyObservation = String(decoding: data, as: UTF8.self)
         }
     }
 
