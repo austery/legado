@@ -37,8 +37,7 @@ Single-variable experiments retained their source patches and result bundles:
 
 A four-case restoration experiment then ran one primitive per fresh view.
 Clearing the restoration flag, resolving the initial text position, and setting
-zero content offset each preserved the menu. Calling
-Reading `layoutManager` and calling `ensureLayout(for: textContainer)` during
+zero content offset each preserved the menu. Reading `layoutManager` and calling `ensureLayout(for: textContainer)` during
 restoration suppressed it. That experiment combines a TextKit compatibility
 switch with whole-container layout; it does not isolate those two effects. Trace output
 places that call in initial restoration, before the user's selection. This does
@@ -161,7 +160,8 @@ The changed production consumer is the scroll-layout anchor restoration inside
 ReadingText. Its effect stays within native reader layout and text selection;
 related consumers include chapter find, typography/reflow, and resumed reading.
 Existing saved paragraph offsets and engine/storage contracts remain unchanged.
-Reverting the production commit restores prior layout behavior without a data
+Reverting both production commits (`551569f7f` and `4cd2377b8`) together restores
+prior layout behavior without a data
 migration; it also restores the observed Copy failure.
 
 Final Copilot review, published-head C1, owner H2, and merge remain pending.

@@ -45,7 +45,31 @@ final class ReadingRestorationTests: XCTestCase {
         XCTAssertNil(view.textLayoutManager, "Production restoration must retain TextKit 1")
         XCTAssertGreaterThan(view.contentOffset.y, 0)
         let position = try XCTUnwrap(view.position(from: view.beginningOfDocument, offset: target))
-        XCTAssertTrue(view.bounds.intersects(view.caretRect(for: position)))
+        let caret = view.caretRect(for: position)
+        XCTAssertTrue(view.bounds.intersects(caret))
+        XCTAssertEqual(caret.minY - view.contentOffset.y, view.textContainerInset.top, accuracy: 2,
+                       "Deep restoration must align the paragraph with the top inset")
+    }
+
+    func testFinalParagraphRestoresAtBottomLimitWithoutForcedLayout() async throws {
+        let body = (0..<160).map { "Paragraph \($0) 中文 😀 with enough text to fill a long chapter." }.joined(separator: "\n")
+        let target = (body as NSString).range(of: "Paragraph 159 ").location
+        let host = UIHostingController(rootView: ReadingText(chapterKey: "last", text: body, style: ReadingStyle(),
+            restoration: ReadingRestoration(identity: "last", utf16Offset: target)))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 768, height: 1024))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await settle(host)
+        let view = try XCTUnwrap(textView(host.view))
+        XCTAssertNil(view.textLayoutManager)
+        let position = try XCTUnwrap(view.position(from: view.beginningOfDocument, offset: target))
+        let caret = view.caretRect(for: position)
+        XCTAssertTrue(view.bounds.contains(caret), "The last paragraph must be visible after fresh restoration")
+        let bottomLimit = max(0, view.contentSize.height - view.bounds.height)
+        XCTAssertGreaterThan(bottomLimit, 0)
+        XCTAssertEqual(view.contentOffset.y, bottomLimit, accuracy: 2,
+                       "A final paragraph must stop at the bottom boundary instead of leaving a blank page")
     }
 
     func testStableTokenIgnoresEvolvingOffsetAndStyleDoesNotEmitUserSamples() async throws {
