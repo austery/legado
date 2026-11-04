@@ -149,3 +149,40 @@ existing storage and engine contracts remain unchanged.
 
 Physical iPad comfort, other OS versions, live sources, hardware-keyboard input,
 owner H2 and explicit merge approval remain unverified or pending.
+
+## Published-head process gate follow-up
+
+C1 run `41816683348` tested reviewed product head `6af17a77e`. Scope checks and
+regular regressions passed, including ordinary product 95/95. Both process-job
+attempts timed out at the unchanged 90-second wait after the intended `before-file`
+host termination. Neither attempt established recovery or offline restart. Their
+logs and uploaded artifacts are retained in the evidence archive.
+
+The unchanged one-case driver passed against the CI-built test host with output
+under `/tmp`, using Python 3.14 and 3.15 separately. Moving output back to a private
+runner directory reproduced the timeout. During that wait, Xcode ran a child
+`simctl diagnose --timeout=600`; its sampled stack waited for diagnostic work.
+This establishes a diagnostic-collection delay in the observed failing path, not
+an explanation for every host-path or CoreSimulator delay.
+
+A private probe added `-collect-test-diagnostics never` only for
+`ProcessInterruptionTests/testPrepareInterruption`, whose host is intentionally
+terminated. The same runner-path case then passed. All six interruption phases
+subsequently passed: before/after file, before/after database, and before/after
+group database changes. Each required a nonzero prepare exit (65), different
+prepare/verification process IDs, and an independent one-test verification with
+zero failures/skips. Offline shelf prepare and verification each passed 1/1.
+The final driver emits the same commands as the probe for all four prepare/verify
+method selectors; `process-command-equivalence.json` records that comparison.
+
+The driver change suppresses verbose automatic diagnostic collection only for the
+expected interruption. It retains stdout, `.xcresult`, boundary manifests, the
+90-second exit deadline, and all recovery assertions. Unexpected recovery and
+offline-restart failures retain the default diagnostic collection. No product,
+engine, storage, or timeout change accompanies this harness correction.
+
+An initial Python check overlapped offline fixture use and failed one port-ownership
+test with `EADDRINUSE`. That execution-order error and its log are retained; it is
+not a passing run. The subsequent sequential Python run passed 62/62; its separate log is retained.
+The correction needs a new exact-head independent review and published-head C1;
+the earlier code approval certifies only `6af17a77e`.
