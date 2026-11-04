@@ -225,7 +225,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
             return
         }
         // Let UIKit lay out the requested caret; forcing the entire container
-        // here disrupts native selection and its edit menu on iOS 27.
+        // here suppresses the native selection edit menu on iOS 27.
         if let position = position(from: beginningOfDocument, offset: displayOffset) {
             // caretRect also represents the empty last paragraph after a trailing delimiter.
             let rect = caretRect(for: position)
