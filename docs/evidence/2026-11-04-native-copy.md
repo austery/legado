@@ -132,7 +132,21 @@ fixture app crashed on first chapter configuration. Its source patch, crash logs
 and failed result are retained in `textkit1-copy`; no acceptance is claimed.
 The candidate instead retains the normal Swift subclass initializer, then reads
 `layoutManager` before layout. The SDK documents this compatibility switch.
-The corrected candidate still needs its own passing results and re-review.
+Corrected source: `4cd2377b8ef6d5ce537b2692f5c9de7d21599071`.
+
+- `textkit1-early-access`: three Copy methods and the main find/durable-position
+  journey pass. The find-panel Copy method fails before input at the same Pinyin
+  script-switch helper. Result: 4 passed, 1 failed, 0 skipped. All five tests had
+  finished before supplemental system diagnostics were stopped; the valid result
+  bundle retains the failure and is not reported as a passing aggregate.
+- `textkit1-find-copy`: the unchanged find-panel Copy method passes alone on a
+  new simulator: 1 passed, 0 failed, 0 skipped. All four corrected Copy menu
+  screenshots were inspected. The retained after image comes from this run.
+- `textkit1-native-product`: 94/94 ordinary tests pass with zero failures or
+  skips, including the new production TextKit 1 assertion and all restoration,
+  pagination, find, and save tests. Process suites remain for published-head C1.
+- The next commit updates only this record and the retained screenshot; executable
+  sources remain identical to `4cd2377b8`. Final independent re-review is pending.
 
 ## Retained screenshots
 
