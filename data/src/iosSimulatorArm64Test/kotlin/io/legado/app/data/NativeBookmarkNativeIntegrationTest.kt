@@ -103,6 +103,7 @@ class NativeBookmarkNativeIntegrationTest {
         val db = open(path)
         try { block(db) } finally { db.close(); removeFixture(path) }
     }
+    @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
     private fun removeFixture(path: String) {
         for (suffix in listOf("", "-wal", "-shm")) {
             NSFileManager.defaultManager.removeItemAtPath(path + suffix, error = null)

@@ -34,7 +34,9 @@ struct BookmarkSheet: View {
                         Button("Delete bookmark", role: .destructive) { model.deleteBookmark(bookmark) }
                             .disabled(model.busy || model.bookmarkBusy)
                             .accessibilityIdentifier("bookmarks.delete.\(bookmark.id)")
-                    }.padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(.vertical, 4)
                 }
             }
             .navigationTitle("Bookmarks")
