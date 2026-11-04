@@ -1307,6 +1307,10 @@ final class ReaderUITests: XCTestCase {
         try assertNativeTouchCopy(landscape: false, rightPage: false)
     }
 
+    @MainActor func testNativeTouchCopyWithChapterFind() throws {
+        try assertNativeTouchCopy(landscape: false, rightPage: false, showFind: true)
+    }
+
     @MainActor func testNativeTouchCopyLandscapeLeftPage() throws {
         try assertNativeTouchCopy(landscape: true, rightPage: false)
     }
@@ -1335,10 +1339,17 @@ final class ReaderUITests: XCTestCase {
         return try? JSONDecoder().decode(CopyObservation.self, from: Data(value.utf8))
     }
 
-    @MainActor private func assertNativeTouchCopy(landscape: Bool, rightPage: Bool) throws {
+    @MainActor private func assertNativeTouchCopy(landscape: Bool, rightPage: Bool, showFind: Bool = false) throws {
         let app = launchControlsReader(observeCopy: true)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let path = landscape ? (rightPage ? "landscape-right" : "landscape-left") : "portrait"
+        if showFind {
+            app.buttons["reader.find"].tap()
+            let query = app.textFields["reader.find.query"]
+            XCTAssertTrue(query.waitForExistence(timeout: 5))
+            enterParagraphFindQuery(app, query: query, number: "5")
+            wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+        }
+        let path = landscape ? (rightPage ? "landscape-right" : "landscape-left") : (showFind ? "portrait-find" : "portrait")
         if landscape {
             XCUIDevice.shared.orientation = .landscapeLeft
             wait(app) { self.state(app).contains("layout=spread;") }
