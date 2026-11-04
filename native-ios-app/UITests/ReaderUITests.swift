@@ -3,6 +3,7 @@ import XCTest
 final class ReaderUITests: XCTestCase {
     @MainActor func testBookmarkSaveNavigateRelaunchAndDelete() throws {
         let app = launchControlsReader()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         waitForStableViewport(app)
         let position = anchor(app)
         let identity = readingIdentity(app)
@@ -26,9 +27,12 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.bookmarks"].tap()
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10)); rows.firstMatch.tap()
         wait(app) { !app.buttons["bookmarks.done"].exists && self.state(app).contains("chapter=1;") }
-        assertRenderedAnchor(app, identity: identity, position: position)
+        waitForStableViewport(app)
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertEqual(anchor(app), position)
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { self.state(app).contains("layout=spread;") }
+        assertRenderedAnchor(app, identity: identity, position: position)
         app.buttons["reader.bookmarks"].tap()
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
         capture("bookmark-landscape-list")
