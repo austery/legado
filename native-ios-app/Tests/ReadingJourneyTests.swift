@@ -228,6 +228,25 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertEqual(model.bookmarkNotice, "Bookmark was removed")
         model.navigate(.details); try await settle(model)
         XCTAssertNil(model.bookmarkNotice)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let shelfRemoved = await call { other.removeFromShelf(sourceId: base, bookId: content.chapter.bookId, completion: $0) }
+        XCTAssertTrue(shelfRemoved is ShelfRemoved)
+        func settleBookmarks() async throws {
+            let deadline = Date().addingTimeInterval(10)
+            while model.bookmarkBusy && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+            XCTAssertFalse(model.bookmarkBusy)
+        }
+        model.showBookmarks(); try await settleBookmarks()
+        XCTAssertTrue(model.canRetryBookmark)
+        model.closeBookmarks()
+        model.retryBookmark(); try await settleBookmarks()
+        XCTAssertTrue(model.bookmarksPresented, "List retry must display its result")
+        model.deleteBookmark(bookmark); try await settleBookmarks()
+        XCTAssertTrue(model.canRetryBookmark)
+        model.closeBookmarks()
+        model.retryBookmark(); try await settleBookmarks()
+        XCTAssertTrue(model.bookmarksPresented, "Delete retry must display its result")
+        model.closeBookmarks()
     }
 
     func testExplicitSourceSwitchCancellationCommitAndReopen() async throws {

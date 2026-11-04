@@ -59,7 +59,7 @@ final class ReaderModel: ObservableObject {
             if let result = reply as? BookmarksReply { self.bookmarks = result.bookmarks }
             if let failure = reply as? EngineFailure {
                 self.bookmarkNotice = failure.message
-                self.bookmarkRetry = { [weak self] in self?.refreshBookmarks() }
+                self.bookmarkRetry = { [weak self] in self?.showBookmarks() }
                 self.canRetryBookmark = true
             }
         }
@@ -103,7 +103,11 @@ final class ReaderModel: ObservableObject {
             if let result = reply as? BookmarksReply { self.bookmarks = result.bookmarks }
             if let failure = reply as? EngineFailure {
                 self.bookmarkNotice = failure.message
-                self.bookmarkRetry = { [weak self] in self?.deleteBookmark(bookmark) }
+                self.bookmarkRetry = { [weak self] in
+                    guard let self else { return }
+                    self.bookmarksPresented = true
+                    self.deleteBookmark(bookmark)
+                }
                 self.canRetryBookmark = true
             }
         }
