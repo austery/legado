@@ -1303,6 +1303,114 @@ final class ReaderUITests: XCTestCase {
         capture("two-page-relaunched")
     }
 
+    @MainActor func testNativeTouchCopyPortrait() throws {
+        try assertNativeTouchCopy(landscape: false, rightPage: false)
+    }
+
+    @MainActor func testNativeTouchCopyWithChapterFind() throws {
+        try assertNativeTouchCopy(landscape: false, rightPage: false, showFind: true)
+    }
+
+    @MainActor func testNativeTouchCopyLandscapeLeftPage() throws {
+        try assertNativeTouchCopy(landscape: true, rightPage: false)
+    }
+
+    @MainActor func testNativeTouchCopyLandscapeRightPage() throws {
+        try assertNativeTouchCopy(landscape: true, rightPage: true)
+    }
+
+    private struct CopySelection: Decodable, Equatable {
+        let page: String
+        let location: Int
+        let length: Int
+        let original: String
+        let rendered: String
+    }
+
+    private struct CopyObservation: Decodable {
+        let sample: Int
+        let changeCount: Int
+        let clipboard: String?
+        let selections: [CopySelection]
+    }
+
+    @MainActor private func copyObservation(_ app: XCUIApplication) -> CopyObservation? {
+        guard let value = app.staticTexts["fixture.copyObservation"].value as? String else { return nil }
+        return try? JSONDecoder().decode(CopyObservation.self, from: Data(value.utf8))
+    }
+
+    @MainActor private func assertNativeTouchCopy(landscape: Bool, rightPage: Bool, showFind: Bool = false) throws {
+        let app = launchControlsReader(observeCopy: true)
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        if showFind {
+            app.buttons["reader.find"].tap()
+            let query = app.textFields["reader.find.query"]
+            XCTAssertTrue(query.waitForExistence(timeout: 5))
+            enterParagraphFindQuery(app, query: query, number: "5")
+            wait(app) { app.staticTexts["reader.find.status"].label == "1 match" }
+        }
+        let path = landscape ? (rightPage ? "landscape-right" : "landscape-left") : (showFind ? "portrait-find" : "portrait")
+        if landscape {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            wait(app) { self.state(app).contains("layout=spread;") }
+        }
+        waitForStableViewport(app)
+        let identity = readingIdentity(app)
+        let viewport = viewportState(app)
+        let position = anchor(app)
+        wait(app) { self.copyObservation(app) != nil }
+        let initial = try XCTUnwrap(copyObservation(app))
+        XCTAssertTrue(initial.selections.isEmpty)
+        let point = selectionPoint(app, prefix: rightPage ? "selectionRight" : "selection")
+        app.textViews["reader.text"].coordinate(withNormalizedOffset: point).press(forDuration: 1.2)
+        let expectedPage = landscape ? (rightPage ? "reader.page.right" : "reader.page.left") : "reader.text"
+        wait(app) {
+            guard let observation = self.copyObservation(app) else { return false }
+            return observation.sample > initial.sample && observation.selections.count == 1
+                && observation.selections.first?.page == expectedPage
+        }
+        let selected = try XCTUnwrap(copyObservation(app))
+        let selection = try XCTUnwrap(selected.selections.first)
+        XCTAssertEqual(selected.selections.count, 1)
+        XCTAssertEqual(selection.page, expectedPage)
+        XCTAssertGreaterThan(selection.length, 0)
+        XCTAssertGreaterThanOrEqual(selection.location, 0)
+        XCTAssertEqual(selection.original.utf16.count, selection.length)
+        XCTAssertEqual(Array(selection.rendered.utf16), Array(selection.original.utf16))
+        XCTAssertEqual(selected.changeCount, initial.changeCount, "Selection must not write the clipboard")
+        capture("copy-\(path)-selection")
+
+        // No host action or capability flag can satisfy this native menu assertion.
+        let copy = app.menuItems["Copy"].firstMatch
+        guard copy.waitForExistence(timeout: 5), copy.isHittable else {
+            capture("copy-\(path)-missing-menu")
+            XCTFail("Native Copy menu must be visible and hittable: \(app.debugDescription)")
+            return
+        }
+        let before = try XCTUnwrap(copyObservation(app))
+        XCTAssertEqual(before.selections, selected.selections, "The menu must retain the original selection")
+        XCTAssertEqual(before.changeCount, initial.changeCount)
+        capture("copy-\(path)-menu")
+        copy.tap()
+        wait(app) {
+            guard let after = self.copyObservation(app), let clipboard = after.clipboard else { return false }
+            return after.sample > before.sample && after.changeCount > before.changeCount
+                && Array(clipboard.utf16) == Array(selection.original.utf16)
+        }
+        let after = try XCTUnwrap(copyObservation(app))
+        XCTAssertGreaterThan(after.changeCount, before.changeCount, "Old clipboard text cannot pass")
+        XCTAssertEqual(after.selections, selected.selections, "Copy must preserve the native selection")
+        XCTAssertEqual(Array(try XCTUnwrap(after.clipboard).utf16), Array(selection.original.utf16))
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertEqual(anchor(app), position)
+        XCTAssertEqual(viewportState(app), viewport)
+        XCTAssertTrue(app.buttons["reader.contents"].isHittable)
+        XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
+        let evidence = XCTAttachment(string: "before=\(before); after=\(after)")
+        evidence.name = "copy-\(path)-observations"; evidence.lifetime = .keepAlways; add(evidence)
+        capture("copy-\(path)-clipboard")
+    }
+
     @MainActor func testReadingControlsTapKeepsViewportAndSelection() {
         let app = launchControlsReader()
         let body = app.textViews["reader.text"]
@@ -1410,10 +1518,11 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor private func launchControlsReader(openSecondChapter: Bool = true) -> XCUIApplication {
+    @MainActor private func launchControlsReader(openSecondChapter: Bool = true, observeCopy: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
         app.launchEnvironment["READER_UI_SCENARIO"] = "two-page"
+        if observeCopy { app.launchEnvironment["READER_UI_OBSERVE_COPY"] = "1" }
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch

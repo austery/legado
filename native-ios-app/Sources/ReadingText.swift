@@ -414,6 +414,8 @@ struct ReadingText: UIViewRepresentable {
 
     func makeUIView(context: Context) -> AnchoredTextView {
         let view = AnchoredTextView()
+        // Enter TextKit 1 before layout; switching during restoration suppresses native Copy.
+        _ = view.layoutManager
         view.delegate = view
         view.enableControlsTap()
         view.isEditable = false

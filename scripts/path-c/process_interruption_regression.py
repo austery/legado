@@ -120,11 +120,15 @@ def main() -> None:
         return path
 
     def command(config: Path, method: str) -> list[str]:
-        return ["xcodebuild", "test-without-building", "-xctestrun", str(config),
+        arguments = ["xcodebuild", "test-without-building", "-xctestrun", str(config),
                 "-destination", "platform=iOS Simulator,id=" + simulator,
                 "-only-testing:NativeReaderTests/" + method,
                 "-parallel-testing-enabled", "NO", "-derivedDataPath", str(args.output / "DerivedData"),
                 "-resultBundlePath", str(config.with_suffix(".xcresult"))]
+        if method == "ProcessInterruptionTests/testPrepareInterruption":
+            # Intentional host termination must not wait for XCTest's verbose sysdiagnose.
+            arguments.extend(["-collect-test-diagnostics", "never"])
+        return arguments
 
     def require_one_pass(config: Path) -> None:
         summary = json.loads(subprocess.check_output(
