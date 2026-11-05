@@ -311,6 +311,7 @@ struct FixtureReaderApp: App {
                 let secondJSON = String(decoding: secondData, as: UTF8.self)
                     .replacingOccurrences(of: "class.name@text", with: "class.name@text##$## Second")
                     .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$## Second")
+                    .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
                 try Data(secondJSON.utf8).write(to: file)
                 model.importFile(file); try await settle(); model.confirmSourceImport(); try await settle()
                 model.selectedSourceIDs = [secondBase]; model.search(); try await settle()
