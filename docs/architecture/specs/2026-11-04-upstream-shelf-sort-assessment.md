@@ -26,6 +26,8 @@ The upstream ViewModel also owns database subscriptions, automatic group selecti
 
 ## Executed characterization
 
+The following initial results belong to snapshot `38046704e936a31e9666a9be5df1aeab958b1ec8` (tree-equivalent to `bd023f833`).
+
 Added `UpstreamShelfSortCharacterizationTest` under `ui/src/jvmTest` and `UpstreamShelfSortNativeTest` under `core/src/iosSimulatorArm64Test`.
 
 - JVM targeted run passed 3 tests with zero failures, errors or skips. It uses real Room and SQLite through public `setBookshelfActive`, `selectGroup` and `upSort` calls. Only configuration values are supplied by a fixture.
@@ -44,7 +46,7 @@ python3 scripts/path-c/kotlin_native_ci.py --output /private/tmp/legado-shelf-so
 
 Exact environment, commands, source hashes, XML reports and logs are retained in `/Users/leipeng/Documents/Codex/legado-shelf-sort-assessment-20261104`.
 
-The original test snapshot is local commit `38046704e936a31e9666a9be5df1aeab958b1ec8`, tree-equivalent to `bd023f833` after rebasing this validation slice onto merged PR #62. The two-page receipt refers to that same original snapshot. Review follow-up changes below receive fresh test results before merge.
+The original test snapshot is local commit `38046704e936a31e9666a9be5df1aeab958b1ec8`, tree-equivalent to `bd023f833` after rebasing this validation slice onto merged PR #62. The two-page receipt refers to that same original snapshot. Review follow-up commit `0753107b393b8daf00320d5693e1408e241ff213` was tested separately. Its revised JVM suite passed 3 tests, including six distinct sort permutations and published progress assertions. Its Native driver passed data 84, core 10 and engine 44 tests, totaling 138. Both runs had zero failures or skips. Reports and logs are retained in `/Users/leipeng/Documents/Codex/legado-shelf-sort-assessment-20261104/review-followup-0753107b3` (`receipt.json`, `jvm.xml`, `native-sort.xml`, and `native/summary.json`). Subsequent receipt-only edits do not change the tested source files.
 
 Fixture limits are explicit. The database provider is restored or unregistered. The configuration registry has no reset operation, so a previously absent JVM configuration retains the fixture until the test worker exits. The Native test creates one configuration accessor. Its existing theme and preference listeners live until the owned test process exits. The isolated defaults suite is removed immediately. This validation slice does not change those production lifecycle APIs.
 
