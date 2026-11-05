@@ -6,7 +6,7 @@ The owner prioritized two-page reading and requested an inventory of existing up
 
 ## Source boundary
 
-Native assessment head is `38046704e936a31e9666a9be5df1aeab958b1ec8`. Its production files match merged bookmark PR #62. Integrated KMP upstream is `d31c0a270e7c8610e9679dbbda5a6bee06927952`. The inspected upstream snapshot is `83657e54829b7603aa392bf072283805769ad385`. Upstream pagination and its two-page settings have identical source at that snapshot and in this checkout.
+Native assessment head is `38046704e936a31e9666a9be5df1aeab958b1ec8`. Its production files match merged bookmark PR #62. Its complete tree equals validation commit `bd023f833` after rebase onto PR #62. The inventory-only commit was then replayed as `f8b7bc00e`. Integrated KMP upstream is `d31c0a270e7c8610e9679dbbda5a6bee06927952`. The inspected upstream snapshot is `83657e54829b7603aa392bf072283805769ad385`. Upstream pagination and its two-page settings have identical source at that snapshot and in this checkout.
 
 The upstream Compose interface and the native Swift interface have separate presentation code. Shared runtime and storage capabilities can be called through the existing engine boundary. A Compose screen's presence establishes an implementation candidate. Native usability also needs bridge, lifecycle and platform evidence.
 

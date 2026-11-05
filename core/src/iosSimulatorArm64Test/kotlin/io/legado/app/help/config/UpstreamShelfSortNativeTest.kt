@@ -33,7 +33,7 @@ class UpstreamShelfSortNativeTest {
                 preferences.putInt(PreferKey.bookshelfSort, mode)
                 assertEquals(mode, config.bookshelfSort)
                 val reopened = IosPreferenceProvider(NSUserDefaults(suiteName = suite))
-                assertEquals(mode, NativeAppConfigAccessor(reopened).bookshelfSort)
+                assertEquals(mode, reopened.getInt(PreferKey.bookshelfSort, -1))
             }
         } finally {
             defaults.removePersistentDomainForName(suite)

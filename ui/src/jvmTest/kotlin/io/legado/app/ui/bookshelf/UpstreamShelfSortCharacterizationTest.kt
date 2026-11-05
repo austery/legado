@@ -23,11 +23,11 @@ import kotlin.test.assertEquals
 class UpstreamShelfSortCharacterizationTest {
     private val books = listOf(
         Book(bookUrl = "a", name = "北京", author = "张", durChapterTime = 30,
-            latestChapterTime = 10, order = 2, group = 1),
-        Book(bookUrl = "b", name = "上海", author = "王", durChapterTime = 10,
-            latestChapterTime = 40, order = 0, group = 1),
-        Book(bookUrl = "c", name = "广州", author = "李", durChapterTime = 20,
-            latestChapterTime = 20, order = 1, group = 1)
+            latestChapterTime = 10, order = 1, group = 1, durChapterPos = 17),
+        Book(bookUrl = "b", name = "广州", author = "王", durChapterTime = 10,
+            latestChapterTime = 40, order = 2, group = 1, durChapterPos = 31),
+        Book(bookUrl = "c", name = "上海", author = "李", durChapterTime = 20,
+            latestChapterTime = 20, order = 0, group = 1, durChapterPos = 52)
     )
 
     @Test
@@ -39,13 +39,15 @@ class UpstreamShelfSortCharacterizationTest {
                 model.setBookshelfActive(true)
                 val expected = listOf(
                     listOf("a", "c", "b"), listOf("b", "c", "a"),
-                    listOf("a", "c", "b"), listOf("b", "c", "a"),
+                    listOf("a", "b", "c"), listOf("c", "a", "b"),
                     listOf("b", "a", "c"), listOf("c", "b", "a")
                 )
                 expected.forEachIndexed { index, order ->
                     mode.set(index)
                     model.upSort()
                     awaitOrder(model, order)
+                    assertEquals(books.associate { it.bookUrl to it.durChapterPos },
+                        model.books.value.associate { it.bookUrl to it.durChapterPos })
                 }
                 mode.set(99)
                 model.upSort()
@@ -69,7 +71,7 @@ class UpstreamShelfSortCharacterizationTest {
                 withTimeout(5_000) { model.bookGroups.first { it.any { group -> group.groupId == 1L } } }
                 model.selectGroup(1)
                 model.upSort()
-                awaitOrder(model, listOf("b", "c", "a"))
+                awaitOrder(model, listOf("c", "a", "b"))
                 database.bookGroupDao.update(BookGroup(groupId = 1, groupName = "Fixture", bookSort = -1))
                 withTimeout(5_000) { model.bookGroups.first { it.any { group -> group.bookSort == -1 } } }
                 model.upSort()
@@ -138,7 +140,7 @@ class UpstreamShelfSortCharacterizationTest {
             }
         } finally {
             database.close()
-            oldDatabase?.let(AppDbProviders::register)
+            oldDatabase?.let(AppDbProviders::register) ?: AppDbProviders.unregister()
             oldConfig?.let(AppConfigProviders::register)
             directory.deleteRecursively()
         }

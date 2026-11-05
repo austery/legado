@@ -31,8 +31,8 @@ Added `UpstreamShelfSortCharacterizationTest` under `ui/src/jvmTest` and `Upstre
 - JVM targeted run passed 3 tests with zero failures, errors or skips. It uses real Room and SQLite through public `setBookshelfActive`, `selectGroup` and `upSort` calls. Only configuration values are supplied by a fixture.
 - Cases cover all six modes with explicit expected book IDs, invalid-mode fallback, distinct same-title books, retained progress, group override and inheritance, and stored books/groups after closing and reopening the database.
 - Native canonical driver passed data 84, core 10 and engine 44 tests, totaling 138. The two new core tests cover actual Native Chinese comparison and the existing iOS preference key.
-- Native preference tests use an isolated NSUserDefaults suite. Each of modes 0 through 5 refreshes the existing configuration accessor and survives recreation of the provider/accessor. The suite is removed in cleanup.
-- Provider recreation and database reopening were tested within their test processes. A complete app process relaunch and actual Swift sorting controls remain untested. No physical-device claim is made.
+- Native preference tests use an isolated NSUserDefaults suite. Each of modes 0 through 5 refreshes the existing configuration accessor and survives recreation of the preference provider. The suite is removed in cleanup.
+- Preference-provider recreation and database reopening were tested within their test processes. A complete app process relaunch and actual Swift sorting controls remain untested. No physical-device claim is made.
 - Equal-title identity retention was tested. Cross-process tie-order equivalence between the upstream DAO and native DAO was not established. The proposed extraction keeps stable sorting over each caller's existing input order.
 
 Commands use the repository wrapper and existing runner JDK 21, JDK 17, Android SDK, Gradle/Konan caches and Xcode. No toolchain configuration was changed.
@@ -44,9 +44,13 @@ python3 scripts/path-c/kotlin_native_ci.py --output /private/tmp/legado-shelf-so
 
 Exact environment, commands, source hashes, XML reports and logs are retained in `/Users/leipeng/Documents/Codex/legado-shelf-sort-assessment-20261104`.
 
+The original test snapshot is local commit `38046704e936a31e9666a9be5df1aeab958b1ec8`, tree-equivalent to `bd023f833` after rebasing this validation slice onto merged PR #62. The two-page receipt refers to that same original snapshot. Review follow-up changes below receive fresh test results before merge.
+
+Fixture limits are explicit. The database provider is restored or unregistered. The configuration registry has no reset operation, so a previously absent JVM configuration retains the fixture until the test worker exits. The Native test creates one configuration accessor. Its existing theme and preference listeners live until the owned test process exits. The isolated defaults suite is removed immediately. This validation slice does not change those production lifecycle APIs.
+
 ## Proposed minimum integration
 
-1. Extract `sortBooks` into one shared pure function beside the current upstream ViewModel. Move its existing branches intact. Keep the ViewModel as a caller and add the native engine as a caller. Reuse `cnCompare` and `getRealBookSort`. Review this narrow shared-source adaptation under ADR-002.
+1. Extract `sortBooks` into one shared pure function in `data/commonMain`, beside the existing book extensions. Move its existing branches intact. Keep the ViewModel as a caller and add the native engine as a caller. Reuse `cnCompare` and `getRealBookSort`. Review this narrow shared-source adaptation under ADR-002.
 2. Keep `NativeShelfDao.organization()` as the book and group authority. Sort its books in memory. Use existing global `bookshelfSort`, group `bookSort`, book timestamps and `Book.order`.
 3. Extend the existing shelf reply with the current global mode. Extend each group snapshot with its effective mode and ordered existing book IDs. This lets one book retain different positions in different groups without adding stored coordinates or duplicating book records. Swift follows these IDs for presentation.
 4. Add one engine operation to set the global mode. Accept only 0 through 5, write through the existing preference provider and return the refreshed shelf reply. Invalid input must fail before writing. Keep existing engine request serialization and Swift stale-result checks.
