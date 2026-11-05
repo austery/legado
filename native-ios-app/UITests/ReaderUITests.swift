@@ -257,7 +257,7 @@ final class ReaderUITests: XCTestCase {
         let groups = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.group."))
         XCTAssertTrue(sort.waitForExistence(timeout: 40))
         XCTAssertEqual(books.count, 0)
-        sort.tap(); app.buttons["shelf.sort.2"].tap()
+        sort.tap(); app.buttons["Book title"].tap()
         wait(app) { (sort.value as? String) == "Book title" }
         XCTAssertEqual(books.count, 0)
         app.terminate()
@@ -271,10 +271,10 @@ final class ReaderUITests: XCTestCase {
         app.buttons["shelf.group.save"].tap()
         wait(app) { groups.count == 1 }
         app.buttons["shelf.layout.list"].tap()
-        sort.tap(); app.buttons["shelf.sort.0"].tap()
+        sort.tap(); app.buttons["Recently read"].tap()
         wait(app) { (sort.value as? String) == "Recently read" }
         XCTAssertTrue(books.element(boundBy: 0).label.contains("Second"))
-        sort.tap(); app.buttons["shelf.sort.2"].tap()
+        sort.tap(); app.buttons["Book title"].tap()
         wait(app) { (sort.value as? String) == "Book title" }
         XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
         XCTAssertTrue(books.element(boundBy: 1).label.contains("Second"))
@@ -282,9 +282,9 @@ final class ReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { app.frame.width > app.frame.height }
         XCTAssertTrue(sort.isHittable)
-        sort.tap(); app.buttons["shelf.sort.5"].tap()
+        sort.tap(); app.buttons["Author"].tap()
         wait(app) { (sort.value as? String) == "Author" }
-        sort.tap(); app.buttons["shelf.sort.2"].tap()
+        sort.tap(); app.buttons["Book title"].tap()
         wait(app) { (sort.value as? String) == "Book title" }
         XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
         XCTAssertEqual(groups.count, 1)
