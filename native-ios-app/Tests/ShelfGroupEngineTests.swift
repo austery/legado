@@ -57,18 +57,9 @@ final class ShelfGroupEngineTests: XCTestCase {
         defer { engine.close() }
         let (first, _) = try await fixture(engine)
         let (second, _) = try await fixture(engine)
-        let (third, content) = try await fixture(engine)
+        let (third, _) = try await fixture(engine)
         let books = [first, second, third]
         let ids = books.map(\.id)
-        let reading = try XCTUnwrap(content.reading)
-        let offset = (content.text as NSString).range(of: "C1-MIDDLE").location
-        XCTAssertNotEqual(offset, NSNotFound)
-        XCTAssertGreaterThan(offset, 0)
-        let savedReply: EngineReply = await withCheckedContinuation { continuation in
-            engine.saveReadingPosition(token: reading.token, eventSequence: 1,
-                utf16Offset: Int32(offset)) { continuation.resume(returning: $0) }
-        }
-        let saved = try XCTUnwrap(savedReply as? ReadingSaved)
         var state = try await shelf(engine)
         let originalMode = state.sortMode
         do {
@@ -78,6 +69,23 @@ final class ShelfGroupEngineTests: XCTestCase {
             for index in books.indices {
                 let escapedID = ids[index].replacingOccurrences(of: "'", with: "''")
                 try fixtureSQL("UPDATE books SET name='\(titles[index])', author='\(authors[index])', durChapterTime=\(readTimes[index]), latestChapterTime=\(updateTimes[index]), `order`=\(orders[index]) WHERE bookUrl='\(escapedID)'")
+            }
+            // Cache paths include the title. Establish the saved body after fixture metadata changes.
+            let opened = await call { engine.openReading(sourceId: third.sourceId,
+                bookId: third.id, cacheOnly: false, completion: $0) }
+            let content = try XCTUnwrap(opened as? ContentReply, "\(opened)")
+            let reading = try XCTUnwrap(content.reading)
+            let offset = (content.text as NSString).range(of: "C1-MIDDLE").location
+            XCTAssertNotEqual(offset, NSNotFound)
+            XCTAssertGreaterThan(offset, 0)
+            let savedReply: EngineReply = await withCheckedContinuation { continuation in
+                engine.saveReadingPosition(token: reading.token, eventSequence: 1,
+                    utf16Offset: Int32(offset)) { continuation.resume(returning: $0) }
+            }
+            let saved = try XCTUnwrap(savedReply as? ReadingSaved)
+            for index in books.indices {
+                let escapedID = ids[index].replacingOccurrences(of: "'", with: "''")
+                try fixtureSQL("UPDATE books SET durChapterTime=\(readTimes[index]) WHERE bookUrl='\(escapedID)'")
             }
             let suffix = UUID().uuidString
             let created = await call { engine.createShelfGroup(name: "Sorted " + suffix,
@@ -117,7 +125,8 @@ final class ShelfGroupEngineTests: XCTestCase {
             XCTAssertEqual(unchanged.token, state.token)
             let reopened = await call { engine.openReading(sourceId: third.sourceId,
                 bookId: third.id, cacheOnly: true, completion: $0) }
-            XCTAssertEqual((reopened as? ContentReply)?.reading?.paragraphUtf16Offset, saved.paragraphUtf16Offset)
+            let restored = try XCTUnwrap(reopened as? ContentReply, "\(reopened)")
+            XCTAssertEqual(restored.reading?.paragraphUtf16Offset, saved.paragraphUtf16Offset)
             let removed = await call { engine.removeFromShelf(sourceId: third.sourceId,
                 bookId: third.id, completion: $0) }
             XCTAssertTrue(removed is ShelfRemoved)
