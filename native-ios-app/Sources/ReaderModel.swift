@@ -135,10 +135,14 @@ final class ReaderModel: ObservableObject {
     @Published var shelf: [ShelfBookSnapshot] = []
     @Published private(set) var shelfGroups: [ShelfGroupSnapshot] = []
     @Published private(set) var shelfToken = ""
+    @Published private(set) var shelfSort: ShelfSort = .recentRead
     @Published private(set) var shelfGroupID: String?
     var currentShelfGroup: ShelfGroupSnapshot? { shelfGroups.first { $0.id == shelfGroupID } }
     var visibleShelfBooks: [ShelfBookSnapshot] {
-        if let shelfGroupID { return shelf.filter { $0.groupIds.contains(shelfGroupID) } }
+        if let group = currentShelfGroup {
+            let booksByID = Dictionary(uniqueKeysWithValues: shelf.map { ($0.book.id, $0) })
+            return group.orderedBookIds.compactMap { booksByID[$0] }
+        }
         return shelf.filter { $0.groupIds.isEmpty }
     }
     func openShelfGroup(_ id: String?) {
@@ -445,7 +449,16 @@ final class ReaderModel: ObservableObject {
 
     private func acceptShelfOrganization(_ reply: ShelfReply) {
         shelf = reply.books; shelfGroups = reply.groups; shelfToken = reply.token
+        shelfSort = ShelfSort(rawValue: reply.sortMode) ?? .recentRead
         if let shelfGroupID, !shelfGroups.contains(where: { $0.id == shelfGroupID }) { self.shelfGroupID = nil }
+    }
+
+    func setShelfSort(_ mode: ShelfSort) {
+        perform(retry: { [weak self] in self?.setShelfSort(mode) },
+            start: { self.engine.setShelfSort(mode: mode.rawValue, completion: $0) }) { [weak self] reply in
+            guard let reply = reply as? ShelfReply else { return }
+            self?.acceptShelfOrganization(reply)
+        }
     }
 
     func createShelfGroup(_ name: String, expectedToken: String? = nil, completion: @escaping (Bool) -> Void = { _ in }) {

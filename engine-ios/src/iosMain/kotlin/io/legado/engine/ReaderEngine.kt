@@ -13,6 +13,11 @@ import io.legado.app.data.dao.NativeShelfOrganization
 import io.legado.app.data.dao.NativeShelfTarget
 import io.legado.app.data.entities.NativeBookmark
 import io.legado.app.data.entities.BookGroup
+import io.legado.app.data.entities.getRealBookSort
+import io.legado.app.data.entities.sortShelfBooks
+import io.legado.app.help.config.AppConfigProviders
+import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -45,10 +50,11 @@ class BookSnapshot internal constructor(val sourceId: String, val id: String, va
     val author: String, val intro: String)
 class ShelfBookSnapshot internal constructor(val book: BookSnapshot, val sourceName: String,
     val lastChapter: String, val groupIds: List<String> = emptyList(), val coverUrl: String? = null)
-class ShelfGroupSnapshot internal constructor(val id: String, val name: String, val bookCount: Int)
+class ShelfGroupSnapshot internal constructor(val id: String, val name: String, val bookCount: Int,
+    val sortMode: Int = 0, val inheritsSort: Boolean = true, val orderedBookIds: List<String> = emptyList())
 class ShelfBookTarget(val sourceId: String, val bookId: String)
 class ShelfReply internal constructor(val books: List<ShelfBookSnapshot>,
-    val groups: List<ShelfGroupSnapshot> = emptyList(), val token: String = "") : EngineReply()
+    val groups: List<ShelfGroupSnapshot> = emptyList(), val token: String = "", val sortMode: Int = 0) : EngineReply()
 class ShelfEntryReply internal constructor(val entry: ShelfBookSnapshot,
     val chapters: List<ChapterSnapshot>) : EngineReply()
 class ShelfRemoved internal constructor() : EngineReply()
@@ -315,6 +321,16 @@ class ReaderEngine {
         shelfOperation { shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.organization()) }
     }
 
+    fun setShelfSort(mode: Int, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) {
+            if (mode !in 0..5) throw InvalidInput("Choose a supported shelf sort mode")
+            shelfOperation {
+                val reply = shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.organization(), mode)
+                PreferenceProviders.get().putInt(PreferKey.bookshelfSort, mode)
+                reply
+            }
+        }
+
     fun createShelfGroup(name: String, expectedToken: String, completion: (EngineReply) -> Unit): EngineRequest =
         request(completion) { shelfOperation {
             shelfReply(AppDatabaseProviders.get().appDb.nativeShelfDao.createGroup(name, expectedToken))
@@ -353,10 +369,18 @@ class ReaderEngine {
         return id
     }
 
-    private suspend fun shelfReply(state: NativeShelfOrganization) = ShelfReply(
-        state.books.map { shelfSnapshot(it, state.groups) },
-        state.groups.map { group -> ShelfGroupSnapshot(group.groupId.toString(), group.groupName,
-            state.books.count { it.group and group.groupId != 0L }) }, state.token)
+    private suspend fun shelfReply(state: NativeShelfOrganization,
+        mode: Int = AppConfigProviders.get().bookshelfSort): ShelfReply {
+        val entries = sortShelfBooks(state.books, mode).map { shelfSnapshot(it, state.groups) }
+        val groups = state.groups.map { group ->
+            val members = state.books.filter { it.group and group.groupId != 0L }
+            val effectiveMode = group.getRealBookSort(mode)
+            ShelfGroupSnapshot(group.groupId.toString(), group.groupName, members.size,
+                effectiveMode, group.bookSort < 0,
+                sortShelfBooks(members, effectiveMode).map { snapshot(it).id })
+        }
+        return ShelfReply(entries, groups, state.token, mode)
+    }
 
     /** Only a loaded catalog may be added; the returned identity can be an existing source. */
     fun addToShelf(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {

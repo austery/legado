@@ -15,7 +15,7 @@ import io.legado.app.help.service.UpdateBookCallbacks
 import io.legado.app.help.service.UpdateBookShared
 import io.legado.app.ui.root.screenModelScope
 import io.legado.app.utils.FlowBus
-import io.legado.app.utils.cnCompare
+import io.legado.app.data.entities.sortShelfBooks
 import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -276,7 +276,7 @@ class BookshelfViewModel {
                     // catch 是终结性操作: 捕获后流结束、job 摘除, 此后由下次流重启
                     // (selectGroup/upSort/setBookshelfActive) 恢复订阅 (对齐原版 catch 打日志语义)
                     AppLog.put("书架书籍数据加载出错 groupId=$groupId", it)
-                }.map { list -> sortBooks(list, sortOf(groupId)) }
+                }.map { list -> sortShelfBooks(list, sortOf(groupId)) }
                     // debounce(100) 与拆分前完全一致: 曾试过"首发射直通 + 后续 100ms 聚合",
                     // 但实测对启动那 470ms 首绘没有可测影响, 而本文件是桌面/iOS/鸿蒙三端共用的
                     // 书架数据链 → 拿不到三端回归就不留未证实的行为改动。
@@ -349,27 +349,6 @@ class BookshelfViewModel {
     private fun sortOf(groupId: Long): Int {
         val group = _bookGroups.value.find { it.groupId == groupId }
         return group?.getRealBookSort(appConfig.bookshelfSort) ?: appConfig.bookshelfSort
-    }
-
-    /**
-     * 排序书籍 (对照 app 端 BookshelfState1.sortBooks / BookshelfState2.sortBooks)。
-     *
-     * sort:
-     * - 0: 阅读时间 (durChapterTime 倒序)
-     * - 1: 更新时间 (latestChapterTime 倒序)
-     * - 2: 书名 (cnCompare 拼音序)
-     * - 3: 手动 (order 正序)
-     * - 4: 综合时间 (max(latestChapterTime, durChapterTime) 倒序)
-     * - 5: 作者 (cnCompare 拼音序); 原版只有 style1 的 BooksFragment 有该档,
-     *   style2 落 else 按阅读时间, 此处统一取 style1 的超集
-     */
-    private fun sortBooks(list: List<Book>, sort: Int): List<Book> = when (sort) {
-        1 -> list.sortedByDescending { it.latestChapterTime }
-        2 -> list.sortedWith { a, b -> a.name.cnCompare(b.name) }
-        3 -> list.sortedBy { it.order }
-        4 -> list.sortedByDescending { maxOf(it.latestChapterTime, it.durChapterTime) }
-        5 -> list.sortedWith { a, b -> a.author.cnCompare(b.author) }
-        else -> list.sortedByDescending { it.durChapterTime }
     }
 
     /**
