@@ -385,7 +385,8 @@ final class ReaderUITests: XCTestCase {
         func create(_ name: String) {
             app.buttons["shelf.newGroup"].tap()
             let field = app.textFields["shelf.groupName"]
-            XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText(name)
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            enterRomanFindQuery(app, query: field, text: name, submit: false)
             app.buttons["shelf.group.save"].tap()
             XCTAssertTrue(group(name).waitForExistence(timeout: 10))
         }
