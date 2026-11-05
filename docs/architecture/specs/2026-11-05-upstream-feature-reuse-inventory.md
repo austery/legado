@@ -35,7 +35,7 @@ The priority two-page feature already has native implementation and an actual-to
 
 The initial verification budget is one framework build and one targeted UI journey. The canonical UI driver has a 900-second execution deadline. Toolchain build time is additional. Treat failures as evidence to diagnose before increasing the budget. A reliable feature estimate can follow any reproduced gap.
 
-Shelf sorting remains an optional next delivery. Its existing proposal uses zero new tables, migrations, dependencies or preference keys. Its implementation and full acceptance should be estimated separately after the owner selects it as the next priority.
+On 2026-11-05, the owner selected shelf sorting as the first bounded UI integration after validation PR #63. The implementation follows the [six-mode proposal](2026-11-04-upstream-shelf-sort-assessment.md) with zero new tables, migrations, dependencies or preference keys. Implementation acceptance and owner H2 are separate from the double-page verification below.
 
 ## Verification receipt
 

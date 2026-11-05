@@ -289,7 +289,7 @@ final class ReaderUITests: XCTestCase {
         XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
         XCTAssertEqual(groups.count, 1)
         capture("shelf-sort-title-landscape")
-        books.element(boundBy: 0).tap()
+        books.element(boundBy: 1).tap()
         XCTAssertTrue(app.buttons["reader.next"].waitForExistence(timeout: 20))
         app.buttons["reader.next"].tap()
         wait(app) { self.state(app).contains("chapter=1;") && self.state(app).contains("layout=spread;") }
@@ -311,7 +311,7 @@ final class ReaderUITests: XCTestCase {
         XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
         XCTAssertTrue(books.element(boundBy: 1).label.contains("Second"))
         capture("shelf-sort-relaunched")
-        books.element(boundBy: 0).tap()
+        books.element(boundBy: 1).tap()
         assertRenderedAnchor(app, identity: identity, position: position)
     }
 
