@@ -64,9 +64,9 @@ final class ShelfGroupEngineTests: XCTestCase {
         let offset = (content.text as NSString).range(of: "C1-MIDDLE").location
         XCTAssertNotEqual(offset, NSNotFound)
         XCTAssertGreaterThan(offset, 0)
-        let savedReply = await call {
+        let savedReply: EngineReply = await withCheckedContinuation { continuation in
             engine.saveReadingPosition(token: reading.token, eventSequence: 1,
-                utf16Offset: Int32(offset), completion: $0)
+                utf16Offset: Int32(offset)) { continuation.resume(returning: $0) }
         }
         let saved = try XCTUnwrap(savedReply as? ReadingSaved)
         var state = try await shelf(engine)
@@ -118,6 +118,12 @@ final class ShelfGroupEngineTests: XCTestCase {
             let reopened = await call { engine.openReading(sourceId: third.sourceId,
                 bookId: third.id, cacheOnly: true, completion: $0) }
             XCTAssertEqual((reopened as? ContentReply)?.reading?.paragraphUtf16Offset, saved.paragraphUtf16Offset)
+            let removed = await call { engine.removeFromShelf(sourceId: third.sourceId,
+                bookId: third.id, completion: $0) }
+            XCTAssertTrue(removed is ShelfRemoved)
+            let remaining = try await shelf(engine)
+            XCTAssertFalse(remaining.books.contains { $0.book.id == third.id })
+            XCTAssertTrue(remaining.groups.allSatisfy { !$0.orderedBookIds.contains(third.id) })
             for group in [overridden, inherited] {
                 state = try await shelf(engine)
                 _ = await call { engine.deleteShelfGroup(groupId: group.id, expectedToken: state.token, completion: $0) }

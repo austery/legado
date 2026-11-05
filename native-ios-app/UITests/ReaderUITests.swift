@@ -247,22 +247,34 @@ final class ReaderUITests: XCTestCase {
 
     @MainActor func testShelfSortMenuAndRelaunch() {
         let app = XCUIApplication()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         app.launchEnvironment["READER_UI_RESET"] = "1"
-        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf-mixed"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf-empty"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         let sort = app.buttons["shelf.sort"]
-        XCTAssertTrue(sort.waitForExistence(timeout: 40))
         let books = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book."))
+        let groups = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.group."))
+        XCTAssertTrue(sort.waitForExistence(timeout: 40))
+        XCTAssertEqual(books.count, 0)
+        sort.tap(); app.buttons["shelf.sort.2"].tap()
+        wait(app) { (sort.value as? String) == "Book title" }
+        XCTAssertEqual(books.count, 0)
+        app.terminate()
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf-mixed"
+        app.launch()
+        XCTAssertTrue(sort.waitForExistence(timeout: 40))
         wait(app) { books.count == 2 }
+        app.buttons["shelf.newGroup"].tap()
+        let name = app.textFields["shelf.groupName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Sort check")
+        app.buttons["shelf.group.save"].tap()
+        wait(app) { groups.count == 1 }
         app.buttons["shelf.layout.list"].tap()
-        sort.tap()
-        let recent = app.buttons["shelf.sort.0"]
-        XCTAssertTrue(recent.waitForExistence(timeout: 5)); recent.tap()
+        sort.tap(); app.buttons["shelf.sort.0"].tap()
         wait(app) { (sort.value as? String) == "Recently read" }
         XCTAssertTrue(books.element(boundBy: 0).label.contains("Second"))
-        sort.tap()
-        app.buttons["shelf.sort.2"].tap()
+        sort.tap(); app.buttons["shelf.sort.2"].tap()
         wait(app) { (sort.value as? String) == "Book title" }
         XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
         XCTAssertTrue(books.element(boundBy: 1).label.contains("Second"))
@@ -270,23 +282,37 @@ final class ReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         wait(app) { app.frame.width > app.frame.height }
         XCTAssertTrue(sort.isHittable)
-        sort.tap()
-        app.buttons["shelf.sort.5"].tap()
+        sort.tap(); app.buttons["shelf.sort.5"].tap()
         wait(app) { (sort.value as? String) == "Author" }
-        capture("shelf-sort-author-landscape")
+        sort.tap(); app.buttons["shelf.sort.2"].tap()
+        wait(app) { (sort.value as? String) == "Book title" }
+        XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
+        XCTAssertEqual(groups.count, 1)
+        capture("shelf-sort-title-landscape")
+        books.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["reader.next"].waitForExistence(timeout: 20))
+        app.buttons["reader.next"].tap()
+        wait(app) { self.state(app).contains("chapter=1;") && self.state(app).contains("layout=spread;") }
+        app.textViews["reader.text"].swipeLeft()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        let identity = readingIdentity(app)
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(sort.waitForExistence(timeout: 10))
+        XCTAssertEqual(sort.value as? String, "Book title")
         app.terminate()
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launch()
         XCTAssertTrue(sort.waitForExistence(timeout: 40))
-        XCTAssertEqual(sort.value as? String, "Author")
+        XCTAssertEqual(sort.value as? String, "Book title")
         XCTAssertEqual(books.count, 2)
-        books.element(boundBy: 0).tap()
-        XCTAssertTrue(app.buttons["reader.shelf"].waitForExistence(timeout: 20))
-        app.buttons["reader.shelf"].tap()
-        XCTAssertTrue(sort.waitForExistence(timeout: 10))
-        XCTAssertEqual(sort.value as? String, "Author")
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
+        XCTAssertTrue(books.element(boundBy: 1).label.contains("Second"))
         capture("shelf-sort-relaunched")
-        app.terminate()
+        books.element(boundBy: 0).tap()
+        assertRenderedAnchor(app, identity: identity, position: position)
     }
 
     @MainActor func testShelfGroupingAndGridListManagement() throws {
