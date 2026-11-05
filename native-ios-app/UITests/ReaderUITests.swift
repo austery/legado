@@ -267,7 +267,14 @@ final class ReaderUITests: XCTestCase {
         wait(app) { books.count == 2 }
         app.buttons["shelf.newGroup"].tap()
         let name = app.textFields["shelf.groupName"]
-        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Sort check")
+        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        if app.keyboards.keys["S"].exists { app.keyboards.buttons["shift"].tap() }
+        for character in "sort" {
+            let key = app.keyboards.keys[String(character)]
+            XCTAssertTrue(key.exists); key.tap()
+        }
+        XCTAssertEqual(name.value as? String, "sort")
         app.buttons["shelf.group.save"].tap()
         wait(app) { groups.count == 1 }
         app.buttons["shelf.layout.list"].tap()
