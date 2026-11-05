@@ -39,6 +39,67 @@ final class ResumeEngineTests: XCTestCase {
         return (base, json, book, try XCTUnwrap(loaded as? ContentReply))
     }
 
+    func testBookmarksPreserveProgressDeduplicateAndReopenWithDisabledSource() async throws {
+        let engine = ReaderEngine()
+        defer { engine.close() }
+        let (base, json, book, content) = try await fixture(engine)
+        let reading = try XCTUnwrap(content.reading)
+        let offset = (content.text as NSString).range(of: "C1-MIDDLE").location
+        XCTAssertGreaterThan(offset, 0)
+        let paragraph = (content.text as NSString).paragraphRange(for: NSRange(location: offset, length: 0)).location
+        let first = await write { engine.saveBookmark(token: reading.token, utf16Offset: Int32(offset), completion: $0) }
+        let bookmark = try XCTUnwrap((first as? BookmarkSaved)?.bookmark)
+        let duplicate = await write { engine.saveBookmark(token: reading.token, utf16Offset: Int32(offset + 2), completion: $0) }
+        XCTAssertEqual((duplicate as? BookmarkSaved)?.bookmark.id, bookmark.id)
+        let list = await call { engine.listBookmarks(sourceId: base, bookId: book.id, completion: $0) }
+        XCTAssertEqual((list as? BookmarksReply)?.bookmarks.map(\.id), [bookmark.id])
+        let progress = await call { engine.openReading(sourceId: base, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((progress as? ContentReply)?.reading?.revision, reading.revision)
+        XCTAssertEqual((progress as? ContentReply)?.reading?.paragraphUtf16Offset, reading.paragraphUtf16Offset)
+        let disabled = await call { engine.importSources(json: json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false"), completion: $0) }
+        XCTAssertTrue(disabled is SourcesReply)
+        let opened = await call { engine.openBookmark(sourceId: base, bookId: book.id, bookmarkId: bookmark.id, completion: $0) }
+        let restored = try XCTUnwrap(opened as? ContentReply)
+        XCTAssertTrue(restored.fromCache)
+        XCTAssertEqual(restored.text, content.text)
+        XCTAssertEqual(restored.reading?.paragraphUtf16Offset, Int32(paragraph))
+        XCTAssertEqual(restored.reading?.revision, reading.revision)
+        let restoredToken = try XCTUnwrap(restored.reading?.token)
+        let saved = await write { engine.saveReadingPosition(token: restoredToken, eventSequence: 1, utf16Offset: Int32(offset), completion: $0) }
+        XCTAssertTrue(saved is ReadingSaved)
+        let removed = await call { engine.deleteBookmark(sourceId: base, bookId: book.id, bookmarkId: bookmark.id, completion: $0) }
+        XCTAssertEqual((removed as? BookmarksReply)?.bookmarks.count, 0)
+        let removedAgain = await call { engine.deleteBookmark(sourceId: base, bookId: book.id, bookmarkId: bookmark.id, completion: $0) }
+        XCTAssertEqual((removedAgain as? BookmarksReply)?.bookmarks.count, 0)
+        let missing = await call { engine.openBookmark(sourceId: base, bookId: book.id, bookmarkId: bookmark.id, completion: $0) }
+        XCTAssertTrue(missing is EngineFailure)
+    }
+
+    func testBookmarkRejectsChangedCacheAndExpiredTokenWithoutChangingProgress() async throws {
+        let engine = ReaderEngine()
+        defer { engine.close() }
+        let (base, json, book, content) = try await fixture(engine)
+        let reading = try XCTUnwrap(content.reading)
+        let first = await write { engine.saveBookmark(token: reading.token, utf16Offset: 0, completion: $0) }
+        let bookmark = try XCTUnwrap((first as? BookmarkSaved)?.bookmark)
+        let path = cacheURL(book: book, chapter: content.chapter)
+        try "Changed chapter".write(to: path, atomically: true, encoding: .utf8)
+        let changed = await write { engine.saveBookmark(token: reading.token, utf16Offset: 0, completion: $0) }
+        XCTAssertTrue(changed is EngineFailure)
+        let disabled = await call { engine.importSources(json: json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false"), completion: $0) }
+        XCTAssertTrue(disabled is SourcesReply)
+        let unavailable = await call { engine.openBookmark(sourceId: base, bookId: book.id, bookmarkId: bookmark.id, completion: $0) }
+        XCTAssertTrue(unavailable is EngineFailure)
+        XCTAssertEqual(try String(contentsOf: path, encoding: .utf8), "Changed chapter")
+        try content.text.write(to: path, atomically: true, encoding: .utf8)
+        let reopened = await call { engine.openReading(sourceId: base, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((reopened as? ContentReply)?.reading?.revision, reading.revision)
+        let finish = await write { engine.finishReading(token: reading.token, eventSequence: 1, utf16Offset: 0, completion: $0) }
+        XCTAssertTrue(finish is ReadingSaved)
+        let stale = await write { engine.saveBookmark(token: reading.token, utf16Offset: 0, completion: $0) }
+        XCTAssertEqual((stale as? EngineFailure)?.code, .staleUpdate)
+    }
+
     func testResumeRejectsOldEventsAndFinishedTokensAndRestoresWithDisabledSource() async throws {
         let engine = ReaderEngine()
         defer { engine.close() }

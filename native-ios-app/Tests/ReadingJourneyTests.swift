@@ -3,6 +3,7 @@ import ReaderEngine
 import SwiftUI
 import CryptoKit
 import SQLite3
+import Combine
 @testable import NativeReader
 
 @MainActor
@@ -180,6 +181,74 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertEqual((recovered as? ContentReply)?.reading?.paragraphUtf16Offset, 10)
     }
 
+    func testBookmarkFailureKeepsReadingAndRetryAfterSheetDismissal() async throws {
+        let model = ReaderModel()
+        model.start(); try await settle(model)
+        let base = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await importFixture(model, base: base, titleSuffix: UUID().uuidString, paragraphs: true)
+        model.searchScope = .selected; model.selectedSourceIDs = [base]
+        model.query = "Path"; model.search(); try await settle(model)
+        model.select(try XCTUnwrap(model.results.first)); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let content = try XCTUnwrap(model.content)
+        let token = try XCTUnwrap(content.reading?.token)
+        model.readingDisplayed(token, 0)
+        var publications = 0
+        let observation = model.objectWillChange.sink { publications += 1 }
+        for offset in 0..<20 { model.readingScrolled(token, offset) }
+        XCTAssertEqual(publications, 0, "Position samples must not redraw the reader each frame")
+        observation.cancel()
+        model.readingScrolled(token, 0)
+        model.saveCurrentBookmark()
+        let saveDeadline = Date().addingTimeInterval(10)
+        while model.bookmarkBusy && Date() < saveDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertEqual(model.bookmarkNotice, "Bookmark saved.")
+        model.showBookmarks()
+        let listDeadline = Date().addingTimeInterval(10)
+        while model.bookmarkBusy && Date() < listDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        let bookmark = try XCTUnwrap(model.bookmarks.first)
+        let other = ReaderEngine()
+        defer { other.close() }
+        func call(_ start: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
+            await withCheckedContinuation { continuation in _ = start { continuation.resume(returning: $0) } }
+        }
+        let ready = await call { other.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let removed = await call { other.deleteBookmark(sourceId: base, bookId: content.chapter.bookId, bookmarkId: bookmark.id, completion: $0) }
+        XCTAssertTrue(removed is BookmarksReply)
+        model.openBookmark(bookmark); try await settle(model)
+        XCTAssertEqual(model.bookmarkNotice, "Bookmark was removed")
+        model.closeBookmarks()
+        XCTAssertTrue(model.canRetryBookmark, "A late sheet dismissal must retain the failure retry")
+        XCTAssertEqual(model.content?.text, content.text)
+        XCTAssertEqual(model.content?.chapter.id, content.chapter.id)
+        XCTAssertEqual(model.route, .reading)
+        model.retryBookmark(); try await settle(model)
+        XCTAssertEqual(model.bookmarkNotice, "Bookmark was removed")
+        model.navigate(.details); try await settle(model)
+        XCTAssertNil(model.bookmarkNotice)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let shelfRemoved = await call { other.removeFromShelf(sourceId: base, bookId: content.chapter.bookId, completion: $0) }
+        XCTAssertTrue(shelfRemoved is ShelfRemoved)
+        func settleBookmarks() async throws {
+            let deadline = Date().addingTimeInterval(10)
+            while model.bookmarkBusy && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+            XCTAssertFalse(model.bookmarkBusy)
+        }
+        model.showBookmarks(); try await settleBookmarks()
+        XCTAssertTrue(model.canRetryBookmark)
+        model.closeBookmarks()
+        model.retryBookmark(); try await settleBookmarks()
+        XCTAssertTrue(model.bookmarksPresented, "List retry must display its result")
+        model.deleteBookmark(bookmark); try await settleBookmarks()
+        XCTAssertTrue(model.canRetryBookmark)
+        model.closeBookmarks()
+        model.retryBookmark(); try await settleBookmarks()
+        XCTAssertTrue(model.bookmarksPresented, "Delete retry must display its result")
+        model.closeBookmarks()
+    }
+
     func testExplicitSourceSwitchCancellationCommitAndReopen() async throws {
         let model = ReaderModel()
         model.start(); try await settle(model)
@@ -196,6 +265,13 @@ final class ReadingJourneyTests: XCTestCase {
         model.addCurrentBook(); try await settle(model)
         model.refreshShelf(); try await settle(model)
         model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let readingToken = try XCTUnwrap(model.content?.reading?.token)
+        model.readingDisplayed(readingToken, 0)
+        model.saveCurrentBookmark()
+        let saveDeadline = Date().addingTimeInterval(10)
+        while model.bookmarkBusy && Date() < saveDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertFalse(model.bookmarkBusy)
+        XCTAssertEqual(model.bookmarkNotice, "Bookmark saved.")
         XCTAssertTrue(model.canChangeSource)
         model.beginSourceSwitch(); try await settle(model)
         model.select(replacement); try await settle(model)
@@ -214,6 +290,13 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertNil(model.switchingFrom)
         XCTAssertEqual(model.book?.sourceId, second)
         XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, 0)
+        model.showBookmarks()
+        let listDeadline = Date().addingTimeInterval(10)
+        while model.bookmarkBusy && Date() < listDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertFalse(model.bookmarkBusy)
+        XCTAssertEqual(model.bookmarks.count, 1)
+        XCTAssertFalse(try XCTUnwrap(model.bookmarks.first).availableInCurrentSource)
+        model.closeBookmarks()
         model.refreshShelf(); try await settle(model)
         XCTAssertEqual(model.shelf.filter { $0.book.title == oldBook.title }.count, 1)
         let reopened = ReaderEngine()

@@ -1,6 +1,70 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testBookmarkSaveNavigateRelaunchAndDelete() throws {
+        let app = launchControlsReader()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        waitForStableViewport(app)
+        app.textViews["reader.text"].swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        let identity = readingIdentity(app)
+        XCTAssertGreaterThan(position, 0)
+        wait(app) {
+            let columns = (app.staticTexts["fixture.stored"].value as? String ?? "").components(separatedBy: "|")
+            return columns.count > 7 && Int(columns[7]) == position
+        }
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        let save = app.buttons["reader.addBookmark"]
+        XCTAssertTrue(save.waitForExistence(timeout: 10))
+        wait(app) { save.isEnabled }
+        save.tap()
+        wait(app) { app.staticTexts["reader.bookmarkNotice"].label == "Bookmark saved." }
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
+        save.tap()
+        wait(app) { app.staticTexts["reader.bookmarkNotice"].label == "Bookmark saved." }
+        app.buttons["reader.bookmarks"].tap()
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bookmarks.open."))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(rows.count, 1)
+        capture("bookmark-portrait-list")
+        app.buttons["bookmarks.done"].tap()
+        app.buttons["reader.previous"].tap()
+        wait(app) { self.state(app).contains("chapter=0;") }
+        app.buttons["reader.bookmarks"].tap()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10)); rows.firstMatch.tap()
+        wait(app) { !app.buttons["bookmarks.done"].exists && self.state(app).contains("chapter=1;") }
+        waitForStableViewport(app)
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertEqual(anchor(app), position)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") }
+        assertRenderedAnchor(app, identity: identity, position: position)
+        app.buttons["reader.bookmarks"].tap()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        capture("bookmark-landscape-list")
+        rows.firstMatch.tap()
+        wait(app) { !app.buttons["bookmarks.done"].exists }
+        assertRenderedAnchor(app, identity: identity, position: position)
+        wait(app) { save.isEnabled }
+        save.tap()
+        wait(app) { app.staticTexts["reader.bookmarkNotice"].label == "Bookmark saved." }
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 30)); book.tap()
+        XCTAssertTrue(app.buttons["reader.bookmarks"].waitForExistence(timeout: 20)); app.buttons["reader.bookmarks"].tap()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(rows.count, 1)
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bookmarks.delete.")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["bookmarks.empty"].waitForExistence(timeout: 10))
+        capture("bookmark-deleted")
+        app.terminate()
+    }
+
     @MainActor func testChapterFindAcrossLayoutsAndDurablePosition() async throws {
         let app = launchControlsReader()
         let identity = readingIdentity(app)

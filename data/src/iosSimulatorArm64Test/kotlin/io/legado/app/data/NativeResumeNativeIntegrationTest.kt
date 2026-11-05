@@ -217,7 +217,7 @@ class NativeResumeNativeIntegrationTest {
                 db.close(); db = open(path)
                 assertEquals(saved,db.nativeResumeDao.get("old"))
                 driver.open(path).use { connection ->
-                    connection.prepare("PRAGMA user_version").use { assertTrue(it.step()); assertEquals(91,it.getInt(0)) }
+                    connection.prepare("PRAGMA user_version").use { assertTrue(it.step()); assertEquals(92,it.getInt(0)) }
                     connection.prepare("SELECT cookie FROM cookies WHERE url='source'").use { assertTrue(it.step()); assertEquals("test=value",it.getText(0)) }
                     connection.prepare("SELECT bookSourceName FROM book_sources WHERE bookSourceUrl='source'").use { assertTrue(it.step()); assertEquals("Saved source",it.getText(0)) }
                     connection.prepare("SELECT bookSourceIcon FROM book_sources WHERE bookSourceUrl='source'").use { assertTrue(it.step()); assertTrue(it.isNull(0)) }

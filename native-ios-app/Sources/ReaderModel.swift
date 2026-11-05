@@ -17,6 +17,121 @@ final class ReaderModel: ObservableObject {
         self.deliverReply = deliverReply
     }
 
+    @Published var bookmarksPresented = false
+    @Published private(set) var bookmarks: [BookmarkSnapshot] = []
+    @Published private(set) var bookmarkNotice: String?
+    @Published private(set) var bookmarkBusy = false
+    @Published private(set) var canRetryBookmark = false
+    private var bookmarkOffset: Int?
+    @Published private var bookmarkPositionAvailable = false
+    private var bookmarkRequest: EngineRequest?
+    private var bookmarkGeneration = UUID()
+    private var bookmarkRetry: (() -> Void)?
+
+    var canSaveBookmark: Bool {
+        isShelved && !busy && !bookmarkBusy && bookmarkPositionAvailable && activeReadingToken != nil && content?.reading?.canSave == true
+    }
+
+    func showBookmarks() {
+        guard isShelved, !busy else { return }
+        bookmarks = []
+        bookmarksPresented = true
+        refreshBookmarks()
+    }
+
+    func closeBookmarks() {
+        bookmarksPresented = false
+        bookmarkRequest?.cancel()
+        bookmarkRequest = nil
+        bookmarkGeneration = UUID()
+        bookmarkBusy = false
+    }
+
+    func refreshBookmarks() {
+        guard let book, isShelved else { return }
+        bookmarkRequest?.cancel()
+        let stamp = UUID(); bookmarkGeneration = stamp
+        let context = generation
+        bookmarkBusy = true; bookmarkNotice = nil; canRetryBookmark = false
+        bookmarkRequest = engine.listBookmarks(sourceId: book.sourceId, bookId: book.id) { [weak self] reply in
+            guard let self, self.generation == context, self.bookmarkGeneration == stamp else { return }
+            self.bookmarkBusy = false; self.bookmarkRequest = nil
+            if let result = reply as? BookmarksReply { self.bookmarks = result.bookmarks }
+            if let failure = reply as? EngineFailure {
+                self.bookmarkNotice = failure.message
+                self.bookmarkRetry = { [weak self] in self?.showBookmarks() }
+                self.canRetryBookmark = true
+            }
+        }
+    }
+
+    func saveCurrentBookmark() {
+        guard canSaveBookmark, let token = activeReadingToken, let offset = bookmarkOffset else { return }
+        saveBookmark(token: token, offset: offset)
+    }
+
+    private func saveBookmark(token: String, offset: Int) {
+        guard activeReadingToken == token, route == .reading else {
+            bookmarkNotice = "Reading session changed. Save the current paragraph again."
+            canRetryBookmark = false
+            return
+        }
+        let context = generation
+        bookmarkBusy = true; bookmarkNotice = nil; canRetryBookmark = false
+        engine.saveBookmark(token: token, utf16Offset: Int32(offset)) { [weak self] reply in
+            guard let self, self.generation == context, self.activeReadingToken == token else { return }
+            self.bookmarkBusy = false
+            if reply is BookmarkSaved { self.bookmarkNotice = "Bookmark saved."; self.bookmarkRetry = nil }
+            if let failure = reply as? EngineFailure {
+                self.bookmarkNotice = failure.message
+                self.bookmarkRetry = { [weak self] in self?.saveBookmark(token: token, offset: offset) }
+                self.canRetryBookmark = true
+            }
+        }
+    }
+
+    func retryBookmark() { bookmarkRetry?() }
+
+    func deleteBookmark(_ bookmark: BookmarkSnapshot) {
+        guard let book, !bookmarkBusy else { return }
+        let context = generation
+        let stamp = UUID(); bookmarkGeneration = stamp
+        bookmarkBusy = true; bookmarkNotice = nil; canRetryBookmark = false
+        bookmarkRequest = engine.deleteBookmark(sourceId: book.sourceId, bookId: book.id, bookmarkId: bookmark.id) { [weak self] reply in
+            guard let self, self.generation == context, self.bookmarkGeneration == stamp else { return }
+            self.bookmarkBusy = false; self.bookmarkRequest = nil
+            if let result = reply as? BookmarksReply { self.bookmarks = result.bookmarks }
+            if let failure = reply as? EngineFailure {
+                self.bookmarkNotice = failure.message
+                self.bookmarkRetry = { [weak self] in
+                    guard let self else { return }
+                    self.bookmarksPresented = true
+                    self.deleteBookmark(bookmark)
+                }
+                self.canRetryBookmark = true
+            }
+        }
+    }
+
+    func openBookmark(_ bookmark: BookmarkSnapshot) {
+        guard let book, !busy, !bookmarkBusy, bookmark.availableInCurrentSource else { return }
+        let previous = content
+        closeBookmarks()
+        bookmarkNotice = nil
+        perform(retry: { [weak self] in self?.openBookmark(bookmark) }, failure: { [weak self] failure in
+            self?.bookmarkNotice = failure.message
+            self?.bookmarkRetry = { [weak self] in self?.openBookmark(bookmark) }
+            self?.canRetryBookmark = true
+            if let previous, previous.reading?.canSave == true { self?.recoverDisplayedReading(previous) }
+        }, start: {
+            self.engine.openBookmark(sourceId: book.sourceId, bookId: book.id, bookmarkId: bookmark.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let result = reply as? ContentReply else { return }
+            self.acceptContent(result)
+            self.closeBookmarks()
+        }
+    }
+
     @Published var shelf: [ShelfBookSnapshot] = []
     @Published private(set) var shelfGroups: [ShelfGroupSnapshot] = []
     @Published private(set) var shelfToken = ""
@@ -727,6 +842,9 @@ final class ReaderModel: ObservableObject {
     }
 
     private func acceptContent(_ reply: ContentReply) {
+        bookmarkOffset = nil
+        bookmarkPositionAvailable = false
+        bookmarkBusy = false
         content = reply; route = .reading
         saveNotice = reply.storageNotice.isEmpty ? nil : reply.storageNotice
         activeReadingToken = reply.reading?.token
@@ -743,11 +861,15 @@ final class ReaderModel: ObservableObject {
 
     func readingDisplayed(_ token: String, _ offset: Int) {
         guard route == .reading, activeReadingToken == token, content?.reading?.canSave == true else { return }
+        bookmarkOffset = offset
+        if !bookmarkPositionAvailable { bookmarkPositionAvailable = true }
         positionSaver.displayed(token: token, offset: offset)
     }
 
     func readingScrolled(_ token: String, _ offset: Int) {
         guard route == .reading, activeReadingToken == token, content?.reading?.canSave == true else { return }
+        bookmarkOffset = offset
+        if !bookmarkPositionAvailable { bookmarkPositionAvailable = true }
         positionSaver.sample(token: token, offset: offset)
     }
 
@@ -817,6 +939,9 @@ final class ReaderModel: ObservableObject {
         if !preservingDiscovery { discovery.retire() }
         retireSearch()
         generation = UUID(); request?.cancel(); request = nil
+        bookmarkRequest?.cancel(); bookmarkRequest = nil
+        bookmarkGeneration = UUID(); bookmarkBusy = false
+        bookmarkRetry = nil; canRetryBookmark = false; bookmarkNotice = nil
         busy = false; message = nil; retryAction = nil
     }
 
