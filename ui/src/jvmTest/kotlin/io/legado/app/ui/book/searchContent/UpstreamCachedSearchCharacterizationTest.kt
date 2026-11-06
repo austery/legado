@@ -9,6 +9,7 @@ import io.legado.app.data.DatabaseMigrations
 import io.legado.app.data.dao.NativeBodyCoordinates
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.help.book.BookStorage
 import io.legado.app.help.book.BookStorageProviders
@@ -22,13 +23,14 @@ import io.legado.app.help.book.chineseS2T
 import io.legado.app.help.config.AppConfigAccessor
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.ui.book.info.edit.BookInfoEditIdentityIntegrationTest.TestDatabaseAccessor
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
@@ -140,13 +142,27 @@ class UpstreamCachedSearchCharacterizationTest {
             val searching = f.scope.async {
                 f.model.searchAllChapters("needle", setOf(first.getFileName(), second.getFileName())) { _, _ ->
                     batches++
-                    throw CancellationException("Stop after first published chapter")
+                    currentCoroutineContext().cancel()
                 }
             }
             searching.join()
             assertTrue(searching.isCancelled)
             assertEquals(1, batches)
             assertEquals(listOf(first.url), f.reads)
+        }
+    }
+
+    @Test
+    fun upstreamSnippetCanSplitASurrogatePairAtItsWindowBoundary() = runBlocking {
+        fixture { f ->
+            val chapter = f.chapter(0)
+            f.processor.originalText = true
+            f.cache(chapter, "😀" + "a".repeat(19) + "needle")
+            val result = f.model.searchChapter("needle", chapter).single()
+            assertEquals(21, result.queryIndexInChapter)
+            assertEquals(20, result.queryIndexInResult)
+            assertTrue(result.resultText.first().isLowSurrogate())
+            assertEquals("needle", result.resultText.substring(result.queryIndexInResult))
         }
     }
 
@@ -227,6 +243,10 @@ class UpstreamCachedSearchCharacterizationTest {
             val processor = Processor(ContentProcessorShared(book.name, book.origin, DefaultContentProcessorDeps()))
             ContentProcessorProviders.register(processor)
             database.bookDao.insert(book)
+            database.bookSourceDao.insert(BookSource(bookSourceUrl = base, bookSourceName = "Search fixture"))
+            val control = java.net.URI.create("$base/control").toURL().openConnection() as java.net.HttpURLConnection
+            try { assertEquals(500, control.responseCode) } finally { control.disconnect() }
+            assertEquals(1, requests.getAndSet(0), "The fixture listener must observe a request")
             val storedBeforeSearch = database.bookDao.getBook(book.bookUrl)
             val model = SearchContentViewModelShared(scope) { type, title ->
                 when (type) {
