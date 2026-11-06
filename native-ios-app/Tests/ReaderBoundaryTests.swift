@@ -3,6 +3,7 @@ import ReaderEngine
 import SwiftUI
 import SQLite3
 import Vision
+import CryptoKit
 @testable import NativeReader
 
 /// Real bridge/storage integration; hosted views provide selected rendering evidence.
@@ -180,6 +181,78 @@ final class ReaderBoundaryTests: XCTestCase {
         XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, Int32(paragraph))
     }
 
+    private func searchCacheURL(_ book: BookSnapshot, _ chapter: ChapterSnapshot) -> URL {
+        func shortHash(_ value: String) -> String {
+            String(Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined().dropFirst(8).prefix(16))
+        }
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("book_cache").appendingPathComponent(String(book.title.prefix(9)) + shortHash(book.id))
+            .appendingPathComponent(String(format: "%05d", chapter.index) + "-" + shortHash(chapter.title) + ".nb")
+    }
+
+    func testCachedSearchRedundantBindingPreservesResultsAndTruncationIsVisible() async throws {
+        let model = ReaderModel(); defer { model.cancel() }
+        let (_, candidate) = try await fixture(model)
+        model.select(candidate); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let content = try XCTUnwrap(model.content)
+        let path = searchCacheURL(try XCTUnwrap(model.book), content.chapter)
+        try String(repeating: "needle ", count: 201).write(to: path, atomically: true, encoding: .utf8)
+        model.showCachedSearch(); model.cachedSearchQuery = "needle"; model.searchCachedChapters()
+        try await wait { !model.cachedSearchBusy }
+        let result = try XCTUnwrap(model.cachedSearchResults)
+        XCTAssertTrue(result.truncated); XCTAssertEqual(result.hits.count, 200)
+        model.cachedSearchQuery = "needle"
+        XCTAssertTrue(model.cachedSearchResults === result, "Redundant binding writes must not clear results")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 834, height: 1194)
+        window.rootViewController = UIHostingController(rootView: CachedSearchSheet(model: model))
+        window.makeKeyAndVisible(); defer { window.isHidden = true }
+        try await Task.sleep(nanoseconds: 250_000_000)
+        window.rootViewController?.view.layoutIfNeeded()
+        try assertVisible("Showing the first 200 matches", in: window)
+        try String(repeating: "needle ", count: 200).write(to: path, atomically: true, encoding: .utf8)
+        model.searchCachedChapters(); try await wait { !model.cachedSearchBusy }
+        XCTAssertFalse(try XCTUnwrap(model.cachedSearchResults).truncated)
+        model.cachedSearchQuery = "é"; model.searchCachedChapters()
+        try await wait { !model.cachedSearchBusy }
+        XCTAssertNotNil(model.cachedSearchResults)
+        model.cachedSearchQuery = "e\u{301}"
+        XCTAssertNil(model.cachedSearchResults, "Canonical equality must not hide a changed original UTF-16 query")
+    }
+
+    func testCachedSearchStaleHitRerunClearsReaderErrorAndKeepsQuery() async throws {
+        let model = ReaderModel(); defer { model.cancel() }
+        let (_, candidate) = try await fixture(model)
+        model.select(candidate); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        let content = try XCTUnwrap(model.content)
+        let path = searchCacheURL(try XCTUnwrap(model.book), content.chapter)
+        model.showCachedSearch(); model.cachedSearchQuery = "C1-FIRST"; model.searchCachedChapters()
+        try await wait { !model.cachedSearchBusy }
+        let hit = try XCTUnwrap(model.cachedSearchResults?.hits.first)
+        try "C1-FIRST changed cached text".write(to: path, atomically: true, encoding: .utf8)
+        model.openCachedSearchHit(hit)
+        try await wait { !model.busy }
+        XCTAssertTrue(model.cachedSearchPresented)
+        XCTAssertEqual(model.cachedSearchQuery, "C1-FIRST")
+        XCTAssertEqual(model.cachedSearchNotice, "Cached text changed or is missing. Search again.")
+        XCTAssertNil(model.message); XCTAssertFalse(model.canRetry)
+        model.searchCachedChapters(); try await wait { !model.cachedSearchBusy }
+        XCTAssertEqual(model.cachedSearchResults?.hits.count, 1)
+        XCTAssertNil(model.cachedSearchNotice); XCTAssertNil(model.message)
+        model.openCachedSearchHit(try XCTUnwrap(model.cachedSearchResults?.hits.first))
+        try await settle(model)
+        XCTAssertEqual(model.content?.text, "C1-FIRST changed cached text")
+        XCTAssertFalse(model.cachedSearchPresented)
+        XCTAssertNotNil(model.cachedSearchSelection)
+        model.closeCachedSearch()
+        XCTAssertNil(model.message); XCTAssertFalse(model.canRetry)
+    }
+
     private final class ReplyQueue {
         let stage: ReaderModel.ReplyStage
         private var holdNext = true
@@ -189,7 +262,7 @@ final class ReaderBoundaryTests: XCTestCase {
         init(stage: ReaderModel.ReplyStage) { self.stage = stage }
         func deliver(_ stage: ReaderModel.ReplyStage, _ reply: EngineReply, _ apply: @escaping (EngineReply) -> Void) {
             if let toc = reply as? TocReply, let source = toc.chapters.first?.sourceId { tocSources.append(source) }
-            if holdNext && stage == self.stage && (reply is BookReply || reply is TocReply) {
+            if holdNext && stage == self.stage && (reply is BookReply || reply is TocReply || reply is CachedChapterResults) {
                 holdNext = false
                 pending = (reply, apply)
             } else { apply(reply) }
@@ -199,6 +272,39 @@ final class ReaderBoundaryTests: XCTestCase {
             pending = nil
             replayCount += 1
             held.apply(held.reply)
+        }
+    }
+
+    func testLateCachedSearchCannotReplaceNewQuery() async throws { try await delayedCachedSearch(leaveReader: false) }
+    func testLateCachedSearchCannotReopenSheetAfterLeavingReader() async throws { try await delayedCachedSearch(leaveReader: true) }
+
+    private func delayedCachedSearch(leaveReader: Bool) async throws {
+        let queue = ReplyQueue(stage: .cachedSearch)
+        let model = ReaderModel(deliverReply: queue.deliver)
+        defer { model.cancel() }
+        let (_, candidate) = try await fixture(model)
+        model.select(candidate); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        model.showCachedSearch(); model.cachedSearchQuery = "C1-FIRST"; model.searchCachedChapters()
+        try await wait { queue.pending != nil }
+        XCTAssertFalse(try XCTUnwrap(queue.pending?.reply as? CachedChapterResults).hits.isEmpty)
+        if leaveReader {
+            model.showShelf(); try await settle(model)
+        } else {
+            model.cachedSearchQuery = "ZZZNOMATCH"; model.searchCachedChapters()
+            try await wait { !model.cachedSearchBusy }
+            XCTAssertTrue(try XCTUnwrap(model.cachedSearchResults).hits.isEmpty)
+        }
+        try queue.replay()
+        XCTAssertFalse(model.cachedSearchBusy)
+        if leaveReader {
+            XCTAssertFalse(model.cachedSearchPresented); XCTAssertNil(model.cachedSearchResults)
+            XCTAssertEqual(model.route, .shelf)
+        } else {
+            XCTAssertTrue(model.cachedSearchPresented)
+            XCTAssertEqual(model.cachedSearchQuery, "ZZZNOMATCH")
+            XCTAssertTrue(try XCTUnwrap(model.cachedSearchResults).hits.isEmpty)
         }
     }
 

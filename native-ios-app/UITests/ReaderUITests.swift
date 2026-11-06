@@ -1,6 +1,74 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testCachedSearchNavigatesOriginalHitWithoutNetworkAndRestores() async throws {
+        let app = launchControlsReader()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        waitForStableViewport(app)
+        app.buttons["reader.previous"].tap()
+        wait(app) { self.state(app).contains("chapter=0;") }
+        waitForStableViewport(app)
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        let identity = readingIdentity(app)
+        let sourcePart = try XCTUnwrap(identity.first { $0.hasPrefix("source=") })
+        let requestsURL = try XCTUnwrap(URL(string: String(sourcePart.dropFirst("source=".count)) + "/control/requests"))
+        let (before, _) = try await URLSession.shared.data(from: requestsURL)
+        app.buttons["reader.cachedSearch"].tap()
+        let query = app.textFields["cachedSearch.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        enterParagraphFindQuery(app, query: query, number: "80")
+        let hit = app.buttons["cachedSearch.hit.0"]
+        XCTAssertTrue(hit.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["cachedSearch.partial"].exists)
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
+        capture("cached-search-portrait-results")
+        hit.tap()
+        wait(app) { self.state(app).contains("chapter=1;") && app.staticTexts["reader.find.status"].label == "1 of 1" }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        XCTAssertGreaterThan(position, 0)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") }
+        capture("cached-search-landscape-original-hit")
+        let (after, _) = try await URLSession.shared.data(from: requestsURL)
+        XCTAssertEqual(after, before)
+        wait(app) {
+            let columns = (app.staticTexts["fixture.stored"].value as? String ?? "").components(separatedBy: "|")
+            return columns.count > 7 && Int(columns[7]) == position
+        }
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 30)); book.tap()
+        wait(app) { self.state(app).contains("chapter=1;") }
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), position)
+    }
+
+    @MainActor func testCachedSearchNoMatchesAndDismissKeepsReadingPosition() throws {
+        let app = launchControlsReader()
+        defer { app.terminate() }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        app.buttons["reader.cachedSearch"].tap()
+        let query = app.textFields["cachedSearch.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["cachedSearch.submit"].isEnabled)
+        enterRomanFindQuery(app, query: query, text: "ZZZNOMATCH")
+        let empty = app.staticTexts["cachedSearch.empty"]
+        XCTAssertTrue(empty.waitForExistence(timeout: 10))
+        XCTAssertEqual(empty.label, "No matches in cached text.")
+        XCTAssertFalse(app.buttons["cachedSearch.hit.0"].exists)
+        capture("cached-search-no-matches")
+        app.buttons["cachedSearch.done"].tap()
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), position)
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
+    }
+
     @MainActor func testBookmarkSaveNavigateRelaunchAndDelete() throws {
         let app = launchControlsReader()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -196,8 +264,13 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.cells["第"].waitForExistence(timeout: 5)); app.cells["第"].tap()
         app.keyboards.keys["more"].firstMatch.tap()
         XCTAssertTrue(app.keyboards.keys["1"].waitForExistence(timeout: 5))
-        for digit in number { app.keyboards.keys[String(digit)].tap() }
-        app.keyboards.keys["more"].firstMatch.tap()
+        for digit in number {
+            // The IME can return to letters after a digit. Follow the visible layout.
+            let key = app.keyboards.keys[String(digit)]
+            if !key.exists { app.keyboards.keys["more"].firstMatch.tap() }
+            XCTAssertTrue(key.exists); key.tap()
+        }
+        if !app.keyboards.keys["d"].exists { app.keyboards.keys["more"].firstMatch.tap() }
         for key in ["d", "u", "a", "n"] { app.keyboards.keys[key].tap() }
         XCTAssertTrue(app.cells["段"].waitForExistence(timeout: 5)); app.cells["段"].tap()
         XCTAssertEqual(query.value as? String, "第\(number)段")

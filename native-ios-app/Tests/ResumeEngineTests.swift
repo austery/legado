@@ -2,6 +2,7 @@ import XCTest
 import ReaderEngine
 import CryptoKit
 import SQLite3
+@testable import NativeReader
 
 @MainActor
 final class ResumeEngineTests: XCTestCase {
@@ -13,6 +14,166 @@ final class ResumeEngineTests: XCTestCase {
 
     private func write(_ start: (@escaping (EngineReply) -> Void) -> Void) async -> EngineReply {
         await withCheckedContinuation { continuation in start { continuation.resume(returning: $0) } }
+    }
+
+    private func cachedSearch(_ engine: ReaderEngine, _ source: String, _ book: String, _ query: String) async throws -> CachedChapterResults {
+        let reply = await call { engine.searchCachedChapters(sourceId: source, bookId: book, query: query, completion: $0) }
+        return try XCTUnwrap(reply as? CachedChapterResults, "\(reply)")
+    }
+
+    private func searchStoredRows(_ book: String) throws -> [[String?]] {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("legado.db")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        var rows: [[String?]] = []
+        for (table, key) in [("books", "bookUrl"), ("native_reading_resume", "bookUrl"), ("native_bookmarks", "ownerBookUrl")] {
+            var statement: OpaquePointer?
+            XCTAssertEqual(sqlite3_prepare_v2(database, "SELECT * FROM \(table) WHERE \(key) = ? ORDER BY rowid", -1, &statement, nil), SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            book.withCString { value in
+                XCTAssertEqual(sqlite3_bind_text(statement, 1, value, -1, nil), SQLITE_OK)
+                var status = sqlite3_step(statement)
+                while status == SQLITE_ROW {
+                    rows.append([table] + (0..<sqlite3_column_count(statement)).map { column -> String? in
+                        guard let text = sqlite3_column_text(statement, column) else { return nil }
+                        return String(cString: text)
+                    })
+                    status = sqlite3_step(statement)
+                }
+                XCTAssertEqual(status, SQLITE_DONE)
+            }
+        }
+        return rows
+    }
+
+    private func searchSourceRequests(_ base: String) async throws -> [String] {
+        let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/control/requests")))
+        return try JSONDecoder().decode([String].self, from: data)
+    }
+
+    func testCachedSearchOriginalCoordinatesCoverageNoNetworkOrPersistenceAndVerifiedOpen() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (base, _, book, content) = try await fixture(engine)
+        let body = "😀first\n😀" + String(repeating: "a", count: 19) + "needle" + String(repeating: "b", count: 19) + "😀 tail"
+        try body.write(to: cacheURL(book: book, chapter: content.chapter), atomically: true, encoding: .utf8)
+        let before = try searchStoredRows(book.id)
+        let network = try await searchSourceRequests(base)
+        let results = try await cachedSearch(engine, base, book.id, "needle")
+        XCTAssertEqual(results.hits.count, 1)
+        XCTAssertEqual(results.cachedChapters, 1)
+        XCTAssertGreaterThan(results.totalChapters, results.cachedChapters)
+        XCTAssertEqual(results.examinedChapters, results.totalChapters)
+        XCTAssertFalse(results.truncated)
+        let hit = try XCTUnwrap(results.hits.first)
+        XCTAssertEqual(Int(hit.utf16Offset), (body as NSString).range(of: "needle").location)
+        XCTAssertEqual(hit.textUtf16Length, Int32(body.utf16.count))
+        XCTAssertFalse(hit.excerpt.contains("�"))
+        XCTAssertTrue(hit.excerpt.hasPrefix("😀"))
+        XCTAssertTrue(hit.excerpt.hasSuffix("😀"))
+        XCTAssertEqual(try searchStoredRows(book.id), before)
+        let opened = await call { engine.openCachedSearchHit(hit: hit, completion: $0) }
+        let reply = try XCTUnwrap(opened as? ContentReply)
+        XCTAssertEqual(reply.text, body)
+        XCTAssertTrue(reply.fromCache)
+        XCTAssertEqual(reply.reading?.paragraphUtf16Offset, 8)
+        XCTAssertEqual(try searchStoredRows(book.id), before)
+        let afterNetwork = try await searchSourceRequests(base)
+        XCTAssertEqual(afterNetwork, network)
+        let token = try XCTUnwrap(reply.reading?.token)
+        let saved = await write { engine.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: hit.utf16Offset, completion: $0) }
+        XCTAssertEqual((saved as? ReadingSaved)?.paragraphUtf16Offset, 8)
+    }
+
+    func testCachedSearchRejectsChangedMissingAndReplacedHitsWithoutFetching() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (base, _, book, content) = try await fixture(engine)
+        let path = cacheURL(book: book, chapter: content.chapter)
+        let before = try searchStoredRows(book.id)
+        let network = try await searchSourceRequests(base)
+        let initial = try await cachedSearch(engine, base, book.id, "C1-MIDDLE")
+        let hit = try XCTUnwrap(initial.hits.first)
+        try "Changed cached body".write(to: path, atomically: true, encoding: .utf8)
+        let changed = await call { engine.openCachedSearchHit(hit: hit, completion: $0) }
+        XCTAssertEqual((changed as? EngineFailure)?.code, .cacheUnavailable)
+        try FileManager.default.removeItem(at: path)
+        let missing = await call { engine.openCachedSearchHit(hit: hit, completion: $0) }
+        XCTAssertEqual((missing as? EngineFailure)?.code, .cacheUnavailable)
+        let empty = try await cachedSearch(engine, base, book.id, "C1-MIDDLE")
+        XCTAssertEqual(empty.cachedChapters, 0); XCTAssertTrue(empty.hits.isEmpty)
+        try content.text.write(to: path, atomically: true, encoding: .utf8)
+        let replaced = await call { engine.openCachedSearchHit(hit: hit, completion: $0) }
+        XCTAssertEqual((replaced as? EngineFailure)?.code, .staleUpdate)
+        XCTAssertEqual(try searchStoredRows(book.id), before)
+        let afterNetwork = try await searchSourceRequests(base)
+        XCTAssertEqual(afterNetwork, network)
+    }
+
+    func testCachedSearchCapUnicodeLiteralEmptyAndCancellation() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (base, _, book, content) = try await fixture(engine)
+        let path = cacheURL(book: book, chapter: content.chapter)
+        try String(repeating: "😀 needle a.* 中文 ", count: 201).write(to: path, atomically: true, encoding: .utf8)
+        let before = try searchStoredRows(book.id)
+        let capped = try await cachedSearch(engine, base, book.id, "needle")
+        XCTAssertEqual(capped.hits.count, 200); XCTAssertTrue(capped.truncated)
+        XCTAssertEqual(capped.hits.first?.utf16Offset, 3)
+        let literal = try await cachedSearch(engine, base, book.id, "a.*")
+        XCTAssertEqual(literal.hits.count, 200)
+        let unicode = try await cachedSearch(engine, base, book.id, "中文")
+        XCTAssertEqual(unicode.hits.first?.utf16Offset, 14)
+        let blank = await call { engine.searchCachedChapters(sourceId: base, bookId: book.id, query: " ", completion: $0) }
+        XCTAssertEqual((blank as? EngineFailure)?.code, .invalidInput)
+        let cancelled: EngineReply = await withCheckedContinuation { continuation in
+            let request = engine.searchCachedChapters(sourceId: base, bookId: book.id, query: "needle") { continuation.resume(returning: $0) }
+            request.cancel()
+        }
+        XCTAssertEqual((cancelled as? EngineFailure)?.code, .cancelled)
+        XCTAssertEqual(try searchStoredRows(book.id), before)
+    }
+
+    func testCachedSearchMatchesCurrentChapterFindForNonBlankUnicodeQueries() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (base, _, book, content) = try await fixture(engine)
+        let body = "猫😀猫\nCat cat\né e\u{301}\n😀 a.* aaaaa"
+        try body.write(to: cacheURL(book: book, chapter: content.chapter), atomically: true, encoding: .utf8)
+        let find = ChapterFindSession()
+        find.open(ChapterFindContext(chapterKey: content.chapter.id, readingIdentity: "parity", text: body))
+        for query in ["猫", "😀", "cat", "Cat", "é", "e\u{301}", "a.*", "aa", "missing"] {
+            find.query = query
+            let result = try await cachedSearch(engine, base, book.id, query)
+            XCTAssertEqual(result.hits.map { NSRange(location: Int($0.utf16Offset), length: Int($0.utf16Length)) }, find.matches, query)
+        }
+    }
+
+    func testCachedSearchRejectsOldSourceAfterExplicitSourceSwitch() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (base, json, book, _) = try await fixture(engine)
+        let results = try await cachedSearch(engine, base, book.id, "C1-MIDDLE")
+        let hit = try XCTUnwrap(results.hits.first)
+        let alternate = base + "-alternate"
+        _ = await call { engine.importSources(json: json.replacingOccurrences(of: base, with: alternate), completion: $0) }
+        let search = await call { engine.search(sourceId: alternate, query: "Path", page: 1, completion: $0) }
+        let candidate = try XCTUnwrap((search as? SearchReply)?.books.first)
+        _ = await call { engine.loadBook(sourceId: alternate, bookId: candidate.id, completion: $0) }
+        let toc = await call { engine.loadToc(sourceId: alternate, bookId: candidate.id, completion: $0) }
+        let chapter = try XCTUnwrap((toc as? TocReply)?.chapters.first)
+        let prepared = await call { engine.prepareSourceSwitch(oldSourceId: base, oldBookId: book.id,
+            sourceId: alternate, bookId: candidate.id, chapterId: chapter.id, completion: $0) }
+        let plan = try XCTUnwrap(prepared as? SourceSwitchPrepared)
+        let committed = await call { engine.commitSourceSwitch(token: plan.token, completion: $0) }
+        XCTAssertEqual((committed as? ShelfEntryReply)?.entry.book.sourceId, alternate)
+        let before = try searchStoredRows(candidate.id)
+        let network = try await searchSourceRequests(base)
+        let otherNetwork = try await searchSourceRequests(alternate)
+        let rejected = await call { engine.openCachedSearchHit(hit: hit, completion: $0) }
+        XCTAssertEqual((rejected as? EngineFailure)?.code, .notFound)
+        let oldSearch = await call { engine.searchCachedChapters(sourceId: base, bookId: book.id, query: "C1-MIDDLE", completion: $0) }
+        XCTAssertEqual((oldSearch as? EngineFailure)?.code, .notFound)
+        XCTAssertEqual(try searchStoredRows(candidate.id), before)
+        let afterNetwork = try await searchSourceRequests(base)
+        let afterOtherNetwork = try await searchSourceRequests(alternate)
+        XCTAssertEqual(afterNetwork, network); XCTAssertEqual(afterOtherNetwork, otherNetwork)
     }
 
     private func fixture(_ engine: ReaderEngine) async throws -> (String, String, BookSnapshot, ContentReply) {
