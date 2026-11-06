@@ -91,6 +91,25 @@ class ReaderEngine {
             .map { it.chapter.url }.toSet()
     }
 
+    private val cachedSearch = CachedChapterSearch(sessionId, offlineCache::entry)
+
+    fun searchCachedChapters(sourceId: String, bookId: String, query: String,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion,
+            requiresReady = false, interruptCache = false, serialized = false) {
+        EngineHost.gate.withLock {
+            if (!initialized || closed.value) throw InvalidInput("Initialize this engine session first")
+        }
+        if (query.isBlank()) throw InvalidInput("Enter search text")
+        cachedSearch.search(sourceId, bookId, query)
+    }
+
+    fun openCachedSearchHit(hit: CachedChapterHit,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        val entry = cachedSearch.verify(hit)
+        acceptShelfEntry(entry)
+        chapterContent(hit.sourceId, hit.bookId, hit.chapterId, true, false, searchHit = hit)
+    }
+
     fun offlineStatus(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest =
         request(completion, interruptCache = false) { offlineCache.status(sourceId, bookId) }
 
@@ -605,7 +624,8 @@ class ReaderEngine {
     }
 
     private suspend fun chapterContent(sourceId: String, bookId: String, chapterId: String,
-        cacheOnly: Boolean, restore: Boolean, bookmark: NativeBookmark? = null): EngineReply {
+        cacheOnly: Boolean, restore: Boolean, bookmark: NativeBookmark? = null,
+        searchHit: CachedChapterHit? = null): EngineReply {
         val book = book(sourceId, bookId)
         val toc = chapters[sourceId to bookId] ?: throw MissingEntity("Load the table of contents first")
         val position = toc.indexOfFirst { it.url == chapterId }
@@ -615,7 +635,8 @@ class ReaderEngine {
         val cached = BookStorageProviders.get().getContent(book, chapter)?.takeIf { it.isNotEmpty() }
         val expected = saved?.takeIf { it.chapterUrl == chapterId }
         val usable = cached?.takeIf {
-            if (bookmark != null) bookmarkMatches(bookmark, it)
+            if (searchHit != null) cachedSearch.matches(searchHit, it)
+            else if (bookmark != null) bookmarkMatches(bookmark, it)
             else expected == null || (NativeBodyCoordinates.sha256(it) == expected.textSha256 && it.length == expected.textUtf16Length)
         }
         var storageNotice = ""
@@ -649,7 +670,8 @@ class ReaderEngine {
         val shelf = try { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
             catch (error: NativeShelfException) { if (error.failure == NativeShelfFailure.NOT_ON_SHELF) null else throw error }
         val reading = shelf?.let {
-            var offset = bookmark?.paragraphUtf16Offset ?: 0
+            var offset = searchHit?.let { hit -> NativeBodyCoordinates.paragraphStart(content, hit.utf16Offset) }
+                ?: bookmark?.paragraphUtf16Offset ?: 0
             var notice = ""
             var canSave = storageNotice.isEmpty()
             if (saved != null && saved.textVersion != NativeBodyCoordinates.VERSION) {
@@ -673,7 +695,7 @@ class ReaderEngine {
                     }
                 }
             }
-            if (bookmark != null && !canSave) throw UnsupportedOperationException(notice)
+            if ((bookmark != null || searchHit != null) && !canSave) throw UnsupportedOperationException(notice)
             val token = NSUUID().UUIDString
             ReadingSessions.tokens[token] = ReadingSession(sessionId, sourceId, bookId, chapter,
                 content, saved?.revision ?: 0, canSave, NativeChapterProjection.from(it.book), storageNotice)
@@ -766,7 +788,7 @@ class ReaderEngine {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun request(completion: (EngineReply) -> Unit, requiresReady: Boolean = true, interruptCache: Boolean = true,
-        action: suspend () -> EngineReply): EngineRequest {
+        serialized: Boolean = true, action: suspend () -> EngineReply): EngineRequest {
         val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val operationJob = currentCoroutineContext().job
             var createdReadingToken: String? = null
@@ -775,8 +797,7 @@ class ReaderEngine {
                 withContext(Dispatchers.Default + WebBookResponsePolicy { response ->
                     if (!response.isSuccessful()) throw HttpFailure(response.code())
                 }) {
-                    EngineHost.gate.withLock {
-                        EngineHost.withOperation {
+                    suspend fun execute(): EngineReply = EngineHost.withOperation {
                             try {
                                 if (requiresReady && !initialized) throw InvalidInput("Initialize this engine session first")
                                 val result = action()
@@ -789,8 +810,8 @@ class ReaderEngine {
                                 currentCoroutineContext().ensureActive()
                                 EngineHost.interactionFailure() ?: failure(e)
                             }
-                        }
                     }
+                    if (serialized) EngineHost.gate.withLock { execute() } else execute()
                 }
             } catch (e: CancellationException) {
                 EngineFailure(EngineErrorCode.CANCELLED, "Request cancelled")

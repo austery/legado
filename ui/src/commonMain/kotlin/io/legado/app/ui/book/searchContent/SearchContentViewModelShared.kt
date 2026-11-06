@@ -127,7 +127,7 @@ class SearchContentViewModelShared(
         val mContent = ContentProcessorProviders.get().getContent(
             book, chapter, chapterContent, useReplace = replaceEnabled
         ).toString()
-        val positions = searchPosition(mContent, query)
+        val positions = LiteralTextSearch.positions(mContent, query)
         positions.forEachIndexed { index, position ->
             currentCoroutineContext().ensureActive()
             val construct = getResultAndQueryIndex(mContent, position, query)
@@ -207,16 +207,6 @@ class SearchContentViewModelShared(
      * 对照原 SearchContentViewModel.searchPosition: 纯函数, 直接复用。
      * 每次循环 ensureActive 检查协程取消 (与原一致)。
      */
-    private suspend fun searchPosition(content: String, pattern: String): List<Int> {
-        val position: MutableList<Int> = mutableListOf()
-        var index = content.indexOf(pattern)
-        while (index >= 0) {
-            currentCoroutineContext().ensureActive()
-            position.add(index)
-            index = content.indexOf(pattern, index + pattern.length)
-        }
-        return position
-    }
 
     /**
      * 截取 queryIndexInContent 周围 length 个字符作为搜索结果展示文本,

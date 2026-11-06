@@ -1,11 +1,11 @@
 # Cached chapter search: upstream characterization and proposed native boundary
 
 Date: 2026-11-05, America/Toronto.
-Status: characterization and review in progress; proposed shared-contract budget awaits owner assessment.
+Status: H1 approved on 2026-11-05; implementation in progress; H2 and merge approval pending.
 
 ## Owner boundary
 
-Lei selected cached-chapter search after PR #64. The owner asked to verify upstream search against original-text coordinates before choosing the minimum integration, to prefer existing implementations, and to add no database table. Final independent review must use Antigravity Opus 5.5 or Gemini 4. This authorization covers the characterization and proposal. It does not approve a new shared interface, persistence change or later PR merge.
+Lei selected cached-chapter search after PR #64. The owner asked to verify upstream search against original-text coordinates before choosing the minimum integration, to prefer existing implementations, and to add no database table. Final independent review must use Antigravity Opus 5.5 or Gemini 4. Lei approved the minimum proposal in this chat on 2026-11-05: implement within this scope, add no tables or dependencies, run simulator tests and CI, obtain Antigravity Opus 5.5 or Gemini 4 review, and present results before merge. This approves the shared matcher and two bridge operations below, but no later PR merge.
 
 Baseline: merged PR #64, `033969f346db94b3d60bed97f820dd44334bb922`. Integrated KMP upstream: `d31c0a270e7c8610e9679dbbda5a6bee06927952`. No upstream upgrade is included.
 
@@ -34,7 +34,7 @@ Seven JVM tests passed at `8dc4728c663c0b1d2c7a947a4028edbc79140974` with no fai
 
 The first run failed in five fixture teardown assertions. The expected Book object had lazily initialized an in-memory read configuration during processing. The persisted row had not changed. The fixture now compares separate persisted before/after snapshots, retaining full-row equality. Failed logs and XML remain part of the evidence at `/Users/leipeng/Documents/Codex/legado-cached-search-characterization-20261105`.
 
-### Proposed minimum integration, pending H1 assessment
+### H1-approved minimum integration
 
 1. Search only the current shelf book's cached chapters, in catalog order. Match the original cached body literally and case-sensitively. Exclude titles, replacement rules, conversion, regular expressions, other books and downloads. Blank input starts no search.
 2. Extract only the existing pure matching logic into the lower data module. Both the upstream search model and native adapter call it. Keep upstream processed-text and snippet behavior unchanged. The upstream snippet window can split a surrogate pair; characterize that behavior but do not reuse it for the native display. A native-only excerpt adapter must clamp its window to valid Unicode boundaries. Do not make engine-ios depend on the UI module, replace a process-wide provider, or fork parsing/source rules.
@@ -43,12 +43,22 @@ The first run failed in five fixture teardown assertions. The expected Book obje
 5. Before opening a hit, recheck identity, cached body fingerprint and literal range. Reject stale or missing text with a rerun action. Do not fetch or silently jump elsewhere. Use the existing paragraph coordinate for navigation; highlight the exact match in that paragraph. This needs a dedicated hit-open adapter: the current bookmark route can fetch and cannot be called as-is. Validate the hit fingerprint independently of the saved resume fingerprint, then preserve guarded resume writes. Search itself writes no progress. A successful explicit navigation uses the existing guarded resume path.
 6. Add one search sheet and an entry from the reader. Reuse existing loading/error patterns and current-chapter highlighting where compatible. Keep existing current-chapter find behavior intact.
 
-Budget: one shared pure matcher, one native excerpt adapter, two bridge operations and their typed DTOs, one native sheet. Zero new tables, migrations, dependencies, persistent indexes or search history. Shared-interface changes require owner assessment under ADR-002 before production implementation. If the extraction cannot preserve upstream behavior in this budget, return the trade-off to the owner.
+Budget: one shared pure matcher, one native excerpt adapter, two bridge operations and their typed DTOs, one native sheet. Zero new tables, migrations, dependencies, persistent indexes or search history. The owner approved this shared-interface budget under ADR-002 on 2026-11-05. If the extraction cannot preserve upstream behavior in this budget, return the trade-off to the owner.
 
-Trade-off for H1: extracting the matcher edits an upstream-owned file and adds a shared API for roughly 15 lines. An engine-local matcher avoids that upstream diff but duplicates behavior. Matching in Swift reuses ChapterFindSession but moves cached-body transfer and work across the bridge. The proposed extraction keeps one Kotlin matcher; require parity with existing Swift current-chapter find. This is a proposal, not an approved architectural choice.
+Trade-off for H1: extracting the matcher edits an upstream-owned file and adds a shared API for roughly 15 lines. An engine-local matcher avoids that upstream diff but duplicates behavior. Matching in Swift reuses ChapterFindSession but moves cached-body transfer and work across the bridge. The proposed extraction keeps one Kotlin matcher; require parity with existing Swift current-chapter find. The owner approved the proposed extraction in H1.
 
 Acceptance must cover literal/Unicode parity, Unicode-safe excerpts, partial and missing caches, visible truncation, empty query, cancellation and stale generations, changed-body/source rejection, zero search network requests, unchanged native persisted state during search, and an actual simulator search-to-hit navigation journey. JVM characterization does not establish these future native behaviors.
 
 ## Review and delivery gates
 
-The owner-selected reviewer is Antigravity Opus 5.5 or Gemini 4. Review targets an immutable characterization/proposal candidate and its evidence. This review cannot certify unimplemented product behavior. Product H2, owner approval of the proposed shared-interface budget and explicit approval for any later PR merge remain separate.
+The owner-selected reviewer is Antigravity Opus 5.5 or Gemini 4. Review targets an immutable characterization/proposal candidate and its evidence. This review cannot certify unimplemented product behavior. Product H2, explicit approval for any later PR merge remain separate.
+
+## Implementation and recovery record
+
+- Goal: search cached original chapters without downloads or new persistence, then open a verified match.
+- H1: approved by Lei in the 2026-11-05 chat message starting "批准这个最小方案".
+- Acceptance: shared matcher parity, native engine failure paths, real simulator controls/navigation, full C1, final independent review. Physical-device comfort and live sources remain outside these synthetic checks.
+- Recovery: revert the implementation commits. No format changes or migrations. Searches write no data; explicit hit navigation uses existing guarded progress writes, so a code revert does not undo the owner's later reading position.
+- Risk: cross-module shared matcher and bridge changes; inspect original UI and native consumers. No low-risk automatic merge claim.
+- H2: pending owner's assessment of the delivered normal and failure journeys.
+- Merge: requires separate explicit approval for the PR.

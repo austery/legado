@@ -19,6 +19,12 @@ struct ChapterFindContext: Equatable {
     }
 }
 
+struct CachedSearchSelection: Equatable {
+    let token: String
+    let query: String
+    let range: NSRange
+}
+
 struct ChapterFindRequest: Equatable {
     let id: UUID
     let range: NSRange
@@ -50,6 +56,15 @@ final class ChapterFindSession: ObservableObject {
         query = ""
         matches = []
         selectedIndex = nil
+    }
+
+    func reveal(_ selection: CachedSearchSelection, in context: ChapterFindContext) {
+        guard selection.token == context.readingIdentity else { return }
+        open(context)
+        query = selection.query
+        guard let index = matches.firstIndex(of: selection.range) else { close(); return }
+        selectedIndex = index
+        request = ChapterFindRequest(id: UUID(), range: selection.range)
     }
 
     func updateContext(_ current: ChapterFindContext?) {

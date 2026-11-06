@@ -17,6 +17,72 @@ final class ReaderModel: ObservableObject {
         self.deliverReply = deliverReply
     }
 
+    @Published var cachedSearchPresented = false
+    @Published var cachedSearchQuery = "" { didSet { resetCachedSearch() } }
+    @Published private(set) var cachedSearchResults: CachedChapterResults?
+    @Published private(set) var cachedSearchNotice: String?
+    @Published private(set) var cachedSearchBusy = false
+    @Published private(set) var cachedSearchSelection: CachedSearchSelection?
+    private var cachedSearchRequest: EngineRequest?
+    private var cachedSearchGeneration = UUID()
+
+    func showCachedSearch() {
+        guard isShelved, !busy, route == .reading else { return }
+        cachedSearchQuery = ""
+        cachedSearchPresented = true
+    }
+
+    private func resetCachedSearch() {
+        cachedSearchRequest?.cancel(); cachedSearchRequest = nil
+        cachedSearchGeneration = UUID()
+        cachedSearchBusy = false; cachedSearchResults = nil; cachedSearchNotice = nil
+    }
+
+    func closeCachedSearch() {
+        resetCachedSearch()
+        cachedSearchPresented = false
+    }
+
+    func cancelCachedSearch() {
+        resetCachedSearch()
+        cachedSearchNotice = "Search cancelled."
+    }
+
+    func searchCachedChapters() {
+        guard let book, isShelved, !busy else { return }
+        resetCachedSearch()
+        guard !cachedSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let stamp = cachedSearchGeneration
+        let context = generation
+        cachedSearchBusy = true
+        cachedSearchRequest = engine.searchCachedChapters(sourceId: book.sourceId, bookId: book.id, query: cachedSearchQuery) { [weak self] reply in
+            guard let self, self.generation == context, self.cachedSearchGeneration == stamp,
+                  self.cachedSearchPresented else { return }
+            self.cachedSearchBusy = false; self.cachedSearchRequest = nil
+            if let result = reply as? CachedChapterResults { self.cachedSearchResults = result }
+            if let failure = reply as? EngineFailure { self.cachedSearchNotice = failure.message }
+        }
+    }
+
+    func openCachedSearchHit(_ hit: CachedChapterHit) {
+        guard !busy, !cachedSearchBusy, let book,
+              book.id == hit.bookId, book.sourceId == hit.sourceId,
+              cachedSearchResults?.hits.contains(where: { $0 === hit }) == true else { return }
+        let previous = content
+        closeCachedSearch()
+        perform(retry: { [weak self] in self?.showCachedSearch() }, failure: { [weak self] failure in
+            guard let self else { return }
+            self.cachedSearchPresented = true
+            self.cachedSearchNotice = "\(failure.message) Run the search again."
+            if let previous, previous.reading?.canSave == true { self.recoverDisplayedReading(previous, allowPrefetch: false) }
+        }, start: { self.engine.openCachedSearchHit(hit: hit, completion: $0) }) { [weak self] reply in
+            guard let self, let result = reply as? ContentReply, let reading = result.reading else { return }
+            self.acceptContent(result, allowPrefetch: false)
+            self.cachedSearchSelection = CachedSearchSelection(token: reading.token, query: hit.query,
+                range: NSRange(location: Int(hit.utf16Offset), length: Int(hit.utf16Length)))
+        }
+    }
+
     @Published var bookmarksPresented = false
     @Published private(set) var bookmarks: [BookmarkSnapshot] = []
     @Published private(set) var bookmarkNotice: String?
@@ -809,14 +875,14 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    private func recoverDisplayedReading(_ previous: ContentReply) {
+    private func recoverDisplayedReading(_ previous: ContentReply, allowPrefetch: Bool = true) {
         let token = generation
         busy = true
         request = engine.openReading(sourceId: previous.chapter.sourceId, bookId: previous.chapter.bookId, cacheOnly: true) { [weak self] reply in
             guard let self, self.generation == token else { return }
             self.busy = false; self.request = nil
             if let restored = reply as? ContentReply {
-                self.acceptContent(restored)
+                self.acceptContent(restored, allowPrefetch: allowPrefetch)
             } else {
                 self.resumeNotice = "Previous text remains visible, but its saved position could not be reopened. Retry before continuing."
             }
@@ -854,7 +920,8 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    private func acceptContent(_ reply: ContentReply) {
+    private func acceptContent(_ reply: ContentReply, allowPrefetch: Bool = true) {
+        cachedSearchSelection = nil
         bookmarkOffset = nil
         bookmarkPositionAvailable = false
         bookmarkBusy = false
@@ -864,7 +931,7 @@ final class ReaderModel: ObservableObject {
         resumeNotice = reply.reading?.restoreNotice.isEmpty == false ? reply.reading?.restoreNotice : nil
         refreshOfflineStatus()
         // Deliver content first; automatic work is bounded and never restores a prior batch.
-        Task { [weak self] in self?.cacheNextChapters(prefetch: true) }
+        if allowPrefetch { Task { [weak self] in self?.cacheNextChapters(prefetch: true) } }
     }
 
     var readingRestoration: ReadingRestoration? {
@@ -951,6 +1018,7 @@ final class ReaderModel: ObservableObject {
         guard !committingSwitch else { return }
         if !preservingDiscovery { discovery.retire() }
         retireSearch()
+        closeCachedSearch()
         generation = UUID(); request?.cancel(); request = nil
         bookmarkRequest?.cancel(); bookmarkRequest = nil
         bookmarkGeneration = UUID(); bookmarkBusy = false

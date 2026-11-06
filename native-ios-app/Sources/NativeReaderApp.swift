@@ -125,6 +125,7 @@ struct ReaderScreen: View {
             }
             .sheet(isPresented: $settings) { typography }
             .sheet(isPresented: $model.bookmarksPresented, onDismiss: model.closeBookmarks) { BookmarkSheet(model: model) }
+            .sheet(isPresented: $model.cachedSearchPresented, onDismiss: model.closeCachedSearch) { CachedSearchSheet(model: model) }
             .alert("Clear optional cached chapters?", isPresented: Binding(
                 get: { model.cacheClearPlan != nil },
                 set: { if !$0 { model.cacheClearPlan = nil } })) {
@@ -144,7 +145,13 @@ struct ReaderScreen: View {
                 if route == .reading { menu = true }
                 else { model.closeBookmarks() }
             }
-            .onChange(of: findContext) { chapterFind.updateContext($0) }
+            .onChange(of: findContext) {
+                chapterFind.updateContext($0)
+                if let context = $0, let selection = model.cachedSearchSelection { chapterFind.reveal(selection, in: context) }
+            }
+            .onChange(of: model.cachedSearchSelection) { selection in
+                if let selection, let context = findContext { chapterFind.reveal(selection, in: context) }
+            }
             .onChange(of: model.book?.id) { _ in catalogQuery = "" }
             .onChange(of: model.book?.sourceId) { _ in catalogQuery = "" }
             .preferredColorScheme(style.dark ? .dark : .light)
@@ -460,6 +467,8 @@ struct ReaderScreen: View {
                     if let context = findContext { chapterFind.open(context) }
                 }.accessibilityIdentifier("reader.find").disabled(model.busy || findContext == nil)
                 if model.isShelved {
+                    Button("Search cached chapters", action: model.showCachedSearch)
+                        .accessibilityIdentifier("reader.cachedSearch").disabled(model.busy)
                     HStack {
                         Button("Save bookmark", action: model.saveCurrentBookmark)
                             .accessibilityIdentifier("reader.addBookmark").disabled(!model.canSaveBookmark)

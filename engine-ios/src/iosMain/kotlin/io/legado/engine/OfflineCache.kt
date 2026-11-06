@@ -44,7 +44,7 @@ internal class OfflineCache(private val scope: CoroutineScope,
     private val dao get() = AppDatabaseProviders.get().appDb.nativeShelfDao
     private val storage get() = BookStorageProviders.get()
 
-    private suspend fun entry(source: String, book: String): NativeShelfEntry {
+    internal suspend fun entry(source: String, book: String): NativeShelfEntry {
         val entry = dao.openBook(source, book)
         val folder = storage.getFolderName(entry.book)
         check(folder.isNotEmpty() && '/' !in folder && '\\' !in folder && folder != "." && folder != "..") {
