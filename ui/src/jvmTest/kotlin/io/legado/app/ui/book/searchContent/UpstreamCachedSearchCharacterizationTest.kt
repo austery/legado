@@ -16,6 +16,8 @@ import io.legado.app.help.book.ContentProcessorProviders
 import io.legado.app.help.book.ContentProcessorShared
 import io.legado.app.help.book.DefaultContentProcessorDeps
 import io.legado.app.help.book.JvmBookStorage
+import io.legado.app.help.book.chineseT2S
+import io.legado.app.help.book.chineseS2T
 import io.legado.app.help.config.AppConfigAccessor
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.ui.book.info.edit.BookInfoEditIdentityIntegrationTest.TestDatabaseAccessor
@@ -85,6 +87,22 @@ class UpstreamCachedSearchCharacterizationTest {
             assertFalse(f.storage.getContent(f.book, chapter)!!.contains("needle"))
             f.model.replaceEnabled = false
             assertTrue(f.model.searchChapter("needle", chapter).isEmpty())
+        }
+    }
+
+    @Test
+    fun chineseConversionCanCreateAnUnmappableOriginalQuery() = runBlocking {
+        fixture { f ->
+            val chapter = f.chapter(0)
+            val body = "這是繁體中文"
+            f.cache(chapter, body)
+            f.conversion.set(1)
+            val result = f.model.searchChapter("繁体", chapter).single()
+            assertEquals(12, result.queryIndexInChapter)
+            assertFalse(body.contains("繁体"))
+            assertEquals(body, f.storage.getContent(f.book, chapter))
+            f.conversion.set(0)
+            assertTrue(f.model.searchChapter("繁体", chapter).isEmpty())
         }
     }
 
@@ -159,7 +177,7 @@ class UpstreamCachedSearchCharacterizationTest {
 
     private class Fixture(val database: AppDatabase, val book: Book, val storage: JvmBookStorage,
         val processor: Processor, val scope: CoroutineScope, val model: SearchContentViewModelShared,
-        val requests: AtomicInteger, val reads: MutableList<String>) {
+        val requests: AtomicInteger, val reads: MutableList<String>, val conversion: AtomicInteger) {
         fun chapter(index: Int) = BookChapter(url = "${book.origin}/chapter/$index", bookUrl = book.bookUrl,
             index = index, title = "Chapter ${index + 1}")
         suspend fun cache(chapter: BookChapter, body: String) {
@@ -188,11 +206,12 @@ class UpstreamCachedSearchCharacterizationTest {
                 durChapterIndex = 4, durChapterPos = 27, durChapterTime = 123)
             val storage = JvmBookStorage(directory.resolve("cache").absolutePath)
             val reads = mutableListOf<String>()
+            val conversion = AtomicInteger(0)
             AppDbProviders.register(TestDatabaseAccessor(database))
             AppConfigProviders.register(Proxy.newProxyInstance(AppConfigAccessor::class.java.classLoader,
                 arrayOf(AppConfigAccessor::class.java)) { _, method, _ ->
                 when (method.name) {
-                    "getChineseConverterType" -> 0
+                    "getChineseConverterType" -> conversion.get()
                     "getReplaceEnableDefault" -> true
                     else -> error("Unexpected config read: ${method.name}")
                 }
@@ -206,14 +225,19 @@ class UpstreamCachedSearchCharacterizationTest {
             val processor = Processor(ContentProcessorShared(book.name, book.origin, DefaultContentProcessorDeps()))
             ContentProcessorProviders.register(processor)
             database.bookDao.insert(book)
+            val storedBeforeSearch = database.bookDao.getBook(book.bookUrl)
             val model = SearchContentViewModelShared(scope) { type, title ->
-                check(type == 0); title
+                when (type) {
+                    1 -> chineseT2S(title)
+                    2 -> chineseS2T(title)
+                    else -> title
+                }
             }
             val ready = CompletableDeferred<Unit>()
             model.initBook(success = { ready.complete(Unit) }, book = book)
             withTimeout(5_000) { ready.await() }
-            withTimeout(10_000) { block(Fixture(database, book, storage, processor, scope, model, requests, reads)) }
-            assertEquals(book, database.bookDao.getBook(book.bookUrl), "Search must not write shared reading progress")
+            withTimeout(10_000) { block(Fixture(database, book, storage, processor, scope, model, requests, reads, conversion)) }
+            assertEquals(storedBeforeSearch, database.bookDao.getBook(book.bookUrl), "Search must not write the stored book record")
             assertEquals(0, requests.get(), "Cached search must not fetch source content")
         } finally {
             job.cancelAndJoin()
