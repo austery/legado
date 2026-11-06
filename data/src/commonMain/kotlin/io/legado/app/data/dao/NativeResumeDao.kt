@@ -81,7 +81,7 @@ abstract class NativeResumeDao {
         val book = book(bookUrl) ?: fail(NativeResumeFailure.NOT_ON_SHELF, "Book is not stored")
         if (book.origin != sourceId) fail(NativeResumeFailure.IDENTITY_CONFLICT, "Book source changed")
         if (book.type and BookType.notShelf != 0 || book.type and BookType.text == 0 ||
-            book.type and BookType.local != 0 || book.origin == BookType.localTag || book.origin.startsWith(BookType.webDavTag)) {
+            (book.type and BookType.local != 0 && !NativeLocalTxt.owns(book)) || book.origin == BookType.localTag || book.origin.startsWith(BookType.webDavTag)) {
             fail(NativeResumeFailure.NOT_ON_SHELF, "Book is not on the native text shelf")
         }
         val chapter = chapter(bookUrl, chapterUrl)

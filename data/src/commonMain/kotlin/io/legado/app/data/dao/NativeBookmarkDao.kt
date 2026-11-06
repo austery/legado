@@ -32,7 +32,7 @@ abstract class NativeBookmarkDao {
         val record = book(bookUrl) ?: throw NativeShelfException(NativeShelfFailure.NOT_ON_SHELF, "Book is not stored")
         if (record.origin != sourceId) throw NativeShelfException(NativeShelfFailure.IDENTITY_CONFLICT, "Book source changed")
         if (record.type and BookType.notShelf != 0 || record.type and BookType.text == 0 ||
-            record.type and BookType.local != 0 || record.origin == BookType.localTag || record.origin.startsWith(BookType.webDavTag)) {
+            (record.type and BookType.local != 0 && !NativeLocalTxt.owns(record)) || record.origin == BookType.localTag || record.origin.startsWith(BookType.webDavTag)) {
             throw NativeShelfException(NativeShelfFailure.NOT_ON_SHELF, "Add this text book to the shelf before using bookmarks")
         }
         return record

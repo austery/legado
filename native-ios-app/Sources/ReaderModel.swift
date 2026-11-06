@@ -257,7 +257,7 @@ final class ReaderModel: ObservableObject {
         }
     }
     func cacheNextChapters(prefetch: Bool = false) {
-        guard isShelved, let book, foregroundActive, !busy,
+        guard isShelved, let book, !book.isLocal, foregroundActive, !busy,
               !prefetch || (prefetchEnabled && content != nil) else { return }
         cancelCaching()
         cacheNotice = nil
@@ -511,6 +511,19 @@ final class ReaderModel: ObservableObject {
             self.selectedSourceIDs.formIntersection(self.sources.map(\.id))
             if thenShelf { self.refreshShelf() }
             else if thenManaged { self.refreshManagedSources() }
+        }
+    }
+
+    func importTxt(_ url: URL) {
+        perform(preservingReading: true, retry: { [weak self] in self?.importTxt(url) }, start: { completion in
+            let scoped = url.startAccessingSecurityScopedResource()
+            return self.engine.importTxt(path: url.path, filename: url.lastPathComponent) { reply in
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                completion(reply)
+            }
+        }) { [weak self] reply in
+            guard let self, reply is ShelfEntryReply else { return }
+            self.refreshShelf()
         }
     }
 

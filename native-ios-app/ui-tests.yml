@@ -4,9 +4,12 @@ targets:
     templates: [ReaderOrientations]
     type: application
     platform: iOS
-    sources: [Sources, UITestHost]
+    sources: [Sources, UITestHost, ../ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json]
     info:
       path: UITestHost/Info.plist
+      properties:
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.legado.pathc.ui-fixture

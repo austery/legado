@@ -136,6 +136,17 @@ internal object EngineHost {
         registerNativeSourceProviders()
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()
+        io.legado.app.model.fileBook.registerNativeFileBookAccessor()
+        io.legado.app.help.book.registerIosLocalBookLocator()
+        if (runCatching { io.legado.app.help.DefaultDataResourceProviders.get() }.isFailure) {
+            io.legado.app.help.DefaultDataResourceProviders.register(object : io.legado.app.help.DefaultDataResourceProvider {
+                override fun readResource(name: String): String {
+                    val path = platform.Foundation.NSBundle.mainBundle.pathForResource(name.substringBeforeLast('.'), "json")
+                    if (path == null && name != "txtTocRule.json") return "[]"
+                    return io.legado.app.utils.File(requireNotNull(path) { "Missing bundled TXT chapter rules" }).readText()
+                }
+            })
+        }
         RuleRegexes.register(IosRuleRegex)
         registerRuleRegexForJsonPath()
         registerInteractionProviders()

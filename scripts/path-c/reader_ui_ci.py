@@ -36,6 +36,7 @@ def main() -> None:
                    'ReaderUITests/testCachedSearchNoMatchesAndDismissKeepsReadingPosition',
                    'ReaderUITests/testShelfSortMenuAndRelaunch',
                    'ReaderUITests/testManualChapterCheckKeepsSavedReadingPosition',
+                   'ReaderUITests/testLocalTxtPickerDuplicateAndOfflineRelaunch',
                    'ReaderUITests/testBookmarkSaveNavigateRelaunchAndDelete',
                    'ReaderUITests/testNativeTouchCopyPortrait',
                    'ReaderUITests/testNativeTouchCopyWithChapterFind',

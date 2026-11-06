@@ -1,6 +1,67 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testLocalTxtPickerDuplicateAndOfflineRelaunch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "local-txt"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        defer { app.terminate() }
+        func choose(_ name: String) {
+            let importButton = app.buttons["shelf.importTxt"]
+            XCTAssertTrue(importButton.waitForExistence(timeout: 40)); importButton.tap()
+            let browse = app.buttons["Browse"]
+            if browse.waitForExistence(timeout: 5) { browse.tap() }
+            let local = app.staticTexts["On My iPad"]
+            if local.waitForExistence(timeout: 5) { local.tap() }
+            let folder = app.staticTexts["Native Reader C2"]
+            if folder.waitForExistence(timeout: 5) { folder.tap() }
+            let file = app.cells[name + ", txt"]
+            XCTAssertTrue(file.waitForExistence(timeout: 10), app.debugDescription)
+            file.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        }
+        choose("Local Journey")
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 20), app.debugDescription); row.tap()
+        waitForStableViewport(app)
+        app.textViews["reader.text"].swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        let identity = readingIdentity(app)
+        let bookmark = app.buttons["reader.addBookmark"]
+        wait(app) { bookmark.isEnabled }; bookmark.tap()
+        wait(app) { app.staticTexts["reader.bookmarkNotice"].label == "Bookmark saved." }
+        let beforeLeaving = app.staticTexts["fixture.stored"].value as? String
+        app.buttons["reader.shelf"].tap()
+        wait(app) { (app.staticTexts["fixture.stored"].value as? String) != beforeLeaving }
+        let beforeImport = app.staticTexts["fixture.stored"].value as? String
+        choose("Local Journey Again")
+        XCTAssertTrue(row.waitForExistence(timeout: 20))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count, 1)
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, beforeImport)
+        capture("local-txt-duplicate-kept-position")
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "READER_UI_RESET")
+        app.launch()
+        XCTAssertTrue(row.waitForExistence(timeout: 40)); row.tap()
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), position)
+        XCTAssertEqual(readingIdentity(app), identity)
+        app.buttons["reader.next"].tap()
+        wait(app) { self.state(app).contains("chapter=1;") }
+        app.buttons["reader.bookmarks"].tap()
+        let marks = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bookmarks.open."))
+        XCTAssertTrue(marks.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(marks.count, 1); marks.firstMatch.tap()
+        wait(app) { !app.buttons["bookmarks.done"].exists }
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), position)
+        XCTAssertEqual(readingIdentity(app), identity)
+        capture("local-txt-offline-bookmark-restored")
+    }
+
     @MainActor func testManualChapterCheckKeepsSavedReadingPosition() async throws {
         let app = launchControlsReader()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

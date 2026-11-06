@@ -1,6 +1,8 @@
 package io.legado.engine
 
 import io.legado.app.data.AppDatabaseProviders
+import io.legado.app.data.dao.NativeLocalTxt
+import io.legado.app.model.fileBook.TextFile
 import io.legado.app.data.dao.NativeChapterProjection
 import io.legado.app.data.dao.NativeBodyCoordinates
 import io.legado.app.data.dao.NativeResumeException
@@ -47,7 +49,7 @@ class EngineFailure internal constructor(val code: EngineErrorCode, val message:
 class SourceSnapshot internal constructor(val id: String, val name: String, val enabled: Boolean)
 class SourcesReply internal constructor(val sources: List<SourceSnapshot>) : EngineReply()
 class BookSnapshot internal constructor(val sourceId: String, val id: String, val title: String,
-    val author: String, val intro: String)
+    val author: String, val intro: String, val isLocal: Boolean = false)
 class ShelfBookSnapshot internal constructor(val book: BookSnapshot, val sourceName: String,
     val lastChapter: String, val groupIds: List<String> = emptyList(), val coverUrl: String? = null)
 class ShelfGroupSnapshot internal constructor(val id: String, val name: String, val bookCount: Int,
@@ -133,6 +135,7 @@ class ReaderEngine {
         committedSwitches.clear()
         val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
         val original = dao.openBook(oldSourceId, oldBookId).book.copy()
+        require(!NativeLocalTxt.owns(original)) { "Local TXT books cannot switch network sources" }
         val revision = dao.resume(oldBookId)?.revision ?: 0L
         val candidate = book(sourceId, bookId).copy()
         if (candidate.name.trim().isEmpty() || candidate.author.trim().isEmpty() ||
@@ -440,7 +443,7 @@ class ReaderEngine {
         shelfSnapshot(book, AppDatabaseProviders.get().appDb.nativeShelfDao.organization().groups)
 
     private suspend fun shelfSnapshot(book: Book, groups: List<BookGroup>) = ShelfBookSnapshot(snapshot(book),
-        AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: "Source deleted",
+        if (NativeLocalTxt.owns(book)) "Local TXT" else AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: "Source deleted",
         book.durChapterTitle.orEmpty(), groups.filter { it.groupId and book.group != 0L }.map { it.groupId.toString() },
         book.getDisplayCover())
 
@@ -538,10 +541,17 @@ class ReaderEngine {
         BookReply(snapshot(book))
     }
 
+    fun importTxt(path: String, filename: String, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion, interruptCache = false) {
+            val entry = LocalTxtImport.import(path, filename)
+            withContext(NonCancellable) { acceptShelfEntry(entry) }
+        }
+
     fun checkNewChapters(sourceId: String, bookId: String,
         completion: (EngineReply) -> Unit): EngineRequest = request(completion, interruptCache = false) {
         val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
         val entry = shelfOperation { dao.openBook(sourceId, bookId) }
+        require(!NativeLocalTxt.owns(entry.book)) { "Local TXT books do not have network updates" }
         val capturedSource = source(sourceId)
         val candidate = entry.book.copy(readConfig = entry.book.readConfig?.copy()).also { it.tocHtml = null }
         val expectedCatalog = entry.chapters.map { it.copy() }
@@ -603,6 +613,7 @@ class ReaderEngine {
             if (!reading.canSave || reading.storageNotice.isNotEmpty()) throw CacheUnavailable("Save the chapter safely before adding a bookmark")
             val database = AppDatabaseProviders.get().appDb
             val entry = database.nativeShelfDao.openBook(reading.sourceId, reading.bookId)
+            if (NativeLocalTxt.owns(entry.book)) LocalTxtImport.verify(entry.book)
             val chapter = entry.chapters.singleOrNull { it.url == reading.chapter.url && it.index == reading.chapter.index }
                 ?: throw MissingEntity("Chapter identity changed")
             if (BookStorageProviders.get().getContent(entry.book, chapter) != reading.body) {
@@ -661,6 +672,7 @@ class ReaderEngine {
         cacheOnly: Boolean, restore: Boolean, bookmark: NativeBookmark? = null,
         searchHit: CachedChapterHit? = null): EngineReply {
         val book = book(sourceId, bookId)
+        if (NativeLocalTxt.owns(book)) LocalTxtImport.verify(book)
         val toc = chapters[sourceId to bookId] ?: throw MissingEntity("Load the table of contents first")
         val position = toc.indexOfFirst { it.url == chapterId }
         if (position < 0) throw MissingEntity("Chapter is not in the catalog")
@@ -675,6 +687,15 @@ class ReaderEngine {
         }
         var storageNotice = ""
         val content = usable ?: run {
+            if (NativeLocalTxt.owns(book)) {
+                TextFile.clear()
+                val localBody = TextFile.getContent(book, chapter)
+                if (localBody.isEmpty()) throw CacheUnavailable("TXT chapter is empty")
+                validateBookmarkBody(bookmark, localBody)
+                BookStorageProviders.get().saveText(book, chapter, localBody)
+                if (BookStorageProviders.get().getContent(book, chapter) != localBody) throw CacheUnavailable("TXT cache verification failed")
+                return@run localBody
+            }
             if (cacheOnly) throw CacheUnavailable("Chapter cache is missing or differs from saved progress")
             val source = try { source(sourceId) } catch (error: MissingEntity) {
                 throw CacheUnavailable("This book's source was deleted; only cached chapters are available. Change source to keep reading.")
@@ -768,6 +789,7 @@ class ReaderEngine {
             val entry = AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(reading.sourceId, reading.bookId)
             if (NativeChapterProjection.from(entry.book) != reading.projection)
                 throw StaleReading("Shared reading chapter state changed")
+            if (NativeLocalTxt.owns(entry.book)) LocalTxtImport.verify(entry.book)
             val chapter = entry.chapters.singleOrNull { it.url == reading.chapter.url && it.index == reading.chapter.index }
                 ?: throw StaleReading("Chapter identity changed")
             if (BookStorageProviders.get().getContent(entry.book, chapter) != reading.body)
@@ -818,7 +840,7 @@ class ReaderEngine {
     }
     private fun book(sourceId: String, bookId: String): Book =
         books[sourceId to bookId] ?: throw MissingEntity("Search for this book in the current session first")
-    private fun snapshot(book: Book) = BookSnapshot(book.origin, book.bookUrl, book.name, book.author, book.intro.orEmpty())
+    private fun snapshot(book: Book) = BookSnapshot(book.origin, book.bookUrl, book.name, book.author, book.intro.orEmpty(), NativeLocalTxt.owns(book))
     private fun snapshot(sourceId: String, chapter: BookChapter) =
         ChapterSnapshot(sourceId, chapter.bookUrl, chapter.url, chapter.index, chapter.title, chapter.isVolume)
 
