@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.DatabaseMigrations
+import io.legado.app.data.dao.NativeBodyCoordinates
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.ReplaceRule
@@ -56,6 +57,7 @@ class UpstreamCachedSearchCharacterizationTest {
             f.processor.originalText = true
             val original = f.model.searchChapter("needle", chapter)
             assertEquals(listOf(5, 12), original.map { it.queryIndexInChapter })
+            assertEquals(listOf(5, 5), original.map { NativeBodyCoordinates.paragraphStart(body, it.queryIndexInChapter) })
             original.forEach { assertEquals("needle", body.substring(it.queryIndexInChapter, it.queryIndexInChapter + 6)) }
             assertEquals(body, f.storage.getContent(f.book, chapter))
         }
