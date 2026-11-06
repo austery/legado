@@ -21,5 +21,6 @@ class LiteralTextSearchTest {
         assertEquals(all.take(201), LiteralTextSearch.positions(body, "needle", 201))
         assertFailsWith<IllegalArgumentException> { LiteralTextSearch.positions(body, "") }
         assertFailsWith<IllegalArgumentException> { LiteralTextSearch.positions(body, "needle", 0) }
+        Unit
     }
 }

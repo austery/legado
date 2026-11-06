@@ -8,7 +8,7 @@ enum ReaderSearchScope: String, CaseIterable { case all, selected }
 
 @MainActor
 final class ReaderModel: ObservableObject {
-    enum ReplyStage { case operation, detail, contents, sourceSwitch }
+    enum ReplyStage { case operation, detail, contents, sourceSwitch, cachedSearch }
     typealias ReplyDelivery = (ReplyStage, EngineReply, @escaping (EngineReply) -> Void) -> Void
     private let deliverReply: ReplyDelivery
 
@@ -56,11 +56,14 @@ final class ReaderModel: ObservableObject {
         let context = generation
         cachedSearchBusy = true
         cachedSearchRequest = engine.searchCachedChapters(sourceId: book.sourceId, bookId: book.id, query: cachedSearchQuery) { [weak self] reply in
-            guard let self, self.generation == context, self.cachedSearchGeneration == stamp,
-                  self.cachedSearchPresented else { return }
-            self.cachedSearchBusy = false; self.cachedSearchRequest = nil
-            if let result = reply as? CachedChapterResults { self.cachedSearchResults = result }
-            if let failure = reply as? EngineFailure { self.cachedSearchNotice = failure.message }
+            guard let self else { return }
+            self.deliverReply(.cachedSearch, reply) { [weak self] reply in
+                guard let self, self.generation == context, self.cachedSearchGeneration == stamp,
+                      self.cachedSearchPresented else { return }
+                self.cachedSearchBusy = false; self.cachedSearchRequest = nil
+                if let result = reply as? CachedChapterResults { self.cachedSearchResults = result }
+                if let failure = reply as? EngineFailure { self.cachedSearchNotice = failure.message }
+            }
         }
     }
 

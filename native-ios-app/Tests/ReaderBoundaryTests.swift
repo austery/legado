@@ -189,7 +189,7 @@ final class ReaderBoundaryTests: XCTestCase {
         init(stage: ReaderModel.ReplyStage) { self.stage = stage }
         func deliver(_ stage: ReaderModel.ReplyStage, _ reply: EngineReply, _ apply: @escaping (EngineReply) -> Void) {
             if let toc = reply as? TocReply, let source = toc.chapters.first?.sourceId { tocSources.append(source) }
-            if holdNext && stage == self.stage && (reply is BookReply || reply is TocReply) {
+            if holdNext && stage == self.stage && (reply is BookReply || reply is TocReply || reply is CachedChapterResults) {
                 holdNext = false
                 pending = (reply, apply)
             } else { apply(reply) }
@@ -199,6 +199,39 @@ final class ReaderBoundaryTests: XCTestCase {
             pending = nil
             replayCount += 1
             held.apply(held.reply)
+        }
+    }
+
+    func testLateCachedSearchCannotReplaceNewQuery() async throws { try await delayedCachedSearch(leaveReader: false) }
+    func testLateCachedSearchCannotReopenSheetAfterLeavingReader() async throws { try await delayedCachedSearch(leaveReader: true) }
+
+    private func delayedCachedSearch(leaveReader: Bool) async throws {
+        let queue = ReplyQueue(stage: .cachedSearch)
+        let model = ReaderModel(deliverReply: queue.deliver)
+        defer { model.cancel() }
+        let (_, candidate) = try await fixture(model)
+        model.select(candidate); try await settle(model)
+        model.addCurrentBook(); try await settle(model)
+        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        model.showCachedSearch(); model.cachedSearchQuery = "C1-FIRST"; model.searchCachedChapters()
+        try await wait { queue.pending != nil }
+        XCTAssertFalse(try XCTUnwrap(queue.pending?.reply as? CachedChapterResults).hits.isEmpty)
+        if leaveReader {
+            model.showShelf(); try await settle(model)
+        } else {
+            model.cachedSearchQuery = "ZZZNOMATCH"; model.searchCachedChapters()
+            try await wait { !model.cachedSearchBusy }
+            XCTAssertTrue(try XCTUnwrap(model.cachedSearchResults).hits.isEmpty)
+        }
+        try queue.replay()
+        XCTAssertFalse(model.cachedSearchBusy)
+        if leaveReader {
+            XCTAssertFalse(model.cachedSearchPresented); XCTAssertNil(model.cachedSearchResults)
+            XCTAssertEqual(model.route, .shelf)
+        } else {
+            XCTAssertTrue(model.cachedSearchPresented)
+            XCTAssertEqual(model.cachedSearchQuery, "ZZZNOMATCH")
+            XCTAssertTrue(try XCTUnwrap(model.cachedSearchResults).hits.isEmpty)
         }
     }
 
