@@ -18,7 +18,11 @@ final class ReaderModel: ObservableObject {
     }
 
     @Published var cachedSearchPresented = false
-    @Published var cachedSearchQuery = "" { didSet { resetCachedSearch() } }
+    @Published var cachedSearchQuery = "" {
+        didSet {
+            if !cachedSearchQuery.utf16.elementsEqual(oldValue.utf16) { resetCachedSearch() }
+        }
+    }
     @Published private(set) var cachedSearchResults: CachedChapterResults?
     @Published private(set) var cachedSearchNotice: String?
     @Published private(set) var cachedSearchBusy = false
@@ -28,6 +32,7 @@ final class ReaderModel: ObservableObject {
 
     func showCachedSearch() {
         guard isShelved, !busy, route == .reading else { return }
+        resetCachedSearch()
         cachedSearchQuery = ""
         cachedSearchPresented = true
     }
@@ -76,7 +81,8 @@ final class ReaderModel: ObservableObject {
         perform(retry: { [weak self] in self?.showCachedSearch() }, failure: { [weak self] failure in
             guard let self else { return }
             self.cachedSearchPresented = true
-            self.cachedSearchNotice = "\(failure.message) Run the search again."
+            self.cachedSearchNotice = failure.message
+            self.message = nil; self.retryAction = nil
             if let previous, previous.reading?.canSave == true { self.recoverDisplayedReading(previous, allowPrefetch: false) }
         }, start: { self.engine.openCachedSearchHit(hit: hit, completion: $0) }) { [weak self] reply in
             guard let self, let result = reply as? ContentReply, let reading = result.reading else { return }

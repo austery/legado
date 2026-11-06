@@ -874,7 +874,7 @@ private class MissingEntity(message: String) : Exception(message)
 private class InvalidInput(message: String) : Exception(message)
 private class HttpFailure(status: Int) : Exception("HTTP $status")
 
-private class ShelfStorageFailure(message: String) : Exception(message)
+internal class ShelfStorageFailure(message: String) : Exception(message)
 private data class CommittedSourceSwitch(val entry: NativeShelfEntry, val oldBookId: String,
     val revision: Long, val bodyHash: String)
 private data class PreparedSourceSwitch(val original: Book, val revision: Long,
@@ -891,8 +891,8 @@ class ReadingSnapshot internal constructor(val token: String, val revision: Long
 class ReadingSaved internal constructor(val revision: Long, val paragraphUtf16Offset: Int,
     val eventSequence: Long) : EngineReply()
 class ReadingFinished internal constructor() : EngineReply()
-private class CacheUnavailable(message: String) : Exception(message)
-private class StaleReading(message: String) : Exception(message)
+internal class CacheUnavailable(message: String) : Exception(message)
+internal class StaleReading(message: String) : Exception(message)
 private class ReadingSession(val owner: String, val sourceId: String, val bookId: String,
     val chapter: BookChapter, val body: String, var revision: Long, val canSave: Boolean,
     var projection: NativeChapterProjection, val storageNotice: String,

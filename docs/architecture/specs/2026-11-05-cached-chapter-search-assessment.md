@@ -51,7 +51,7 @@ Acceptance must cover literal/Unicode parity, Unicode-safe excerpts, partial and
 
 ## Review and delivery gates
 
-The owner-selected reviewer is Antigravity Opus 5.5 or Gemini 4. Review targets an immutable characterization/proposal candidate and its evidence. This review cannot certify unimplemented product behavior. Product H2, explicit approval for any later PR merge remain separate.
+The owner-selected reviewer is Antigravity Opus 5.5 or Gemini 4. Review targets an immutable implementation candidate and its execution evidence. Characterization-only reviews do not certify the later product implementation. Product H2, explicit approval for any later PR merge remain separate.
 
 ## Implementation and recovery record
 

@@ -107,7 +107,7 @@ class SearchContentViewModelShared(
      * 5. 正文处理: `contentProcessor!!.getContent(book, chapter, content, useReplace = replaceEnabled)`
      *    → [ContentProcessorProviders.get].getContent(book, chapter, content, useReplace)
      *    (WebBookProvidersImpl 委托 `ContentProcessor.get(book).getContent(...)`, 行为等价)。
-     * 6. 正则搜索: [searchPosition] + [getResultAndQueryIndex] (纯函数, 直接复用)。
+     * 6. 正则搜索: [LiteralTextSearch.positions] + [getResultAndQueryIndex] (纯函数, 直接复用)。
      *
      * @param query 搜索关键词 (子串匹配, 非正则)
      * @param chapter 待搜索章节
@@ -200,13 +200,6 @@ class SearchContentViewModelShared(
         }
         return allResults
     }
-
-    /**
-     * 在 content 中查找 pattern 所有出现位置 (子串匹配, 非正则)。
-     *
-     * 对照原 SearchContentViewModel.searchPosition: 纯函数, 直接复用。
-     * 每次循环 ensureActive 检查协程取消 (与原一致)。
-     */
 
     /**
      * 截取 queryIndexInContent 周围 length 个字符作为搜索结果展示文本,

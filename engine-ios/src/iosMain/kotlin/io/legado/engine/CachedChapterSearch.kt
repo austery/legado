@@ -53,22 +53,24 @@ internal class CachedChapterSearch(private val owner: String,
         }
         EngineHost.gate.withLock {
             val current = entry(source, book)
-            check(current.chapters.map { it.url to it.index } == snapshot.chapters.map { it.url to it.index }) {
-                "Catalog changed. Search again."
+            if (BookStorageProviders.get().getFolderName(current.book) != BookStorageProviders.get().getFolderName(snapshot.book) ||
+                current.chapters.map { Triple(it.url, it.index, it.getFileName()) } !=
+                snapshot.chapters.map { Triple(it.url, it.index, it.getFileName()) }) {
+                throw StaleReading("Catalog or cache identity changed. Search again.")
             }
-            check(generation.value == stamp) { "Search was replaced" }
+            if (generation.value != stamp) throw StaleReading("Search was replaced. Search again.")
         }
         return CachedChapterResults(hits.take(200), examined, cached, chapters.size, hits.size > 200)
     }
 
     suspend fun verify(hit: CachedChapterHit): NativeShelfEntry {
-        require(hit.owner == owner && hit.generation == generation.value) { "Search expired. Search again." }
+        if (hit.owner != owner || hit.generation != generation.value) throw StaleReading("Search expired. Search again.")
         val current = entry(hit.sourceId, hit.bookId)
         val chapter = current.chapters.singleOrNull {
             !it.isVolume && it.url == hit.chapterId && it.index == hit.chapterIndex
-        } ?: error("Chapter changed. Search again.")
+        } ?: throw StaleReading("Chapter changed. Search again.")
         val body = BookStorageProviders.get().getContent(current.book, chapter)
-        check(body != null && matches(hit, body)) { "Cached text changed or is missing. Search again." }
+        if (body == null || !matches(hit, body)) throw CacheUnavailable("Cached text changed or is missing. Search again.")
         return current
     }
 

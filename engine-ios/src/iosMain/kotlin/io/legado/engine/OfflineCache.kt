@@ -47,14 +47,14 @@ internal class OfflineCache(private val scope: CoroutineScope,
     internal suspend fun entry(source: String, book: String): NativeShelfEntry {
         val entry = dao.openBook(source, book)
         val folder = storage.getFolderName(entry.book)
-        check(folder.isNotEmpty() && '/' !in folder && '\\' !in folder && folder != "." && folder != "..") {
-            "Unsafe cache folder"
+        if (folder.isEmpty() || '/' in folder || '\\' in folder || folder == "." || folder == "..") {
+            throw ShelfStorageFailure("Unsafe cache folder")
         }
-        check(dao.cacheOwners().none { it.bookUrl != book && storage.getFolderName(it) == folder }) {
-            "Cache folder ownership is ambiguous"
+        if (dao.cacheOwners().any { it.bookUrl != book && storage.getFolderName(it) == folder }) {
+            throw ShelfStorageFailure("Cache folder ownership is ambiguous")
         }
-        check(entry.chapters.map { it.getFileName() }.distinct().size == entry.chapters.size) {
-            "Chapter cache ownership is ambiguous"
+        if (entry.chapters.map { it.getFileName() }.distinct().size != entry.chapters.size) {
+            throw ShelfStorageFailure("Chapter cache ownership is ambiguous")
         }
         return entry
     }
