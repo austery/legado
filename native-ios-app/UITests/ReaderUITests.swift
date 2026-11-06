@@ -264,8 +264,13 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(app.cells["第"].waitForExistence(timeout: 5)); app.cells["第"].tap()
         app.keyboards.keys["more"].firstMatch.tap()
         XCTAssertTrue(app.keyboards.keys["1"].waitForExistence(timeout: 5))
-        for digit in number { app.keyboards.keys[String(digit)].tap() }
-        app.keyboards.keys["more"].firstMatch.tap()
+        for digit in number {
+            // The IME can return to letters after a digit. Follow the visible layout.
+            let key = app.keyboards.keys[String(digit)]
+            if !key.exists { app.keyboards.keys["more"].firstMatch.tap() }
+            XCTAssertTrue(key.exists); key.tap()
+        }
+        if !app.keyboards.keys["d"].exists { app.keyboards.keys["more"].firstMatch.tap() }
         for key in ["d", "u", "a", "n"] { app.keyboards.keys[key].tap() }
         XCTAssertTrue(app.cells["段"].waitForExistence(timeout: 5)); app.cells["段"].tap()
         XCTAssertEqual(query.value as? String, "第\(number)段")
