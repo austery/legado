@@ -5,6 +5,9 @@ final class ReaderUITests: XCTestCase {
         let app = launchControlsReader()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         waitForStableViewport(app)
+        app.buttons["reader.previous"].tap()
+        wait(app) { self.state(app).contains("chapter=0;") }
+        waitForStableViewport(app)
         let stored = app.staticTexts["fixture.stored"].value as? String
         let identity = readingIdentity(app)
         let sourcePart = try XCTUnwrap(identity.first { $0.hasPrefix("source=") })
@@ -13,14 +16,14 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.cachedSearch"].tap()
         let query = app.textFields["cachedSearch.query"]
         XCTAssertTrue(query.waitForExistence(timeout: 5))
-        enterRomanFindQuery(app, query: query, text: "C1-MIDDLE")
+        enterParagraphFindQuery(app, query: query, number: "80")
         let hit = app.buttons["cachedSearch.hit.0"]
         XCTAssertTrue(hit.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["cachedSearch.partial"].exists)
         XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
         capture("cached-search-portrait-results")
         hit.tap()
-        wait(app) { self.state(app).contains("chapter=0;") && app.staticTexts["reader.find.status"].label == "1 of 1" }
+        wait(app) { self.state(app).contains("chapter=1;") && app.staticTexts["reader.find.status"].label == "1 of 1" }
         waitForStableViewport(app)
         let position = anchor(app)
         XCTAssertGreaterThan(position, 0)
@@ -39,7 +42,7 @@ final class ReaderUITests: XCTestCase {
         app.launch()
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
         XCTAssertTrue(book.waitForExistence(timeout: 30)); book.tap()
-        wait(app) { self.state(app).contains("chapter=0;") }
+        wait(app) { self.state(app).contains("chapter=1;") }
         waitForStableViewport(app)
         XCTAssertEqual(anchor(app), position)
     }
