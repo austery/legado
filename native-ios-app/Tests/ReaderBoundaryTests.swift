@@ -244,6 +244,11 @@ final class ReaderBoundaryTests: XCTestCase {
         model.searchCachedChapters(); try await wait { !model.cachedSearchBusy }
         XCTAssertEqual(model.cachedSearchResults?.hits.count, 1)
         XCTAssertNil(model.cachedSearchNotice); XCTAssertNil(model.message)
+        model.openCachedSearchHit(try XCTUnwrap(model.cachedSearchResults?.hits.first))
+        try await settle(model)
+        XCTAssertEqual(model.content?.text, "C1-FIRST changed cached text")
+        XCTAssertFalse(model.cachedSearchPresented)
+        XCTAssertNotNil(model.cachedSearchSelection)
         model.closeCachedSearch()
         XCTAssertNil(model.message); XCTAssertFalse(model.canRetry)
     }

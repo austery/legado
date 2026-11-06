@@ -55,7 +55,7 @@ final class ResumeEngineTests: XCTestCase {
     func testCachedSearchOriginalCoordinatesCoverageNoNetworkOrPersistenceAndVerifiedOpen() async throws {
         let engine = ReaderEngine(); defer { engine.close() }
         let (base, _, book, content) = try await fixture(engine)
-        let body = "😀first\n😀" + String(repeating: "a", count: 19) + "needle 中文😀中文"
+        let body = "😀first\n😀" + String(repeating: "a", count: 19) + "needle" + String(repeating: "b", count: 19) + "😀 tail"
         try body.write(to: cacheURL(book: book, chapter: content.chapter), atomically: true, encoding: .utf8)
         let before = try searchStoredRows(book.id)
         let network = try await searchSourceRequests(base)
@@ -70,6 +70,7 @@ final class ResumeEngineTests: XCTestCase {
         XCTAssertEqual(hit.textUtf16Length, Int32(body.utf16.count))
         XCTAssertFalse(hit.excerpt.contains("�"))
         XCTAssertTrue(hit.excerpt.hasPrefix("😀"))
+        XCTAssertTrue(hit.excerpt.hasSuffix("😀"))
         XCTAssertEqual(try searchStoredRows(book.id), before)
         let opened = await call { engine.openCachedSearchHit(hit: hit, completion: $0) }
         let reply = try XCTUnwrap(opened as? ContentReply)
