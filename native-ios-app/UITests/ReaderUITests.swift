@@ -1,6 +1,105 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testManualChapterCheckKeepsSavedReadingPosition() async throws {
+        let app = launchControlsReader()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        waitForStableViewport(app)
+        app.textViews["reader.text"].swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        wait(app) {
+            let fields = (app.staticTexts["fixture.stored"].value as? String ?? "").components(separatedBy: "|")
+            return fields.count > 7 && Int(fields[7]) == position
+        }
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        XCTAssertNotNil(stored)
+        let identity = readingIdentity(app)
+        let save = app.buttons["reader.addBookmark"]
+        XCTAssertTrue(save.waitForExistence(timeout: 10))
+        wait(app) { save.isEnabled }
+        save.tap()
+        wait(app) { app.staticTexts["reader.bookmarkNotice"].label == "Bookmark saved." }
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
+        let sourcePart = try XCTUnwrap(readingIdentity(app).first { $0.hasPrefix("source=") })
+        let base = String(sourcePart.dropFirst("source=".count))
+        let requestsURL = try XCTUnwrap(URL(string: base + "/control/requests"))
+        let (beforeData, _) = try await URLSession.shared.data(from: requestsURL)
+        let beforeRequests = try JSONDecoder().decode([String].self, from: beforeData)
+        let appendURL = try XCTUnwrap(URL(string: base + "/control/catalog/append"))
+        let (_, response) = try await URLSession.shared.data(from: appendURL)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        app.buttons["reader.shelf"].tap()
+        let menu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.bookMenu.")).firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        wait(app) { (app.staticTexts["fixture.stored"].value as? String) != stored }
+        let beforeCheck = try XCTUnwrap(app.staticTexts["fixture.stored"].value as? String)
+        let savedFields = beforeCheck.components(separatedBy: "|")
+        XCTAssertGreaterThan(savedFields.count, 7)
+        XCTAssertEqual(Int(savedFields[7]), position)
+        XCTAssertEqual(Array(savedFields.prefix(8)), Array(try XCTUnwrap(stored).components(separatedBy: "|").prefix(8)))
+        menu.tap()
+        let check = app.buttons["Check for new chapters"]
+        XCTAssertTrue(check.waitForExistence(timeout: 5))
+        check.tap()
+        XCTAssertTrue(app.staticTexts["Added 1 new chapter"].waitForExistence(timeout: 15))
+        capture("manual-chapter-check-appended")
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, beforeCheck)
+        let (afterData, _) = try await URLSession.shared.data(from: requestsURL)
+        let afterRequests = try JSONDecoder().decode([String].self, from: afterData)
+        XCTAssertEqual(afterRequests.filter { $0.hasPrefix("/chapter/") },
+                       beforeRequests.filter { $0.hasPrefix("/chapter/") })
+        XCTAssertEqual(afterRequests.filter { $0 == "/toc/1" }.count,
+                       beforeRequests.filter { $0 == "/toc/1" }.count + 1)
+        app.buttons["Dismiss"].tap()
+        menu.tap(); check.tap()
+        XCTAssertTrue(app.staticTexts["No new chapters"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, beforeCheck)
+        let renameURL = try XCTUnwrap(URL(string: base + "/control/catalog/rename"))
+        let (_, renameResponse) = try await URLSession.shared.data(from: renameURL)
+        XCTAssertEqual((renameResponse as? HTTPURLResponse)?.statusCode, 200)
+        app.buttons["Dismiss"].tap()
+        menu.tap(); check.tap()
+        XCTAssertTrue(app.staticTexts["INVALID_INPUT: Catalog changed; existing catalog kept"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, beforeCheck)
+        app.buttons["Dismiss"].tap()
+        let offlineURL = try XCTUnwrap(URL(string: base + "/control/catalog/offline"))
+        let (_, offlineResponse) = try await URLSession.shared.data(from: offlineURL)
+        XCTAssertEqual((offlineResponse as? HTTPURLResponse)?.statusCode, 200)
+        menu.tap(); check.tap()
+        XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, beforeCheck)
+        let (failedData, _) = try await URLSession.shared.data(from: requestsURL)
+        let failedRequests = try JSONDecoder().decode([String].self, from: failedData)
+        XCTAssertEqual(failedRequests.filter { $0.hasPrefix("/chapter/") },
+                       beforeRequests.filter { $0.hasPrefix("/chapter/") })
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 5))
+        book.tap()
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), position)
+        app.buttons["reader.previous"].tap()
+        wait(app) { self.state(app).contains("chapter=0;") }
+        app.buttons["reader.bookmarks"].tap()
+        let bookmarks = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bookmarks.open."))
+        XCTAssertTrue(bookmarks.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(bookmarks.count, 1)
+        bookmarks.firstMatch.tap()
+        wait(app) { !app.buttons["bookmarks.done"].exists }
+        waitForStableViewport(app)
+        XCTAssertEqual(readingIdentity(app), identity)
+        XCTAssertEqual(anchor(app), position)
+        capture("manual-chapter-check-bookmark-restored")
+        let (restoredData, _) = try await URLSession.shared.data(from: requestsURL)
+        XCTAssertEqual(try JSONDecoder().decode([String].self, from: restoredData), failedRequests)
+    }
+
     @MainActor func testCachedSearchNavigatesOriginalHitWithoutNetworkAndRestores() async throws {
         let app = launchControlsReader()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

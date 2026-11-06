@@ -514,8 +514,23 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    func refreshShelf(preservingMessage: String? = nil) {
-        perform(retry: { [weak self] in self?.refreshShelf() }, start: { self.engine.listShelf(completion: $0) }) { [weak self] reply in
+    func checkNewChapters(_ entry: ShelfBookSnapshot) {
+        perform(preservingReading: true, retry: { [weak self] in self?.checkNewChapters(entry) }, start: {
+            self.engine.checkNewChapters(sourceId: entry.book.sourceId, bookId: entry.book.id, completion: $0)
+        }) { [weak self] reply in
+            guard let self, let result = reply as? ChapterUpdateReply else { return }
+            let notice = result.added == 0 ? "No new chapters" :
+                (result.added == 1 ? "Added 1 new chapter" : "Added \(result.added) new chapters")
+            self.acceptShelfOrganization(result.shelf)
+            if self.book?.id == entry.book.id && self.book?.sourceId == entry.book.sourceId {
+                self.chapters = result.chapters
+            }
+            self.message = notice
+        }
+    }
+
+    func refreshShelf(preservingMessage: String? = nil, preservingReading: Bool = false) {
+        perform(preservingReading: preservingReading, retry: { [weak self] in self?.refreshShelf(preservingMessage: preservingMessage, preservingReading: preservingReading) }, start: { self.engine.listShelf(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? ShelfReply else { return }
             self.acceptShelfOrganization(reply)
             if let preservingMessage { self.message = preservingMessage }

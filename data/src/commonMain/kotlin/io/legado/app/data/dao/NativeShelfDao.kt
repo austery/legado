@@ -180,6 +180,35 @@ abstract class NativeShelfDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertBookmarks(bookmarks: List<NativeBookmark>)
 
+    @Query("UPDATE books SET totalChapterNum = :count, latestChapterTitle = :title, latestChapterTime = :checkedAt, lastCheckTime = :checkedAt, lastCheckCount = :added WHERE bookUrl = :bookUrl")
+    protected abstract suspend fun patchCatalogSummary(bookUrl: String, count: Int, title: String,
+        checkedAt: Long, added: Int)
+
+    /** Append only after rechecking the source and the complete captured catalog. */
+    @Transaction
+    open suspend fun appendCatalog(sourceId: String, bookUrl: String, expectedSource: BookSource,
+        expectedCatalog: List<BookChapter>, candidate: Book, catalog: List<BookChapter>): Int {
+        val current = openBook(sourceId, bookUrl)
+        val source = switchSourceRecord(sourceId)
+        if (source == null || !source.enabled || source.bookSourceType != 0 || source != expectedSource ||
+            current.chapters != expectedCatalog) {
+            throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "Source or catalog changed; check again")
+        }
+        if (candidate.origin != sourceId || candidate.bookUrl != bookUrl ||
+            catalog.isEmpty() || catalog.size < expectedCatalog.size ||
+            catalog.map { it.url }.toSet().size != catalog.size ||
+            catalog.withIndex().any { (index, chapter) ->
+                chapter.bookUrl != bookUrl || chapter.url.isBlank() || chapter.title.isBlank() || chapter.index != index
+            } || catalog.take(expectedCatalog.size) != expectedCatalog) {
+            throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "Catalog changed; existing catalog kept")
+        }
+        val added = catalog.size - expectedCatalog.size
+        if (added == 0) return 0
+        insertChapters(catalog.drop(expectedCatalog.size))
+        patchCatalogSummary(bookUrl, catalog.size, catalog.last().title, systemCurrentTimeMillis(), added)
+        return added
+    }
+
     /** Publish and verify the body under the transaction's URL-ownership guard before committing. */
     @Transaction
     open suspend fun switchSource(sourceId: String, bookUrl: String, expectedRevision: Long,

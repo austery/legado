@@ -13,6 +13,9 @@ class BoundaryHandler(C2Handler):
     offline_runs: set[str] = set()
     chapter_requests: dict[str, list[str]] = {}
     failed_chapters: dict[str, str] = {}
+    appended_catalogs: set[str] = set()
+    blocked_catalog_runs: set[str] = set()
+    renamed_catalog_runs: set[str] = set()
 
     def reply(self, body: str) -> None:
         payload = body.encode()
@@ -25,6 +28,21 @@ class BoundaryHandler(C2Handler):
         path = urlsplit(self.path).path
         run_prefix = '/'.join(path.split('/')[:3])
         route = path[len(run_prefix):]
+        if route == '/control/catalog/rename':
+            with self.lock:
+                self.renamed_catalog_runs.add(run_prefix)
+            self.reply('renamed')
+            return
+        if route == '/control/catalog/offline':
+            with self.lock:
+                self.blocked_catalog_runs.add(run_prefix)
+            self.reply('offline')
+            return
+        if route == '/control/catalog/append':
+            with self.lock:
+                self.appended_catalogs.add(run_prefix)
+            self.reply('appended')
+            return
         if route == '/control/requests':
             with self.lock:
                 observed = list(self.observed_requests.get(run_prefix, []))
@@ -32,6 +50,10 @@ class BoundaryHandler(C2Handler):
             return
         with self.lock:
             self.observed_requests.setdefault(run_prefix, []).append(route)
+            blocked = run_prefix in self.blocked_catalog_runs
+        if blocked:
+            self.send_error(503, 'Controlled offline source')
+            return
         if route.startswith('/offline/'):
             with self.lock:
                 if route == '/offline/disable':
@@ -127,7 +149,14 @@ class BoundaryHandler(C2Handler):
                 if not gate[1].wait(20):
                     self.send_error(504)
                     return
-            if path.endswith('/toc/empty'):
+            with self.lock:
+                appended = run_prefix in self.appended_catalogs
+                renamed = run_prefix in self.renamed_catalog_runs
+            if route == '/toc/1' and (appended or renamed):
+                catalog = ''.join(f'<a class="chapter" href="{run_prefix}/chapter/{n}">Chapter {n}</a>'
+                                  for n in ((1, 2, 3, 4) if appended else (1, 2, 3)))
+                self.reply(catalog.replace('Chapter 1</a>', 'Renamed chapter</a>') if renamed else catalog)
+            elif path.endswith('/toc/empty'):
                 self.reply('<p>No chapters</p>')
             elif path.endswith('/toc/single'):
                 self.reply(f'<a class="chapter" href="{prefix}/chapter/1">Chapter 1</a>')

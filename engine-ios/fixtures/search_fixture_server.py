@@ -107,7 +107,24 @@ class Handler(BaseHTTPRequestHandler):
                              f'<p class="intro">{source} detail</p>')
         if action == 'toc':
             book = parts[3] if len(parts) > 3 else 'book'
-            return self.send(200, f'<a class="chapter" href="/{namespace}/content/{source}/{book}">{source} chapter</a>')
+            original = f'<a class="chapter" href="/{namespace}/content/{source}/{book}">{source} chapter</a>'
+            if source in ('manual-cancel', 'manual-disable') and count > 1:
+                state.release(namespace + ':entered:' + source)
+                state.wait(namespace)
+                return self.send(200, original + f'<a class="chapter" href="/{namespace}/content/{source}/new">New chapter</a>')
+            if source in ('manual-append', 'manual-interaction', 'manual-commit-cancel', 'manual-book-url') and count > 1:
+                return self.send(200, original + f'<a class="chapter" href="/{namespace}/content/{source}/new">New chapter</a>')
+            if source == 'manual-rename' and count > 1:
+                return self.send(200, original.replace(f'{source} chapter</a>', 'Renamed chapter</a>'))
+            if source == 'manual-delete' and count > 1:
+                return self.send(200, '<main>No chapters</main>')
+            if source == 'manual-prepend' and count > 1:
+                return self.send(200, f'<a class="chapter" href="/{namespace}/content/{source}/new">Inserted chapter</a>' + original)
+            if source == 'manual-url' and count > 1:
+                return self.send(200, original.replace(f'/content/{source}/{book}', f'/content/{source}/changed'))
+            if source == 'manual-failure' and count > 1:
+                return self.send(503, 'Catalog unavailable')
+            return self.send(200, original)
         if action == 'content':
             return self.send(200, f'<div class="content">{source} paragraph one.<br><br>{source} paragraph two.</div>')
         return self.send(404, 'Unknown fixture route')

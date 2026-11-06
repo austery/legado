@@ -64,6 +64,8 @@ class SearchReply internal constructor(val books: List<BookSnapshot>, val hasNex
 class BookReply internal constructor(val book: BookSnapshot) : EngineReply()
 class ChapterSnapshot internal constructor(val sourceId: String, val bookId: String, val id: String,
     val index: Int, val title: String, val isVolume: Boolean = false)
+class ChapterUpdateReply internal constructor(val added: Int, val shelf: ShelfReply,
+    val chapters: List<ChapterSnapshot>) : EngineReply()
 class TocReply internal constructor(val chapters: List<ChapterSnapshot>) : EngineReply()
 class ContentReply internal constructor(val chapter: ChapterSnapshot, val text: String,
     val fromCache: Boolean, val reading: ReadingSnapshot? = null,
@@ -527,6 +529,31 @@ class ReaderEngine {
         val book = book(sourceId, bookId)
         EngineHost.withSourceRequest(sourceId) { WebBook.getBookInfoAwait(source, book) }
         BookReply(snapshot(book))
+    }
+
+    fun checkNewChapters(sourceId: String, bookId: String,
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion, interruptCache = false) {
+        val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
+        val entry = shelfOperation { dao.openBook(sourceId, bookId) }
+        val capturedSource = source(sourceId)
+        val candidate = entry.book.copy(readConfig = entry.book.readConfig?.copy()).also { it.tocHtml = null }
+        val expectedCatalog = entry.chapters.map { it.copy() }
+        val catalog = EngineHost.withSourceRequest(sourceId) {
+            WebBook.getChapterListAwait(capturedSource.copy(), candidate, runPerJs = true).getOrThrow()
+        }
+        currentCoroutineContext().ensureActive()
+        EngineHost.interactionFailure()?.let { return@request it }
+        // Once commit starts, finish registry publication even if foreground delivery is cancelled.
+        withContext(NonCancellable) {
+            val added = shelfOperation {
+                dao.appendCatalog(sourceId, bookId, capturedSource, expectedCatalog, candidate, catalog)
+            }
+            val committed = shelfOperation { dao.openBook(sourceId, bookId) }
+            books[sourceId to bookId] = committed.book
+            chapters[sourceId to bookId] = committed.chapters
+            ChapterUpdateReply(added, shelfOperation { shelfReply(dao.organization()) },
+                committed.chapters.map { snapshot(sourceId, it) })
+        }
     }
 
     fun loadToc(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {

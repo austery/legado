@@ -55,5 +55,31 @@ class FindRequestObservationTest(unittest.TestCase):
                 connection.close(); server.shutdown(); worker.join(timeout=2)
 
 
+class CatalogFixtureTest(unittest.TestCase):
+    def test_append_and_rename_are_observed_and_offline_blocks_catalog(self) -> None:
+        with FixtureServer(("127.0.0.1", 0), BoundaryHandler) as server:
+            worker = Thread(target=server.serve_forever, daemon=True); worker.start()
+            connection = HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+            try:
+                def read(route: str, status: int = 200) -> bytes:
+                    connection.request("GET", "/runs/catalog-observer" + route)
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, status)
+                    return response.read()
+                read("/control/catalog/rename")
+                renamed = read("/toc/1")
+                self.assertIn(b"Renamed chapter", renamed)
+                self.assertNotIn(b"Chapter 4", renamed)
+                read("/control/catalog/append")
+                self.assertIn(b"Chapter 4", read("/toc/1"))
+                read("/control/catalog/offline")
+                read("/toc/1", 503)
+                read("/chapter/1", 503)
+                self.assertEqual(json.loads(read("/control/requests")),
+                                 ["/toc/1", "/toc/1", "/toc/1", "/chapter/1"])
+            finally:
+                connection.close(); server.shutdown(); worker.join(timeout=2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -281,6 +281,8 @@ struct ShelfView: View {
     }
 
     @ViewBuilder private func bookActions(_ entry: ShelfBookSnapshot) -> some View {
+        Button("Check for new chapters") { model.checkNewChapters(entry) }
+            .accessibilityIdentifier("shelf.checkChapters." + entry.book.id)
         Button("Set groups") { showMemberships([entry]) }
         if let id = model.shelfGroupID {
             Button("Remove from this group") { removeFromGroup([entry], id: id) }
