@@ -245,6 +245,42 @@ class IncrementalSearchNativeTest {
     }
 
     @Test
+    fun manualCatalogChecksPreserveSavedParagraphAndBookmark() {
+      for (kind in listOf("fast", "manual-append", "manual-rename", "manual-failure", "manual-delete", "manual-prepend", "manual-url")) withFixture(kind) { fixture ->
+        val source = fixture.base + "/" + kind
+        val book = assertNotNull(awaitReply { fixture.engine.search(source, "work", 1, it) } as? SearchReply).books.single()
+        assertTrue(awaitReply { fixture.engine.loadBook(source, book.id, it) } is BookReply)
+        val chapter = assertNotNull(awaitReply { fixture.engine.loadToc(source, book.id, it) } as? TocReply).chapters.single()
+        assertTrue(awaitReply { fixture.engine.addToShelf(source, book.id, it) } is ShelfEntryReply)
+        val body = assertNotNull(awaitReply { fixture.engine.loadChapter(source, book.id, chapter.id, false, it) } as? ContentReply)
+        val token = assertNotNull(body.reading).token
+        val offset = body.text.indexOf("$kind paragraph two.")
+        assertTrue(offset > 0)
+        val saved = assertNotNull(awaitReply { fixture.engine.saveReadingPosition(token, 1L, offset, it) } as? ReadingSaved)
+        val bookmark = assertNotNull(awaitReply { fixture.engine.saveBookmark(token, offset, it) } as? BookmarkSaved)
+        val checked = awaitReply { fixture.engine.checkNewChapters(source, book.id, it) }
+        if (kind != "fast" && kind != "manual-append") {
+            assertTrue(checked is EngineFailure, "Changed or failed catalog must be rejected: $kind")
+        } else {
+            assertEquals(if (kind == "manual-append") 1 else 0, assertNotNull(checked as? ChapterUpdateReply).added)
+        }
+        val bookmarks = assertNotNull(awaitReply { fixture.engine.listBookmarks(source, book.id, it) } as? BookmarksReply)
+        assertEquals(bookmark.bookmark.id, bookmarks.bookmarks.single().id)
+        val openedBookmark = assertNotNull(awaitReply {
+            fixture.engine.openBookmark(source, book.id, bookmark.bookmark.id, it)
+        } as? ContentReply)
+        assertEquals(body.text, openedBookmark.text)
+        assertTrue(openedBookmark.fromCache)
+        assertEquals(saved.paragraphUtf16Offset, assertNotNull(openedBookmark.reading).paragraphUtf16Offset)
+        val restored = assertNotNull(awaitReply { fixture.engine.openReading(source, book.id, true, it) } as? ContentReply)
+        assertEquals(saved.revision, assertNotNull(restored.reading).revision)
+        assertEquals(saved.paragraphUtf16Offset, assertNotNull(restored.reading).paragraphUtf16Offset)
+        assertEquals(body.text, restored.text)
+        assertTrue(restored.fromCache)
+    }
+    }
+
+    @Test
     fun controlledTitleAuthorAndCombinedQueriesReachTheSourceWithoutRewritingInput() = withFixture("fast") { fixture ->
         for (query in listOf("Shared work", "Fixture author", "Shared work Fixture author")) {
             val done = fixture.start(query = query).awaitUpdate { it.phase == SearchPhase.IDLE }

@@ -1,6 +1,7 @@
 package io.legado.app.data
 
 import androidx.room3.Room
+import androidx.sqlite.execSQL
 import androidx.sqlite.driver.NativeSQLiteDriver
 import io.legado.app.data.dao.NativeChapterProjection
 import io.legado.app.data.dao.NativeResumeException
@@ -117,6 +118,109 @@ class NativeBookmarkNativeIntegrationTest {
             assertEquals(listOf(saved.copy(ownerBookUrl = "replacement")),
                 db.nativeBookmarkDao.list(source.bookSourceUrl, "replacement"))
         }
+    }
+
+    @Test
+    fun appendCatalogPreservesNativeRecordsAndRejectsChangedPrefix() = runBlocking {
+        withDatabase { db ->
+            val source = BookSource(bookSourceUrl = "source", bookSourceName = "Source")
+            db.bookSourceDao.insert(source)
+            val chapters = listOf(BookChapter(bookUrl = "book", url = "chapter-book", title = "Chapter", index = 0))
+            db.nativeShelfDao.addToShelf(Book(bookUrl = "book", origin = "source", name = "Title", author = "Author"), chapters)
+            val initial = assertNotNull(db.bookDao.getBook("book"))
+            val resume = db.nativeResumeDao.save("source", "book", "chapter-book", 0,
+                "first\nsecond", 7, 0, NativeChapterProjection.from(initial))
+            val readingBook = assertNotNull(db.bookDao.getBook("book"))
+            val bookmark = db.nativeBookmarkDao.save("mark", "source", "book", "chapter-book", 0,
+                "first\nsecond", 7, NativeChapterProjection.from(readingBook))
+            val next = chapters + BookChapter(bookUrl = "book", url = "new", title = "New", index = 1)
+            val invalid = listOf(
+                listOf(chapters.single().copy(title = "Renamed")),
+                listOf(chapters.single().copy(index = 1)),
+                emptyList(),
+                listOf(chapters.single().copy(url = "changed")),
+                next + next.last().copy(index = 2)
+            )
+            for (catalog in invalid) {
+                assertFailsWith<NativeShelfException> {
+                    db.nativeShelfDao.appendCatalog("source", "book", source, chapters, readingBook, catalog)
+                }
+                assertEquals(readingBook, db.bookDao.getBook("book"))
+                assertEquals(chapters, db.bookChapterDao.getChapterList("book"))
+                assertEquals(resume, db.nativeResumeDao.get("book"))
+                assertEquals(listOf(bookmark), db.nativeBookmarkDao.list("source", "book"))
+            }
+            assertFailsWith<NativeShelfException> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, chapters,
+                    readingBook.copy(bookUrl = "redirected"), next)
+            }
+            assertEquals(1, db.nativeShelfDao.appendCatalog("source", "book", source, chapters, readingBook, next))
+            val after = assertNotNull(db.bookDao.getBook("book"))
+            assertEquals(NativeChapterProjection.from(readingBook), NativeChapterProjection.from(after))
+            assertEquals(resume, db.nativeResumeDao.get("book"))
+            assertEquals(listOf(bookmark), db.nativeBookmarkDao.list("source", "book"))
+            assertEquals(next, db.bookChapterDao.getChapterList("book"))
+            assertEquals(0, db.nativeShelfDao.appendCatalog("source", "book", source, next, after, next))
+            assertEquals(after, db.bookDao.getBook("book"))
+            db.bookSourceDao.insert(source.copy(enabled = false))
+            assertFailsWith<NativeShelfException> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, next, after,
+                    next + BookChapter(bookUrl = "book", url = "third", title = "Third", index = 2))
+            }
+            assertEquals(next, db.bookChapterDao.getChapterList("book"))
+            assertEquals(resume, db.nativeResumeDao.get("book"))
+            assertEquals(listOf(bookmark), db.nativeBookmarkDao.list("source", "book"))
+            db.bookSourceDao.insert(source)
+            assertFailsWith<NativeShelfException> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, chapters, readingBook, next)
+            }
+        }
+    }
+
+    @Test
+    fun appendDoesNotOverwriteProgressWrittenAfterCapture() = runBlocking {
+        withDatabase { db ->
+            val source = BookSource(bookSourceUrl = "source", bookSourceName = "Source")
+            db.bookSourceDao.insert(source)
+            val old = listOf(BookChapter(bookUrl = "book", url = "first", title = "First", index = 0))
+            db.nativeShelfDao.addToShelf(Book(bookUrl = "book", origin = "source", name = "Title", author = "Author"), old)
+            val captured = assertNotNull(db.bookDao.getBook("book"))
+            val saved = db.nativeResumeDao.save("source", "book", "first", 0, "first\nsecond", 7, 0,
+                NativeChapterProjection.from(captured))
+            val current = assertNotNull(db.bookDao.getBook("book"))
+            assertEquals(1, db.nativeShelfDao.appendCatalog("source", "book", source, old, captured,
+                old + BookChapter(bookUrl = "book", url = "second", title = "Second", index = 1)))
+            assertEquals(NativeChapterProjection.from(current),
+                NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))))
+            assertEquals(saved, db.nativeResumeDao.get("book"))
+        }
+    }
+
+    @Test
+    fun catalogSummaryFailureRollsBackInsertedSuffix() = runBlocking {
+        val path = NSTemporaryDirectory() + "native-append-rollback-" + NSUUID().UUIDString + ".db"
+        var db = open(path)
+        try {
+            val source = BookSource(bookSourceUrl = "source", bookSourceName = "Source")
+            db.bookSourceDao.insert(source)
+            val old = listOf(BookChapter(bookUrl = "book", url = "first", title = "First", index = 0))
+            db.nativeShelfDao.addToShelf(Book(bookUrl = "book", origin = "source", name = "Title", author = "Author"), old)
+            val before = assertNotNull(db.bookDao.getBook("book"))
+            db.close()
+            NativeSQLiteDriver().open(path).use {
+                it.execSQL("CREATE TRIGGER fail_catalog_summary BEFORE UPDATE OF totalChapterNum ON books BEGIN SELECT RAISE(ABORT, 'synthetic catalog failure'); END")
+            }
+            db = open(path)
+            assertFailsWith<Exception> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, old, before,
+                    old + BookChapter(bookUrl = "book", url = "second", title = "Second", index = 1))
+            }
+            assertEquals(old, db.bookChapterDao.getChapterList("book"))
+            assertEquals(before, db.bookDao.getBook("book"))
+            db.close(); db = open(path)
+            assertEquals(old, db.bookChapterDao.getChapterList("book"))
+            assertEquals(before, db.bookDao.getBook("book"))
+        } finally { db.close(); removeFixture(path) }
     }
 
     private suspend fun withDatabase(block: suspend (AppDatabase) -> Unit) {

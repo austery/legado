@@ -369,7 +369,8 @@ struct FixtureReaderApp: App {
         return view.subviews.lazy.compactMap(findText).first
     }
     private func storedRecord() throws -> String {
-        guard let book = model.book else { return "none" }
+        // The single-book shelf fixture can inspect persistence before opening the book.
+        guard let book = model.book ?? (model.shelf.count == 1 ? model.shelf.first?.book : nil) else { return "none" }
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("legado.db")
         var db: OpaquePointer?
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { throw NSError(domain: "FixtureSQL", code: 3) }

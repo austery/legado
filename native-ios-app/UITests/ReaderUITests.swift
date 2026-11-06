@@ -1,6 +1,47 @@
 import XCTest
 
 final class ReaderUITests: XCTestCase {
+    @MainActor func testManualChapterCheckKeepsSavedReadingPosition() async throws {
+        let app = launchControlsReader()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        waitForStableViewport(app)
+        app.textViews["reader.text"].swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        wait(app) {
+            let fields = (app.staticTexts["fixture.stored"].value as? String ?? "").components(separatedBy: "|")
+            return fields.count > 7 && Int(fields[7]) == position
+        }
+        let stored = app.staticTexts["fixture.stored"].value as? String
+        XCTAssertNotNil(stored)
+        let sourcePart = try XCTUnwrap(readingIdentity(app).first { $0.hasPrefix("source=") })
+        let appendURL = try XCTUnwrap(URL(string: String(sourcePart.dropFirst("source=".count)) + "/control/catalog/append"))
+        let (_, response) = try await URLSession.shared.data(from: appendURL)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        let menu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.bookMenu.")).firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        menu.tap()
+        let check = app.buttons["Check for new chapters"]
+        XCTAssertTrue(check.waitForExistence(timeout: 5))
+        check.tap()
+        XCTAssertTrue(app.staticTexts["Added 1 new chapter"].waitForExistence(timeout: 15))
+        capture("manual-chapter-check-appended")
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, stored)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 5))
+        book.tap()
+        waitForStableViewport(app)
+        XCTAssertEqual(anchor(app), position)
+    }
+
     @MainActor func testCachedSearchNavigatesOriginalHitWithoutNetworkAndRestores() async throws {
         let app = launchControlsReader()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

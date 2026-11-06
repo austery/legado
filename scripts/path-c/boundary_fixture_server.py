@@ -13,6 +13,7 @@ class BoundaryHandler(C2Handler):
     offline_runs: set[str] = set()
     chapter_requests: dict[str, list[str]] = {}
     failed_chapters: dict[str, str] = {}
+    appended_catalogs: set[str] = set()
 
     def reply(self, body: str) -> None:
         payload = body.encode()
@@ -25,6 +26,18 @@ class BoundaryHandler(C2Handler):
         path = urlsplit(self.path).path
         run_prefix = '/'.join(path.split('/')[:3])
         route = path[len(run_prefix):]
+        if route == '/control/catalog/append':
+            with self.lock:
+                self.appended_catalogs.add(run_prefix)
+            self.reply('appended')
+            return
+        if route == '/toc/1':
+            with self.lock:
+                appended = run_prefix in self.appended_catalogs
+            if appended:
+                self.reply(''.join(f'<a class="chapter" href="{run_prefix}/chapter/{n}">Chapter {n}</a>'
+                                   for n in (1, 2, 3, 4)))
+                return
         if route == '/control/requests':
             with self.lock:
                 observed = list(self.observed_requests.get(run_prefix, []))
