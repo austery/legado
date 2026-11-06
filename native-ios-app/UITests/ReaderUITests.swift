@@ -33,10 +33,12 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.shelf"].tap()
         let menu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.bookMenu.")).firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        wait(app) { (app.staticTexts["fixture.stored"].value as? String) != stored }
         let beforeCheck = try XCTUnwrap(app.staticTexts["fixture.stored"].value as? String)
         let savedFields = beforeCheck.components(separatedBy: "|")
         XCTAssertGreaterThan(savedFields.count, 7)
         XCTAssertEqual(Int(savedFields[7]), position)
+        XCTAssertEqual(Array(savedFields.prefix(8)), Array(try XCTUnwrap(stored).components(separatedBy: "|").prefix(8)))
         menu.tap()
         let check = app.buttons["Check for new chapters"]
         XCTAssertTrue(check.waitForExistence(timeout: 5))
@@ -50,6 +52,10 @@ final class ReaderUITests: XCTestCase {
                        beforeRequests.filter { $0.hasPrefix("/chapter/") })
         XCTAssertEqual(afterRequests.filter { $0 == "/toc/1" }.count,
                        beforeRequests.filter { $0 == "/toc/1" }.count + 1)
+        app.buttons["Dismiss"].tap()
+        menu.tap(); check.tap()
+        XCTAssertTrue(app.staticTexts["No new chapters"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, beforeCheck)
         let renameURL = try XCTUnwrap(URL(string: base + "/control/catalog/rename"))
         let (_, renameResponse) = try await URLSession.shared.data(from: renameURL)
         XCTAssertEqual((renameResponse as? HTTPURLResponse)?.statusCode, 200)

@@ -108,11 +108,11 @@ class Handler(BaseHTTPRequestHandler):
         if action == 'toc':
             book = parts[3] if len(parts) > 3 else 'book'
             original = f'<a class="chapter" href="/{namespace}/content/{source}/{book}">{source} chapter</a>'
-            if source == 'manual-cancel' and count > 1:
+            if source in ('manual-cancel', 'manual-disable') and count > 1:
                 state.release(namespace + ':entered:' + source)
                 state.wait(namespace)
                 return self.send(200, original + f'<a class="chapter" href="/{namespace}/content/{source}/new">New chapter</a>')
-            if source in ('manual-append', 'manual-interaction') and count > 1:
+            if source in ('manual-append', 'manual-interaction', 'manual-commit-cancel', 'manual-book-url') and count > 1:
                 return self.send(200, original + f'<a class="chapter" href="/{namespace}/content/{source}/new">New chapter</a>')
             if source == 'manual-rename' and count > 1:
                 return self.send(200, original.replace(f'{source} chapter</a>', 'Renamed chapter</a>'))

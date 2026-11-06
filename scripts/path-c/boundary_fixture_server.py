@@ -152,9 +152,9 @@ class BoundaryHandler(C2Handler):
             with self.lock:
                 appended = run_prefix in self.appended_catalogs
                 renamed = run_prefix in self.renamed_catalog_runs
-            if route == '/toc/1' and appended:
+            if route == '/toc/1' and (appended or renamed):
                 catalog = ''.join(f'<a class="chapter" href="{run_prefix}/chapter/{n}">Chapter {n}</a>'
-                                  for n in (1, 2, 3, 4))
+                                  for n in ((1, 2, 3, 4) if appended else (1, 2, 3)))
                 self.reply(catalog.replace('Chapter 1</a>', 'Renamed chapter</a>') if renamed else catalog)
             elif path.endswith('/toc/empty'):
                 self.reply('<p>No chapters</p>')

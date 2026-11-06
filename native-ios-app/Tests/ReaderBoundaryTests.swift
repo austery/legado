@@ -262,7 +262,7 @@ final class ReaderBoundaryTests: XCTestCase {
         init(stage: ReaderModel.ReplyStage) { self.stage = stage }
         func deliver(_ stage: ReaderModel.ReplyStage, _ reply: EngineReply, _ apply: @escaping (EngineReply) -> Void) {
             if let toc = reply as? TocReply, let source = toc.chapters.first?.sourceId { tocSources.append(source) }
-            if holdNext && stage == self.stage && (reply is BookReply || reply is TocReply || reply is CachedChapterResults) {
+            if holdNext && stage == self.stage && (reply is BookReply || reply is TocReply || reply is CachedChapterResults || reply is ChapterUpdateReply) {
                 holdNext = false
                 pending = (reply, apply)
             } else { apply(reply) }
@@ -272,6 +272,43 @@ final class ReaderBoundaryTests: XCTestCase {
             pending = nil
             replayCount += 1
             held.apply(held.reply)
+        }
+    }
+
+    func testManualChapterReplyPreservesLiveReadingAndIgnoresStaleDelivery() async throws {
+        for leaveReader in [false, true] {
+            let queue = ReplyQueue(stage: .operation)
+            let model = ReaderModel(deliverReply: queue.deliver)
+            defer { model.cancel() }
+            let (base, candidate) = try await fixture(model)
+            model.select(candidate); try await settle(model)
+            model.addCurrentBook(); try await settle(model)
+            model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+            let original = try XCTUnwrap(model.content)
+            let catalog = model.chapters.map(\.id)
+            let entry = try XCTUnwrap(model.shelf.first { $0.book.sourceId == base })
+            let (_, response) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/control/catalog/append")))
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            model.checkNewChapters(entry)
+            try await wait { queue.pending != nil }
+            let reply = try XCTUnwrap(queue.pending?.reply as? ChapterUpdateReply)
+            XCTAssertEqual(reply.added, 1)
+            XCTAssertEqual(reply.chapters.count, catalog.count + 1)
+            if leaveReader { model.showShelf(); try await settle(model) }
+            try queue.replay()
+            try await wait { !model.busy }
+            XCTAssertEqual(queue.replayCount, 1)
+            if leaveReader {
+                XCTAssertEqual(model.route, .shelf)
+                XCTAssertEqual(model.chapters.map(\.id), catalog)
+                XCTAssertNotEqual(model.message, "Added 1 new chapter")
+            } else {
+                XCTAssertEqual(model.route, .reading)
+                XCTAssertTrue(model.content === original)
+                XCTAssertEqual(model.content?.reading?.token, original.reading?.token)
+                XCTAssertEqual(model.chapters.map(\.id), reply.chapters.map(\.id))
+                XCTAssertEqual(model.message, "Added 1 new chapter")
+            }
         }
     }
 

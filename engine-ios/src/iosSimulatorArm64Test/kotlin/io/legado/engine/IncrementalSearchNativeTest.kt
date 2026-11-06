@@ -2,6 +2,17 @@
 
 package io.legado.engine
 
+import androidx.room3.Room
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.SQLiteDriver
+import androidx.sqlite.SQLiteStatement
+import androidx.sqlite.driver.NativeSQLiteDriver
+import io.legado.app.data.AppDatabase
+import io.legado.app.data.DatabaseMigrations
+import io.legado.app.data.NativeDatabaseDriver
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.runBlocking
 import kotlinx.atomicfu.atomic
 import io.legado.app.help.DefaultDataResourceProvider
 import io.legado.app.help.DefaultDataResourceProviders
@@ -246,7 +257,7 @@ class IncrementalSearchNativeTest {
 
     @Test
     fun manualCatalogChecksPreserveSavedParagraphAndBookmark() {
-      for (kind in listOf("fast", "manual-append", "manual-rename", "manual-failure", "manual-delete", "manual-prepend", "manual-url", "manual-cancel", "manual-interaction")) withFixture(kind) { fixture ->
+      for (kind in listOf("fast", "manual-append", "manual-rename", "manual-failure", "manual-delete", "manual-prepend", "manual-url", "manual-cancel", "manual-interaction", "manual-commit-cancel", "manual-disable", "manual-book-url")) withFixture(kind) { fixture ->
         val source = fixture.base + "/" + kind
         val book = assertNotNull(awaitReply { fixture.engine.search(source, "work", 1, it) } as? SearchReply).books.single()
         assertTrue(awaitReply { fixture.engine.loadBook(source, book.id, it) } is BookReply)
@@ -258,7 +269,28 @@ class IncrementalSearchNativeTest {
         assertTrue(offset > 0)
         val saved = assertNotNull(awaitReply { fixture.engine.saveReadingPosition(token, 1L, offset, it) } as? ReadingSaved)
         val bookmark = assertNotNull(awaitReply { fixture.engine.saveBookmark(token, offset, it) } as? BookmarkSaved)
-        val checked = if (kind == "manual-cancel") {
+        val checked = if (kind == "manual-commit-cancel") {
+            val pending = atomic<EngineRequest?>(null)
+            val reachedWrite = atomic(false)
+            var completed: EngineReply? = null
+            fixture.beforeCatalogSummary.value = {
+                reachedWrite.value = true
+                assertNotNull(pending.value).cancel()
+            }
+            pending.value = fixture.engine.checkNewChapters(source, book.id) { completed = it }
+            pumpUntil { completed != null }
+            assertTrue(reachedWrite.value, "Cancellation must occur after the suffix insertion")
+            assertNotNull(completed)
+        } else if (kind == "manual-disable") {
+            var disabledReply: EngineReply? = null
+            fixture.engine.checkNewChapters(source, book.id) { disabledReply = it }
+            fixture.awaitEntered(kind)
+            fixture.setSourceEnabled(source, false)
+            fixture.releaseSlow()
+            pumpUntil { disabledReply != null }
+            fixture.setSourceEnabled(source, true)
+            assertNotNull(disabledReply)
+        } else if (kind == "manual-cancel") {
             var cancelledReply: EngineReply? = null
             val request = fixture.engine.checkNewChapters(source, book.id) { cancelledReply = it }
             fixture.awaitEntered(kind)
@@ -270,13 +302,36 @@ class IncrementalSearchNativeTest {
         if (kind != "fast" && kind != "manual-append") {
             assertTrue(checked is EngineFailure, "Changed or failed catalog must be rejected: $kind")
         } else {
-            assertEquals(if (kind == "manual-append") 1 else 0, assertNotNull(checked as? ChapterUpdateReply).added)
+            val update = assertNotNull(checked as? ChapterUpdateReply)
+            assertEquals(if (kind == "manual-append") 1 else 0, update.added)
+            assertEquals(if (kind == "manual-append") 2 else 1, update.chapters.size)
+            assertEquals(chapter.id, update.chapters.first().id)
+            assertEquals(book.id, update.shelf.books.single().book.id)
+            assertEquals(source, update.shelf.books.single().book.sourceId)
         }
+        if (kind == "manual-cancel" || kind == "manual-commit-cancel") {
+            assertEquals(EngineErrorCode.CANCELLED, (checked as EngineFailure).code)
+        }
+        if (kind == "manual-book-url" || kind == "manual-disable") {
+            assertEquals(EngineErrorCode.INVALID_INPUT, (checked as EngineFailure).code)
+        }
+        val retainedToken = assertNotNull(awaitReply {
+            fixture.engine.saveReadingPosition(token, 2L, offset, it)
+        } as? ReadingSaved)
+        assertEquals(saved.revision + 1L, retainedToken.revision)
+        assertEquals(saved.paragraphUtf16Offset, retainedToken.paragraphUtf16Offset)
         if (kind == "manual-interaction") {
             assertEquals(EngineErrorCode.INTERACTION_REQUIRED, (checked as EngineFailure).code)
         }
+        if (kind == "manual-commit-cancel") {
+            val newId = chapter.id.substringBeforeLast('/') + "/new"
+            val appendedBody = assertNotNull(awaitReply {
+                fixture.engine.loadChapter(source, book.id, newId, false, it)
+            } as? ContentReply)
+            assertEquals(newId, appendedBody.chapter.id)
+        }
         val storedCatalog = assertNotNull(awaitReply { fixture.engine.openShelfBook(source, book.id, it) } as? ShelfEntryReply)
-        assertEquals(if (kind == "manual-append") 2 else 1, storedCatalog.chapters.size)
+        assertEquals(if (kind == "manual-append" || kind == "manual-commit-cancel") 2 else 1, storedCatalog.chapters.size)
         assertEquals(chapter.id, storedCatalog.chapters.first().id)
         val bookmarks = assertNotNull(awaitReply { fixture.engine.listBookmarks(source, book.id, it) } as? BookmarksReply)
         assertEquals(bookmark.bookmark.id, bookmarks.bookmarks.single().id)
@@ -287,7 +342,7 @@ class IncrementalSearchNativeTest {
         assertTrue(openedBookmark.fromCache)
         assertEquals(saved.paragraphUtf16Offset, assertNotNull(openedBookmark.reading).paragraphUtf16Offset)
         val restored = assertNotNull(awaitReply { fixture.engine.openReading(source, book.id, true, it) } as? ContentReply)
-        assertEquals(saved.revision, assertNotNull(restored.reading).revision)
+        assertEquals(retainedToken.revision, assertNotNull(restored.reading).revision)
         assertEquals(saved.paragraphUtf16Offset, assertNotNull(restored.reading).paragraphUtf16Offset)
         assertEquals(body.text, restored.text)
         assertTrue(restored.fromCache)
@@ -330,12 +385,33 @@ class IncrementalSearchNativeTest {
         }
     }
 
+    // Wrap real SQLite only in the test that cancels inside the catalog transaction.
+    private class CatalogWriteDriver(private val onSummary: () -> Unit) : SQLiteDriver {
+        private val delegate = NativeSQLiteDriver()
+        override fun open(fileName: String): SQLiteConnection {
+            val connection = delegate.open(fileName)
+            return object : SQLiteConnection by connection {
+                override fun prepare(sql: String): SQLiteStatement {
+                    val statement = connection.prepare(sql)
+                    if (!sql.startsWith("UPDATE books SET totalChapterNum")) return statement
+                    return object : SQLiteStatement by statement {
+                        override fun step(): Boolean {
+                            onSummary()
+                            return statement.step()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private class Fixture(val kinds: List<String>) {
         val engine = ReaderEngine()
         private val fixtureHost = assertNotNull(NSProcessInfo.processInfo.environment["SPEC004_FIXTURE_BASE"] as? String,
             "Start the task fixture and pass SPEC004_FIXTURE_BASE")
         val base = fixtureHost.trimEnd('/') + "/" + NSUUID().UUIDString
-        private val driver: IosDatabaseDriver
+        val beforeCatalogSummary = atomic<(() -> Unit)?>(null)
+        private val driver: NativeDatabaseDriver
         private val previous: AppDatabaseProvider
         private val probes = arrayListOf<Probe>()
         private val peers = arrayListOf<ReaderEngine>()
@@ -349,7 +425,13 @@ class IncrementalSearchNativeTest {
             previous = AppDatabaseProviders.get()
             val path = NSTemporaryDirectory() + "spec004-search-" + NSUUID().UUIDString + "/test.db"
             println("SPEC004 isolated Room database=$path")
-            driver = IosDatabaseDriver(path)
+            val ordinary = IosDatabaseDriver(path)
+            driver = if ("manual-commit-cancel" in kinds) object : NativeDatabaseDriver {
+                override val appDatabase = Room.databaseBuilder<AppDatabase>(path)
+                    .setDriver(CatalogWriteDriver { beforeCatalogSummary.getAndSet(null)?.invoke() })
+                    .setQueryCoroutineContext(Dispatchers.IO)
+                    .addMigrations(*DatabaseMigrations.migrations).build()
+            } else ordinary
             AppDatabaseProviders.register(NativeAppDatabaseProvider(driver))
             assertTrue(awaitReply { engine.importSources(sourceJson(base, kinds), it) } is SourcesReply)
         }
@@ -358,6 +440,10 @@ class IncrementalSearchNativeTest {
         fun createInitializedPeer(): ReaderEngine = ReaderEngine().also {
             peers.add(it)
             assertTrue(awaitReply { completion -> it.initialize(completion) } is EngineReady)
+        }
+        fun setSourceEnabled(source: String, enabled: Boolean) = runBlocking {
+            val dao = driver.appDatabase.bookSourceDao
+            dao.insert(assertNotNull(dao.getBookSource(source)).copy(enabled = enabled))
         }
         fun awaitEntered(source: String) {
             val completed = atomic(false)
@@ -378,7 +464,7 @@ class IncrementalSearchNativeTest {
         fun close() {
             try { probes.forEach { stop(it) }; releaseSlow(); peers.forEach { it.close() }; engine.close() }
             finally {
-                driver.close()
+                driver.appDatabase.close()
                 AppDatabaseProviders.register(previous)
                 previousResources?.let { DefaultDataResourceProviders.register(it) }
             }
@@ -410,8 +496,11 @@ class IncrementalSearchNativeTest {
         private fun sourceJson(base: String, kinds: List<String>): String = kinds.joinToString(prefix = "[", postfix = "]") { kind ->
             val nameRule = if (kind == "interaction")
                 "@js:java.startBrowser('https://fixture.invalid','Verify'); 'Shared work';" else "class.book@text"
-            val chapterNameRule = if (kind == "manual-interaction")
-                "text@js:if (result == 'New chapter') { try { java.startBrowser('https://fixture.invalid','Verify'); } catch (error) {} } result;" else "text"
+            val chapterNameRule = when (kind) {
+                "manual-interaction" -> "text@js:if (result == 'New chapter') { try { java.startBrowser('https://fixture.invalid','Verify'); } catch (error) {} } result;"
+                "manual-book-url" -> "text@js:if (result == 'New chapter') { book.bookUrl = book.bookUrl + '/changed'; } result;"
+                else -> "text"
+            }
             """{"bookSourceUrl":"$base/$kind","bookSourceName":"Search fixture $kind","bookSourceType":0,"enabled":true,"searchUrl":"$base/search/$kind?key={{key}}&page={{page}}","ruleSearch":{"bookList":"tag.article","name":"$nameRule","author":"class.author@text","bookUrl":"class.book@href","hasMoreRule":"result.indexOf('data-more=' + String.fromCharCode(34) + 'true') >= 0"},"ruleBookInfo":{"canReName":"true","name":"tag.h1@text","author":"class.author@text","intro":"class.intro@text","tocUrl":"class.toc@href"},"ruleToc":{"chapterList":"class.chapter","chapterName":"$chapterNameRule","chapterUrl":"href"},"ruleContent":{"content":"class.content@html"}}"""
         }
     }
