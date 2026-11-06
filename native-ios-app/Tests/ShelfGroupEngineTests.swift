@@ -1,5 +1,6 @@
 import XCTest
 import ReaderEngine
+import SQLite3
 
 @MainActor
 final class ShelfGroupEngineTests: XCTestCase {
@@ -37,6 +38,110 @@ final class ShelfGroupEngineTests: XCTestCase {
         let loaded = await call { engine.loadChapter(sourceId: base, bookId: book.id, chapterId: chapter.id,
             cacheOnly: false, completion: $0) }
         return (book, try XCTUnwrap(loaded as? ContentReply))
+    }
+
+    private func fixtureSQL(_ statement: String) throws {
+        let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("legado.db").path
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(path, &connection, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        let database = try XCTUnwrap(connection)
+        defer { sqlite3_close(database) }
+        sqlite3_busy_timeout(database, 5_000)
+        XCTAssertEqual(sqlite3_exec(database, statement, nil, nil, nil), SQLITE_OK,
+            String(cString: sqlite3_errmsg(database)))
+    }
+
+    func testSharedShelfSortPreservesGroupsAndReadingPosition() async throws {
+        let engine = ReaderEngine()
+        defer { engine.close() }
+        let (first, _) = try await fixture(engine)
+        let (second, _) = try await fixture(engine)
+        let (third, _) = try await fixture(engine)
+        let books = [first, second, third]
+        let ids = books.map(\.id)
+        var state = try await shelf(engine)
+        let originalMode = state.sortMode
+        do {
+            let titles = ["北京", "广州", "上海"]
+            let authors = ["张", "王", "李"]
+            let readTimes = [30, 10, 20], updateTimes = [10, 40, 20], orders = [1, 2, 0]
+            for index in books.indices {
+                let escapedID = ids[index].replacingOccurrences(of: "'", with: "''")
+                try fixtureSQL("UPDATE books SET name='\(titles[index])', author='\(authors[index])', durChapterTime=\(readTimes[index]), latestChapterTime=\(updateTimes[index]), `order`=\(orders[index]) WHERE bookUrl='\(escapedID)'")
+            }
+            // Cache paths include the title. Establish the saved body after fixture metadata changes.
+            let opened = await call { engine.openReading(sourceId: third.sourceId,
+                bookId: third.id, cacheOnly: false, completion: $0) }
+            let content = try XCTUnwrap(opened as? ContentReply, "\(opened)")
+            let reading = try XCTUnwrap(content.reading)
+            let offset = (content.text as NSString).range(of: "C1-MIDDLE").location
+            XCTAssertNotEqual(offset, NSNotFound)
+            XCTAssertGreaterThan(offset, 0)
+            let savedReply: EngineReply = await withCheckedContinuation { continuation in
+                engine.saveReadingPosition(token: reading.token, eventSequence: 1,
+                    utf16Offset: Int32(offset)) { continuation.resume(returning: $0) }
+            }
+            let saved = try XCTUnwrap(savedReply as? ReadingSaved)
+            for index in books.indices {
+                let escapedID = ids[index].replacingOccurrences(of: "'", with: "''")
+                try fixtureSQL("UPDATE books SET durChapterTime=\(readTimes[index]) WHERE bookUrl='\(escapedID)'")
+            }
+            let suffix = UUID().uuidString
+            let created = await call { engine.createShelfGroup(name: "Sorted " + suffix,
+                expectedToken: state.token, completion: $0) }
+            state = try XCTUnwrap(created as? ShelfReply)
+            let overridden = try XCTUnwrap(state.groups.first { $0.name == "Sorted " + suffix })
+            let inheritedReply = await call { engine.createShelfGroup(name: "Inherited " + suffix,
+                expectedToken: state.token, completion: $0) }
+            state = try XCTUnwrap(inheritedReply as? ShelfReply)
+            let inherited = try XCTUnwrap(state.groups.first { $0.name == "Inherited " + suffix })
+            let targets = books.map { ShelfBookTarget(sourceId: $0.sourceId, bookId: $0.id) }
+            let membership = await call { engine.changeShelfGroups(targets: targets,
+                addGroupIds: [overridden.id, inherited.id], removeGroupIds: [],
+                expectedToken: state.token, completion: $0) }
+            state = try XCTUnwrap(membership as? ShelfReply)
+            let groupID = try XCTUnwrap(Int64(overridden.id))
+            try fixtureSQL("UPDATE book_groups SET bookSort=2 WHERE groupId=\(groupID)")
+            let expected = [[0, 2, 1], [1, 2, 0], [0, 1, 2], [2, 0, 1], [1, 0, 2], [2, 1, 0]]
+            for mode in expected.indices {
+                let changed = await call { engine.setShelfSort(mode: Int32(mode), completion: $0) }
+                let reply = try XCTUnwrap(changed as? ShelfReply)
+                let orderedIDs = expected[mode].map { ids[$0] }
+                XCTAssertEqual(reply.sortMode, Int32(mode))
+                XCTAssertEqual(reply.token, state.token)
+                XCTAssertEqual(reply.books.map { $0.book.id }.filter { ids.contains($0) }, orderedIDs)
+                let fixed = try XCTUnwrap(reply.groups.first { $0.id == overridden.id })
+                let following = try XCTUnwrap(reply.groups.first { $0.id == inherited.id })
+                XCTAssertFalse(fixed.inheritsSort)
+                XCTAssertEqual(fixed.orderedBookIds, ids)
+                XCTAssertTrue(following.inheritsSort)
+                XCTAssertEqual(following.orderedBookIds, orderedIDs)
+            }
+            let invalid = await call { engine.setShelfSort(mode: 99, completion: $0) }
+            XCTAssertEqual((invalid as? EngineFailure)?.code, .invalidInput)
+            let unchanged = try await shelf(engine)
+            XCTAssertEqual(unchanged.sortMode, 5)
+            XCTAssertEqual(unchanged.token, state.token)
+            let reopened = await call { engine.openReading(sourceId: third.sourceId,
+                bookId: third.id, cacheOnly: true, completion: $0) }
+            let restored = try XCTUnwrap(reopened as? ContentReply, "\(reopened)")
+            XCTAssertEqual(restored.reading?.paragraphUtf16Offset, saved.paragraphUtf16Offset)
+            let removed = await call { engine.removeFromShelf(sourceId: third.sourceId,
+                bookId: third.id, completion: $0) }
+            XCTAssertTrue(removed is ShelfRemoved)
+            let remaining = try await shelf(engine)
+            XCTAssertFalse(remaining.books.contains { $0.book.id == third.id })
+            XCTAssertTrue(remaining.groups.allSatisfy { !$0.orderedBookIds.contains(third.id) })
+            for group in [overridden, inherited] {
+                state = try await shelf(engine)
+                _ = await call { engine.deleteShelfGroup(groupId: group.id, expectedToken: state.token, completion: $0) }
+            }
+        } catch {
+            _ = await call { engine.setShelfSort(mode: originalMode, completion: $0) }
+            throw error
+        }
+        _ = await call { engine.setShelfSort(mode: originalMode, completion: $0) }
     }
 
     func testGroupLifecycleAndShelfReadmissionPreserveOneReadingRecord() async throws {

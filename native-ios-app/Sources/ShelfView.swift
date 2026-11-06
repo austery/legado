@@ -43,6 +43,11 @@ struct ShelfView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            if let group = model.currentShelfGroup, !group.inheritsSort {
+                Text("Group order: " + (ShelfSort(rawValue: group.sortMode) ?? .recentRead).title)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("shelf.groupSort")
+            }
             if selecting { selectionBar }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -116,6 +121,19 @@ struct ShelfView: View {
             Text(bookCount(model.shelfGroupID == nil ? model.shelf.count : model.visibleShelfBooks.count))
                 .font(.subheadline).foregroundStyle(.secondary)
             Spacer(minLength: 4)
+            Menu {
+                Section("Global shelf order") {
+                    ForEach(ShelfSort.allCases, id: \.rawValue) { mode in
+                        Button { model.setShelfSort(mode) } label: {
+                            if model.shelfSort == mode { Label(mode.title, systemImage: "checkmark") }
+                            else { Text(mode.title) }
+                        }.accessibilityIdentifier("shelf.sort." + String(mode.rawValue))
+                    }
+                }
+            } label: {
+                Label("Sort", systemImage: "arrow.up.arrow.down")
+            }.accessibilityIdentifier("shelf.sort")
+                .accessibilityValue(model.shelfSort.title)
             layoutButton(.grid, title: "Grid view", icon: "square.grid.2x2")
             layoutButton(.list, title: "List view", icon: "list.bullet")
             if model.shelfGroupID == nil {

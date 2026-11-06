@@ -245,6 +245,83 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.find.close"].tap()
     }
 
+    @MainActor func testShelfSortMenuAndRelaunch() {
+        let app = XCUIApplication()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf-empty"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let sort = app.buttons["shelf.sort"]
+        let books = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book."))
+        let groups = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.group."))
+        XCTAssertTrue(sort.waitForExistence(timeout: 40))
+        XCTAssertEqual(books.count, 0)
+        sort.tap(); app.buttons["Book title"].tap()
+        wait(app) { (sort.value as? String) == "Book title" }
+        XCTAssertEqual(books.count, 0)
+        app.terminate()
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf-mixed"
+        app.launch()
+        XCTAssertTrue(sort.waitForExistence(timeout: 40))
+        wait(app) { books.count == 2 }
+        app.buttons["shelf.newGroup"].tap()
+        let name = app.textFields["shelf.groupName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        if app.keyboards.keys["S"].exists { app.keyboards.buttons["shift"].tap() }
+        for character in "sort" {
+            let key = app.keyboards.keys[String(character)]
+            XCTAssertTrue(key.exists); key.tap()
+        }
+        XCTAssertEqual(name.value as? String, "sort")
+        app.buttons["shelf.group.save"].tap()
+        wait(app) { groups.count == 1 }
+        app.buttons["shelf.layout.list"].tap()
+        sort.tap(); app.buttons["Recently read"].tap()
+        wait(app) { (sort.value as? String) == "Recently read" }
+        XCTAssertTrue(books.element(boundBy: 0).label.contains("Second"))
+        sort.tap(); app.buttons["Book title"].tap()
+        wait(app) { (sort.value as? String) == "Book title" }
+        XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
+        XCTAssertTrue(books.element(boundBy: 1).label.contains("Second"))
+        capture("shelf-sort-title-portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { app.frame.width > app.frame.height }
+        XCTAssertTrue(sort.isHittable)
+        sort.tap(); app.buttons["Author"].tap()
+        wait(app) { (sort.value as? String) == "Author" }
+        sort.tap(); app.buttons["Book title"].tap()
+        wait(app) { (sort.value as? String) == "Book title" }
+        XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
+        XCTAssertEqual(groups.count, 1)
+        capture("shelf-sort-title-landscape")
+        books.element(boundBy: 1).tap()
+        XCTAssertTrue(app.buttons["reader.next"].waitForExistence(timeout: 20))
+        app.buttons["reader.next"].tap()
+        wait(app) { self.state(app).contains("chapter=1;") && self.state(app).contains("layout=spread;") }
+        app.textViews["reader.text"].swipeLeft()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        let identity = readingIdentity(app)
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(sort.waitForExistence(timeout: 10))
+        XCTAssertEqual(sort.value as? String, "Book title")
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launch()
+        XCTAssertTrue(sort.waitForExistence(timeout: 40))
+        XCTAssertEqual(sort.value as? String, "Book title")
+        XCTAssertEqual(books.count, 2)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertFalse(books.element(boundBy: 0).label.contains("Second"))
+        XCTAssertTrue(books.element(boundBy: 1).label.contains("Second"))
+        capture("shelf-sort-relaunched")
+        books.element(boundBy: 1).tap()
+        assertRenderedAnchor(app, identity: identity, position: position)
+    }
+
     @MainActor func testShelfGroupingAndGridListManagement() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
@@ -308,7 +385,8 @@ final class ReaderUITests: XCTestCase {
         func create(_ name: String) {
             app.buttons["shelf.newGroup"].tap()
             let field = app.textFields["shelf.groupName"]
-            XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText(name)
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            enterRomanFindQuery(app, query: field, text: name, submit: false)
             app.buttons["shelf.group.save"].tap()
             XCTAssertTrue(group(name).waitForExistence(timeout: 10))
         }

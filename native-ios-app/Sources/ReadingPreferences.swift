@@ -5,6 +5,21 @@ enum ShelfLayout: String, CaseIterable {
     case grid, list
 }
 
+enum ShelfSort: Int32, CaseIterable {
+    case recentRead = 0, recentUpdate, bookTitle, storedOrder, combinedTime, author
+
+    var title: String {
+        switch self {
+        case .recentRead: return "Recently read"
+        case .recentUpdate: return "Latest known update"
+        case .bookTitle: return "Book title"
+        case .storedOrder: return "Stored order"
+        case .combinedTime: return "Read or update time"
+        case .author: return "Author"
+        }
+    }
+}
+
 /// Presentation preferences belong to this app, independently of book progress.
 @MainActor
 final class ReadingPreferences: ObservableObject {

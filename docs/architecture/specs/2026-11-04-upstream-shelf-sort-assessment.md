@@ -2,7 +2,7 @@
 
 Date 2026-11-04, America/Toronto.
 
-Status — investigation and characterization complete. The integration below is a proposal awaiting owner approval. The owner authorized upstream inspection and tests. This does not record implementation H1 or product H2.
+Status — implementation H1 recorded on 2026-11-05. After reviewing the inventory and simulator evidence, the owner requested merging the validation slice and continuing gradual upstream UI integration. The first bounded integration is the six-mode shelf sorting proposal below. Product H2 remains pending.
 
 ## Fixed source and evidence
 
@@ -71,4 +71,4 @@ The six modes are proposed together because they already share one implementatio
 
 ## Current disposition
 
-This assessment changes tests and this proposal only. Product implementation has not started. The owner can approve this bounded integration or adjust the menu and group-editing scope first.
+Validation PR #63 merged as `4dcd414c25d606b29e9d917320826e6e8f44c275`. Implementation proceeds on `codex/native-shelf-sort` with the six-mode, zero-migration budget above. Recovery restores the existing global preference value and reverts the bounded code change. Group-sort editing remains outside this slice. Independent review, product H2 and explicit approval for the implementation PR remain required.
