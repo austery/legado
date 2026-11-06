@@ -246,7 +246,7 @@ class IncrementalSearchNativeTest {
 
     @Test
     fun manualCatalogChecksPreserveSavedParagraphAndBookmark() {
-      for (kind in listOf("fast", "manual-append", "manual-rename", "manual-failure", "manual-delete", "manual-prepend", "manual-url")) withFixture(kind) { fixture ->
+      for (kind in listOf("fast", "manual-append", "manual-rename", "manual-failure", "manual-delete", "manual-prepend", "manual-url", "manual-cancel", "manual-interaction")) withFixture(kind) { fixture ->
         val source = fixture.base + "/" + kind
         val book = assertNotNull(awaitReply { fixture.engine.search(source, "work", 1, it) } as? SearchReply).books.single()
         assertTrue(awaitReply { fixture.engine.loadBook(source, book.id, it) } is BookReply)
@@ -258,12 +258,26 @@ class IncrementalSearchNativeTest {
         assertTrue(offset > 0)
         val saved = assertNotNull(awaitReply { fixture.engine.saveReadingPosition(token, 1L, offset, it) } as? ReadingSaved)
         val bookmark = assertNotNull(awaitReply { fixture.engine.saveBookmark(token, offset, it) } as? BookmarkSaved)
-        val checked = awaitReply { fixture.engine.checkNewChapters(source, book.id, it) }
+        val checked = if (kind == "manual-cancel") {
+            var cancelledReply: EngineReply? = null
+            val request = fixture.engine.checkNewChapters(source, book.id) { cancelledReply = it }
+            fixture.awaitEntered(kind)
+            request.cancel()
+            fixture.releaseSlow()
+            pumpUntil { cancelledReply != null }
+            assertNotNull(cancelledReply)
+        } else awaitReply { fixture.engine.checkNewChapters(source, book.id, it) }
         if (kind != "fast" && kind != "manual-append") {
             assertTrue(checked is EngineFailure, "Changed or failed catalog must be rejected: $kind")
         } else {
             assertEquals(if (kind == "manual-append") 1 else 0, assertNotNull(checked as? ChapterUpdateReply).added)
         }
+        if (kind == "manual-interaction") {
+            assertEquals(EngineErrorCode.INTERACTION_REQUIRED, (checked as EngineFailure).code)
+        }
+        val storedCatalog = assertNotNull(awaitReply { fixture.engine.openShelfBook(source, book.id, it) } as? ShelfEntryReply)
+        assertEquals(if (kind == "manual-append") 2 else 1, storedCatalog.chapters.size)
+        assertEquals(chapter.id, storedCatalog.chapters.first().id)
         val bookmarks = assertNotNull(awaitReply { fixture.engine.listBookmarks(source, book.id, it) } as? BookmarksReply)
         assertEquals(bookmark.bookmark.id, bookmarks.bookmarks.single().id)
         val openedBookmark = assertNotNull(awaitReply {
@@ -396,7 +410,9 @@ class IncrementalSearchNativeTest {
         private fun sourceJson(base: String, kinds: List<String>): String = kinds.joinToString(prefix = "[", postfix = "]") { kind ->
             val nameRule = if (kind == "interaction")
                 "@js:java.startBrowser('https://fixture.invalid','Verify'); 'Shared work';" else "class.book@text"
-            """{"bookSourceUrl":"$base/$kind","bookSourceName":"Search fixture $kind","bookSourceType":0,"enabled":true,"searchUrl":"$base/search/$kind?key={{key}}&page={{page}}","ruleSearch":{"bookList":"tag.article","name":"$nameRule","author":"class.author@text","bookUrl":"class.book@href","hasMoreRule":"result.indexOf('data-more=' + String.fromCharCode(34) + 'true') >= 0"},"ruleBookInfo":{"canReName":"true","name":"tag.h1@text","author":"class.author@text","intro":"class.intro@text","tocUrl":"class.toc@href"},"ruleToc":{"chapterList":"class.chapter","chapterName":"text","chapterUrl":"href"},"ruleContent":{"content":"class.content@html"}}"""
+            val chapterNameRule = if (kind == "manual-interaction")
+                "text@js:if (result == 'New chapter') { try { java.startBrowser('https://fixture.invalid','Verify'); } catch (error) {} } result;" else "text"
+            """{"bookSourceUrl":"$base/$kind","bookSourceName":"Search fixture $kind","bookSourceType":0,"enabled":true,"searchUrl":"$base/search/$kind?key={{key}}&page={{page}}","ruleSearch":{"bookList":"tag.article","name":"$nameRule","author":"class.author@text","bookUrl":"class.book@href","hasMoreRule":"result.indexOf('data-more=' + String.fromCharCode(34) + 'true') >= 0"},"ruleBookInfo":{"canReName":"true","name":"tag.h1@text","author":"class.author@text","intro":"class.intro@text","tocUrl":"class.toc@href"},"ruleToc":{"chapterList":"class.chapter","chapterName":"$chapterNameRule","chapterUrl":"href"},"ruleContent":{"content":"class.content@html"}}"""
         }
     }
 }

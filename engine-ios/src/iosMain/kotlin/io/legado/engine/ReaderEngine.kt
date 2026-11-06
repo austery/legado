@@ -542,6 +542,7 @@ class ReaderEngine {
             WebBook.getChapterListAwait(capturedSource.copy(), candidate, runPerJs = true).getOrThrow()
         }
         currentCoroutineContext().ensureActive()
+        EngineHost.interactionFailure()?.let { return@request it }
         // Once commit starts, finish registry publication even if foreground delivery is cancelled.
         withContext(NonCancellable) {
             val added = shelfOperation {

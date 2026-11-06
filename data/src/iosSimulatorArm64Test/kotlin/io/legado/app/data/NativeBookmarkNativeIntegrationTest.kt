@@ -139,7 +139,8 @@ class NativeBookmarkNativeIntegrationTest {
                 listOf(chapters.single().copy(index = 1)),
                 emptyList(),
                 listOf(chapters.single().copy(url = "changed")),
-                next + next.last().copy(index = 2)
+                next + next.last().copy(index = 2),
+                chapters + next.last().copy(title = " ")
             )
             for (catalog in invalid) {
                 assertFailsWith<NativeShelfException> {
@@ -162,6 +163,15 @@ class NativeBookmarkNativeIntegrationTest {
             assertEquals(next, db.bookChapterDao.getChapterList("book"))
             assertEquals(0, db.nativeShelfDao.appendCatalog("source", "book", source, next, after, next))
             assertEquals(after, db.bookDao.getBook("book"))
+            assertFailsWith<NativeShelfException> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, next, after, chapters)
+            }
+            db.bookSourceDao.insert(source.copy(bookSourceName = "Edited source"))
+            assertFailsWith<NativeShelfException> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, next, after,
+                    next + BookChapter(bookUrl = "book", url = "third", title = "Third", index = 2))
+            }
+            assertEquals(after, db.bookDao.getBook("book"))
             db.bookSourceDao.insert(source.copy(enabled = false))
             assertFailsWith<NativeShelfException> {
                 db.nativeShelfDao.appendCatalog("source", "book", source, next, after,
@@ -174,6 +184,17 @@ class NativeBookmarkNativeIntegrationTest {
             assertFailsWith<NativeShelfException> {
                 db.nativeShelfDao.appendCatalog("source", "book", source, chapters, readingBook, next)
             }
+            db.nativeShelfDao.removeFromShelf("source", "book")
+            val removed = db.bookDao.getBook("book")
+            assertFailsWith<NativeShelfException> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, next, after,
+                    next + BookChapter(bookUrl = "book", url = "third", title = "Third", index = 2))
+            }
+            assertEquals(removed, db.bookDao.getBook("book"))
+            assertEquals(next, db.bookChapterDao.getChapterList("book"))
+            assertEquals(resume, db.nativeResumeDao.get("book"))
+            db.nativeShelfDao.addToShelf(after, next)
+            assertEquals(listOf(bookmark), db.nativeBookmarkDao.list("source", "book"))
         }
     }
 
