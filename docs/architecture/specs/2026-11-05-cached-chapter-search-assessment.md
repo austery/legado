@@ -21,13 +21,13 @@ The existing empty-query guard is in SearchContentScreenModel, outside the share
 
 ## Results and minimum proposal
 
-Seven JVM tests passed at `8dc4728c663c0b1d2c7a947a4028edbc79140974` with no failures or skips. The final candidate adds a direct check against NativeBodyCoordinates.paragraphStart. Final regression and review receipts are recorded separately at their exact candidate SHA.
+Seven JVM tests passed at `8dc4728c663c0b1d2c7a947a4028edbc79140974` with no failures or skips. At `6f44f6d4b6761b2ec1d974d447d963ed38d40750`, all 273 UI JVM tests passed with zero failures or skips, including eight characterization cases. These add a direct NativeBodyCoordinates.paragraphStart check, coroutine-context cancellation, a positive HTTP control and a split-surrogate snippet case. Review receipts are recorded separately at their exact candidate SHA.
 
 | Observation | Consequence |
 | --- | --- |
 | Title insertion changes original UTF-16 offsets 5/12 to 15/22. Title removal changes another original offset 13 to 10. | A constant title-length correction cannot restore original coordinates. |
 | A replacement creates `needle` hits absent from the original. Traditional-to-simplified conversion creates a `繁体` hit absent from the original. | Some processed hits have no original literal match. Do not translate these hits into native locations. |
-| The injected original-body path returns literal, non-overlapping UTF-16 offsets, including Chinese text after an emoji. | Reuse the upstream matching and snippet algorithm on the original cached body. The injection itself is not a native implementation. |
+| The injected original-body path returns literal, non-overlapping UTF-16 offsets, including Chinese text after an emoji. | Reuse the upstream matcher on the original cached body. Do not reuse its unsafe snippet window for native display. The injection itself is not a native implementation. |
 | Cached search follows catalog order and skips missing bodies. The synthetic source receives zero requests. | Reuse catalog/cache access. Report actual coverage instead of treating missing text as a searched chapter with no matches. |
 | Cancellation after the first published chapter prevents reading the next. A new search reads changed cache text. | Retain cancellation and add native generation checks. Upstream results alone cannot reject a stale navigation request. |
 | The persisted shared Book row is unchanged. | Searching need not change shared progress. Native resume/bookmark state still needs implementation-level assertions. |
