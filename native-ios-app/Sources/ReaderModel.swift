@@ -750,6 +750,28 @@ final class ReaderModel: ObservableObject {
         }
     }
 
+    /// Shelf books whose current source is in `ids`; they stay on the shelf after deletion.
+    func shelfBookCount(forSources ids: Set<String>) -> Int {
+        shelf.filter { ids.contains($0.book.sourceId) }.count
+    }
+
+    func deleteSources(_ ids: [String]) {
+        perform(retry: { [weak self] in self?.deleteSources(ids) }, failure: { [weak self] _ in
+            // Cleanup after commit can fail with the rows already gone; show the stored list
+            // without `perform`, which would clear the failure message.
+            _ = self?.engine.listManagedSources { reply in self?.acceptManagedSources(reply) }
+        }, start: {
+            self.engine.deleteSources(ids: ids, completion: $0)
+        }) { [weak self] reply in
+            guard let self, reply is ManagedSourcesReply else { return }
+            self.acceptManagedSources(reply)
+            self.importNotice = "Deleted \(ids.count) source\(ids.count == 1 ? "" : "s")."
+            // Managed sources came with the reply; refresh search scope, then shelf source names.
+            self.retireSearch(); self.clearSearch(); self.refreshSources(thenShelf: true)
+            self.discovery.reloadSources()
+        }
+    }
+
     func setSourceDiscoveryEnabled(_ id: String, enabled: Bool) {
         perform(retry: { [weak self] in self?.setSourceDiscoveryEnabled(id, enabled: enabled) }, start: {
             self.engine.setSourceDiscoveryEnabled(ids: [id], enabled: enabled, completion: $0)

@@ -29,6 +29,7 @@ struct SourceManagementView: View {
     @State private var detailID: String?
     @State private var editingDetailGroups = false
     @State private var pendingDetailExport: String?
+    @State private var pendingDelete: [String] = []
 
     private var groups: [String] { Array(Set(model.managedSources.flatMap(\.groups))).sorted() }
     private var visible: [ManagedSource] {
@@ -77,6 +78,9 @@ struct SourceManagementView: View {
                         Button("Groups") { editingGroups = true }
                         Button("Export") { model.exportSources(Array(model.managedSelection)) }
                     }.buttonStyle(.bordered).disabled(model.managedSelection.isEmpty)
+                    Button("Delete", role: .destructive) { pendingDelete = Array(model.managedSelection) }
+                        .buttonStyle(.bordered).disabled(model.managedSelection.isEmpty)
+                        .accessibilityIdentifier("sources.delete")
                 }
             }
             Section("Sources (\(visible.count))") {
@@ -115,6 +119,14 @@ struct SourceManagementView: View {
             if !$0 { model.cancelSourceImport() }
         })) { importPreview }
         .sheet(isPresented: $editingGroups) { groupEditor }
+        .alert(deleteTitle, isPresented: Binding(get: { !pendingDelete.isEmpty }, set: {
+            if !$0 { pendingDelete = [] }
+        })) {
+            // The binding setter clears pendingDelete after dismissal, so the title stays stable.
+            Button("Delete", role: .destructive) { model.deleteSources(pendingDelete) }
+                .accessibilityIdentifier("sources.confirmDelete")
+            Button("Cancel", role: .cancel) {}
+        } message: { Text(deleteMessage) }
         .sheet(isPresented: Binding(get: { detailID != nil }, set: { if !$0 { detailID = nil } }), onDismiss: {
             if let id = pendingDetailExport { pendingDetailExport = nil; model.exportSources([id]) }
         }) {
@@ -127,6 +139,17 @@ struct SourceManagementView: View {
                 if case .failure(let error) = result { model.message = "Export failed: \(error.localizedDescription)" }
                 model.sourceExportJSON = nil
             }
+    }
+
+    private var deleteTitle: String {
+        pendingDelete.count == 1 ? "Delete 1 source?" : "Delete \(pendingDelete.count) sources?"
+    }
+
+    private var deleteMessage: String {
+        let books = model.shelfBookCount(forSources: Set(pendingDelete))
+        let shelf = books == 0 ? "No bookshelf books use these sources." :
+            "\(books) bookshelf book\(books == 1 ? " uses" : "s use") these sources. They stay on the shelf with their cached chapters and progress."
+        return "This cannot be undone. Export the sources first if you may need them again. " + shelf
     }
 
     private var importPreview: some View {

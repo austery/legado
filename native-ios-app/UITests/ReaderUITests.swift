@@ -1025,6 +1025,56 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
+    @MainActor func testSourceDeleteConfirmationRemovesOnlySelectedAndRelaunch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "sources"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let confirm = app.buttons["sources.confirmImport"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 40))
+        confirm.tap()
+        let select = app.buttons["sources.select"]
+        XCTAssertTrue(select.waitForExistence(timeout: 20))
+        wait(app) { !confirm.exists && select.isEnabled && app.staticTexts["Sources (2)"].exists }
+        select.tap()
+        let delete = app.buttons["sources.delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5)); XCTAssertFalse(delete.isEnabled)
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.exists); search.tap(); search.typeText("second")
+        wait(app) { app.staticTexts["Sources (1)"].exists }
+        let target = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@",
+            "Path C Controlled Source", "/second"))
+        XCTAssertEqual(target.count, 1)
+        app.buttons["Select visible"].tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists); XCTAssertTrue(delete.isEnabled)
+        delete.tap()
+        XCTAssertTrue(app.alerts["Delete 1 source?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.alerts.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "This cannot be undone.")).firstMatch.exists)
+        capture("sources-delete-confirmation")
+        app.alerts.buttons["Cancel"].tap()
+        wait(app) { !app.alerts.firstMatch.exists }
+        search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
+        wait(app) { app.staticTexts["Sources (2)"].exists }
+        delete.tap()
+        let alert = app.alerts["Delete 1 source?"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        // SwiftUI exposes the destructive alert action under both its label and identifier.
+        alert.buttons.matching(identifier: "sources.confirmDelete").firstMatch.tap()
+        wait(app) { app.staticTexts["Sources (1)"].exists && app.staticTexts["Deleted 1 source."].exists }
+        XCTAssertEqual(target.count, 0)
+        XCTAssertTrue(app.staticTexts["0 selected"].exists)
+        capture("sources-after-delete")
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launch()
+        XCTAssertTrue(app.buttons["sources.select"].waitForExistence(timeout: 40))
+        wait(app) { app.staticTexts["Sources (1)"].exists }
+        XCTAssertEqual(target.count, 0)
+        capture("sources-delete-persisted-after-relaunch")
+        app.terminate()
+    }
+
     @MainActor func testGlobalPrefetchToggleCachesTwoAndSurvivesRelaunch() async throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"

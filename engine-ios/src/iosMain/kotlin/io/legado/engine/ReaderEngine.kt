@@ -250,6 +250,13 @@ class ReaderEngine {
         sourceManagement.enable(ids, enabled)
     }
 
+    /** Shelf books, cached chapters and progress stay; they read from cache until the book changes source. */
+    fun deleteSources(ids: List<String>, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        SourceSearches.retireAll()
+        DiscoverySessions.invalidateAll()
+        sourceManagement.delete(ids)
+    }
+
     fun setSourceDiscoveryEnabled(ids: List<String>, enabled: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest = request(completion, interruptCache = false) {
         DiscoverySessions.invalidateAll()
@@ -433,7 +440,7 @@ class ReaderEngine {
         shelfSnapshot(book, AppDatabaseProviders.get().appDb.nativeShelfDao.organization().groups)
 
     private suspend fun shelfSnapshot(book: Book, groups: List<BookGroup>) = ShelfBookSnapshot(snapshot(book),
-        AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: book.origin,
+        AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: "Source deleted",
         book.durChapterTitle.orEmpty(), groups.filter { it.groupId and book.group != 0L }.map { it.groupId.toString() },
         book.getDisplayCover())
 
@@ -669,7 +676,9 @@ class ReaderEngine {
         var storageNotice = ""
         val content = usable ?: run {
             if (cacheOnly) throw CacheUnavailable("Chapter cache is missing or differs from saved progress")
-            val source = try { source(sourceId) } catch (error: Exception) {
+            val source = try { source(sourceId) } catch (error: MissingEntity) {
+                throw CacheUnavailable("This book's source was deleted; only cached chapters are available. Change source to keep reading.")
+            } catch (error: Exception) {
                 throw CacheUnavailable("Verified cache unavailable; source cannot fetch: ${error.message}")
             }
             val downloaded = EngineHost.withSourceRequest(sourceId) {
