@@ -56,7 +56,7 @@ kotlin {
             configureSignalPosix()
             binaries.withType<TestExecutable>().configureEach {
                 val nativeLibDir = rootProject.file("data/build/iosNativeLibs/ios_simulator_arm64")
-                linkerOpts("-L${nativeLibDir.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3")
+                linkerOpts("-L${nativeLibDir.absolutePath}", "-lquickjs", "-lsqlite3")
             }
         }
     }
@@ -108,6 +108,12 @@ kotlin {
                 dependencies {
                     implementation(libs.ktor.client.core)
                     implementation(libs.ktor.client.darwin)
+                }
+                // 非 mac: signalposix cinterop (需本机 Apple SDK) 无法生成, 信号标记通道
+                // 由 iosWindowsCheckMain 源根的同签名 stub 顶替 (与 :data 的 KVO 观察器同款处理)。
+                if (!isMacHost) {
+                    kotlin.exclude("io/legado/app/help/crash/IosSignalMarker.kt")
+                    kotlin.srcDir("src/iosWindowsCheckMain/kotlin")
                 }
             }
             // KGP 不会自动把 iosArm64Main/iosSimulatorArm64Main 连到自定义的 iosMain,

@@ -7,6 +7,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import io.legado.app.constant.AppLog
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.AppDbAccessor
+import io.legado.app.data.runInImmediateTransaction
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.DatabaseMigrations
 import io.legado.app.data.dao.BookIdentityConflictException
@@ -89,5 +90,10 @@ class BookInfoEditIdentityIntegrationTest {
 
         override suspend fun <R> runInTransactionSuspending(block: suspend () -> R): R =
             database.useWriterConnection { writer -> writer.immediateTransaction { block() } }
+
+        override suspend fun <R> runInTransactionSuspending(
+            onCommitted: () -> Unit,
+            block: suspend () -> R,
+        ): R = database.runInImmediateTransaction(onCommitted, block)
     }
 }

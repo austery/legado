@@ -22,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.sp
-import androidx.fragment.app.Fragment
 import io.legado.app.base.ComposeDialog
 import io.legado.app.help.i18n.androidAppString
 import io.legado.app.ui.compose.component.AlertButton
@@ -325,20 +324,3 @@ fun Context.alert(init: AlertBuilder.() -> Unit): ComposeDialog {
     val builder = AlertBuilder(this).apply(init)
     return builder.build().also { it.show() }
 }
-
-fun Fragment.alert(
-    title: CharSequence? = null,
-    message: CharSequence? = null,
-    init: (AlertBuilder.() -> Unit)? = null
-) = requireActivity().alert(title, message, init)
-
-fun Fragment.alert(
-    titleResource: Int? = null,
-    messageResource: Int? = null,
-    init: (AlertBuilder.() -> Unit)? = null
-) = requireActivity().alert(titleResource, messageResource, init)
-
-fun Fragment.alert(init: AlertBuilder.() -> Unit) = requireContext().alert(init)
-
-
-

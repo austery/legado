@@ -343,7 +343,7 @@ class RouteTransitionStateTest {
     }
 
     @Test
-    fun `interactive driver ignores gesture without drag and returns on drag`() = runBlocking {
+    fun `interactive driver ignores empty gesture and completes on root rejection`() = runBlocking {
         val a = entry(1)
         val b = entry(2)
         var stack = listOf(a, b)

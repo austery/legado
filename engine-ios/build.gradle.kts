@@ -12,7 +12,7 @@ kotlin {
             isStatic = false
             binaryOption("bundleId", "io.legado.engine")
             val nativeDir = rootProject.file("data/build/iosNativeLibs/${konanTarget.name}")
-            linkerOpts("-L${nativeDir.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3")
+            linkerOpts("-L${nativeDir.absolutePath}", "-lquickjs", "-lsqlite3")
             optimized = false
         }
     }
@@ -21,7 +21,7 @@ kotlin {
         configureFramework()
         binaries.withType<org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable>().configureEach {
             val nativeDir = rootProject.file("data/build/iosNativeLibs/ios_simulator_arm64")
-            linkerOpts("-L${nativeDir.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3")
+            linkerOpts("-L${nativeDir.absolutePath}", "-lquickjs", "-lsqlite3")
         }
     }
     sourceSets {
