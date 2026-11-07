@@ -23,5 +23,8 @@ original Compose UI under `ui/` are the reference implementation. Record the
 upstream path:line, or the search that found none, in the H1. Build the slice
 as a narrow export over that path. A new table, schema migration or parallel
 implementation of an upstream capability needs Lei's explicit decision, stating
-why the upstream path cannot serve. Policy and reasons:
+why the upstream path cannot serve. Do not edit upstream modules or contradict
+their documented interface contracts (for example, a provider documented to
+throw on failure must not return a silent default), so upgrades stay mechanical.
+Policy and reasons:
 [ADR-001](docs/architecture/decisions/ADR-001-native-experience-and-upstream-ownership.md#owner-confirmed-policy-round-1-2026-10-13).
