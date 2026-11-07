@@ -669,4 +669,3 @@ public class HctSolver {
     return Cam16.fromInt(solveToInt(hueDegrees, chroma, lstar));
   }
 }
-

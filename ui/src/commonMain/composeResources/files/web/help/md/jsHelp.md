@@ -378,10 +378,10 @@ java.toNumChapter(s: String?): String? //如 第一千零三章 -> 第1003章
 
 > 提供在JavaScript环境中快捷调用crypto算法的函数，android/desktop
 > 由[hutool-crypto](https://www.hutool.cn/docs/#/crypto/概述)
-> 实现（[JsEncodeUtilsDefaults](https://github.com/huajideshutiao/legado/blob/master/data/src/jvmAndAndroidMain/kotlin/io/legado/app/help/JsEncodeUtils.kt)；桌面端另以低优先级注册 bcprov 补齐 SM2/SM3/SM4/PKCS7Padding）  
+> 实现（[JsEncodeUtilsDefaults](https://github.com/huajideshutiao/legado/blob/master/data/src/jvmAndAndroidMain/kotlin/io/legado/app/help/JsEncodeUtils.kt)；桌面端另以低优先级注册 bcprov 补齐 SM2/SM3/SM4/PKCS7Padding）\
 > 由于兼容性问题，hutool-crypto当前版本为5.8.22  
 > ios/ohos 为平台委托实现（iOS=CommonCrypto/Security，鸿蒙=cryptoFramework 桥，另含双端同源
-> 纯 Kotlin 侧车），支持算法为 hutool 的子集，明细见下方"platform 变量"一节的能力差异表  
+> 纯 Kotlin 侧车），支持算法为 hutool 的子集，明细见下方"platform 变量"一节的能力差异表\
 
 > 注意：如果输入的参数不是Utf8String 可先调用`java.hexDecodeToByteArray java.base64DecodeToByteArray`转成ByteArray
 * 对称加密

@@ -45,4 +45,3 @@ fun Context.longToastOnUiLegacy(message: CharSequence) {
         }
     }
 }
-

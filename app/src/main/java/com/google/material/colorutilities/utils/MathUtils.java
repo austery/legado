@@ -131,4 +131,3 @@ public class MathUtils {
     return new double[] {a, b, c};
   }
 }
-

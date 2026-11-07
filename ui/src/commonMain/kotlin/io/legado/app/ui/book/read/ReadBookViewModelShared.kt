@@ -391,7 +391,7 @@ class ReadBookViewModelShared(
                         PlatformCapabilityProviders.get().pickBookTreeUri(
                             // 归属 VM 请求本体 (本 VM 自管 scope), 不借即将随组合取消的等待者
                             scope.coroutineContext[Job],
-                        ) { uri, err -> 
+                        ) { uri, err ->
                             if (err != null) {
                                 // 失败先终结本选择器再回异常: 否则 await 抛出后
                                 // 清 activePicker 的那行被跳过, 失败选择器会一直挡住后续请求

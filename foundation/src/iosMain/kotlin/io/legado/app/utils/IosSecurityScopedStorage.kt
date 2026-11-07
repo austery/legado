@@ -556,4 +556,3 @@ class IosSecurityScopeLease internal constructor(
  */
 fun ingestIosSecurityScopedFile(url: NSURL): String? =
     IosSecurityScopedStorage.ingestExternalFile(url)
-

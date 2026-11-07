@@ -115,4 +115,3 @@ fun rememberResponsiveStaggeredGridColumns(
 ): StaggeredGridCells = remember(baseColumns, referenceWidth) {
     ResponsiveStaggeredGridCells(baseColumns, referenceWidth)
 }
-
