@@ -10,6 +10,7 @@ assignees: ''
 
 - User outcome and north-star connection:
 - Observable completion criteria:
+- Upstream capability: upstream path:line this slice exposes, or the search showing none exists. List any new table, migration or parallel implementation and why upstream cannot serve:
 - Complexity budget: allowed persistent structures, shared contracts and dependencies; why each is worth its maintenance cost. State zero where appropriate:
 - Explicit exclusions:
 - Acceptance lanes and what they cannot verify (see `docs/VALIDATION.md`):
