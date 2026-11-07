@@ -2,6 +2,7 @@ package io.legado.app.ui.route
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -17,6 +18,7 @@ import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.IntentData
 import io.legado.app.help.book.BookHelpShared
 import io.legado.app.help.book.addType
@@ -99,12 +101,16 @@ fun BookInfoRoute(
     // 显式 copy, 此处直接共享路由快照; 页面改动走 bookDao.update 落库, 快照随 DB 一致)
     val book = route.book.asBook()
 
-    val screenModel = screenModelStore.getOrCreateTyped(entry) {
-        BookInfoScreenModel(book) { loadedBook, toc ->
+    val screenModel = screenModelStore.getOrCreateTyped(entry) { BookInfoScreenModel(book) }
+    // Catalog sync follows the current navigator: a host rebuild keeps this model but replaces
+    // the navigator, so register the handler and publisher again on every (model, navigator) pair.
+    DisposableEffect(screenModel, navigator) {
+        val publisher: (Book, List<BookChapter>) -> Unit = { loadedBook, toc ->
             navigator.updateSourceCatalog(entry.id, loadedBook, toc)
-        }.also { model ->
-            navigator.registerCatalogHandler(entry.id, model::updateLoadedCatalog)
         }
+        navigator.registerCatalogHandler(entry.id, screenModel::updateLoadedCatalog)
+        screenModel.bindCatalogPublisher(publisher)
+        onDispose { screenModel.releaseCatalogPublisher(publisher) }
     }
     val state by screenModel.state.collectAsState()
     val scope = rememberCoroutineScope()

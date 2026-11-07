@@ -61,8 +61,29 @@ import org.jetbrains.compose.resources.getString
 @OptIn(ExperimentalAtomicApi::class)
 class BookInfoScreenModel(
     initialBook: Book? = null,
-    private val onCatalogLoaded: (Book, List<BookChapter>) -> Unit = { _, _ -> },
 ) : ScreenModel {
+
+    /**
+     * Publishes a loaded catalog to the current host navigator. The route binds it after each
+     * committed composition; a host rebuild replaces the navigator while this model survives.
+     * Main thread only.
+     */
+    private var catalogPublisher: ((Book, List<BookChapter>) -> Unit)? = null
+
+    /** Catalog loaded while no host was bound; the next binding publishes it. Main thread only. */
+    private var pendingCatalog: Pair<Book, List<BookChapter>>? = null
+
+    fun bindCatalogPublisher(publisher: (Book, List<BookChapter>) -> Unit) {
+        catalogPublisher = publisher
+        pendingCatalog?.let { (book, toc) ->
+            pendingCatalog = null
+            publisher(book, toc)
+        }
+    }
+
+    fun releaseCatalogPublisher(publisher: (Book, List<BookChapter>) -> Unit) {
+        if (catalogPublisher === publisher) catalogPublisher = null
+    }
 
     private val appDb get() = AppDbProviders.get()
 
@@ -394,7 +415,8 @@ class BookInfoScreenModel(
         if (toc.isNotEmpty()) {
             loadedChapterList = toc
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                onCatalogLoaded(book, toc)
+                val publisher = catalogPublisher
+                if (publisher != null) publisher(book, toc) else pendingCatalog = book to toc
             }
         }
         val lasted = lastedTitleOf(book)

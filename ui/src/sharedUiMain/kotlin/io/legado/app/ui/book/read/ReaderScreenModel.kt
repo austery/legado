@@ -358,6 +358,24 @@ class ReaderScreenModel(
     /** 已接纳的绑定 (只在组合提交后的 Effect 里设置/释放; null = 当前没有已接纳的宿主)。 */
     private var binding: HostBinding? = null
 
+    /** A completed source change that has not reached any route yet (Main thread only). */
+    private class PendingSourceChange(
+        val previous: Book,
+        val source: BookSource,
+        val replacement: Book,
+        val toc: List<BookChapter>,
+    )
+
+    /**
+     * Source change completed while no host was bound. The next accepted binding publishes it,
+     * so a host rebuild during the change cannot drop the result for the details page.
+     */
+    private var pendingSourceChange: PendingSourceChange? = null
+
+    private fun publishSourceChange(navigator: AppNavigator, change: PendingSourceChange) {
+        onSourceChanged(navigator, change.previous, change.source, change.replacement, change.toc)
+    }
+
     /**
      * 已接纳绑定对应的菜单控制器 (UI 记着它并直接渲染)。
      *
@@ -384,6 +402,10 @@ class ReaderScreenModel(
     ) {
         binding = HostBinding(provider, navigator, getBatteryLevel, onOpenSearch)
         acceptedController = controller
+        pendingSourceChange?.let { change ->
+            pendingSourceChange = null
+            publishSourceChange(navigator, change)
+        }
         // 绑定刚建立 (已在组合提交后的主线程): 按本宿主真实读数刷一次电量
         _batteryLevel.value = getBatteryLevel()
     }
@@ -945,9 +967,11 @@ class ReaderScreenModel(
                 previous.changeSourceTo(newBook, toc)
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     // Read the binding on Main: only the currently accepted host may publish.
-                    binding?.navigator?.let { navigator ->
-                        onSourceChanged(navigator, previous, source, newBook, toc)
-                    } ?: AppLog.put("换源结果未回传: 当前没有已接纳的宿主绑定", null)
+                    // Without one (host rebuild in progress) keep the result for the next binding.
+                    val change = PendingSourceChange(previous, source, newBook, toc)
+                    val navigator = binding?.navigator
+                    if (navigator != null) publishSourceChange(navigator, change)
+                    else pendingSourceChange = change
                 }
                 readBook.loadBook(newBook)
                 readBook.bookSourceValue = source
