@@ -25,7 +25,8 @@ final class OfflineCacheTests: XCTestCase {
         let deleted = await call { engine.deleteSources(ids: [book.sourceId], completion: $0) }
         XCTAssertFalse(try XCTUnwrap(deleted as? ManagedSourcesReply).sources.contains { $0.id == book.sourceId })
         let reopened = ReaderEngine(); defer { reopened.close() }
-        XCTAssertTrue(await call { reopened.initialize(completion: $0) } is EngineReady)
+        let ready = await call { reopened.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
         let shelf = await call { reopened.listShelf(completion: $0) }
         let orphan = try XCTUnwrap((shelf as? ShelfReply)?.books.first {
             $0.book.sourceId == book.sourceId && $0.book.id == book.id })
