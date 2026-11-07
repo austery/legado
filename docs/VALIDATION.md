@@ -14,8 +14,8 @@ workflow. See [engine reproduction](../engine-ios/README.md#reproduce).
 
 C1 first runs lightweight scope/static checks on a hosted runner. An explicit
 allowlist in [`c1_scope.py`](../scripts/path-c/c1_scope.py) recognizes explanatory
-documents: named READMEs/agent guidance, this entry, the maintenance record and
-architecture Markdown. Other paths, including test/fixture/build/workflow changes,
+documents: named READMEs/agent guidance, this entry, the maintenance record,
+architecture Markdown and Markdown issue templates. Other paths, including test/fixture/build/workflow changes,
 require full regression even when mixed with documents. Complete pinned PR and
 push diffs include both sides of renames/deletions; missing comparison evidence
 requires regression. Manual dispatch always requests full validation.
