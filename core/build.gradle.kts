@@ -56,7 +56,7 @@ kotlin {
             configureSignalPosix()
             binaries.withType<TestExecutable>().configureEach {
                 val nativeLibDir = rootProject.file("data/build/iosNativeLibs/ios_simulator_arm64")
-                linkerOpts("-L${nativeLibDir.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3")
+                linkerOpts("-L${nativeLibDir.absolutePath}", "-lquickjs", "-lsqlite3")
             }
         }
     }
