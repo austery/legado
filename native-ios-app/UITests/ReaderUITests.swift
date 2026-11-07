@@ -1057,8 +1057,10 @@ final class ReaderUITests: XCTestCase {
         search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
         wait(app) { app.staticTexts["Sources (2)"].exists }
         delete.tap()
-        XCTAssertTrue(app.alerts["Delete 1 source?"].waitForExistence(timeout: 5))
-        app.alerts.buttons["Delete"].tap()
+        let alert = app.alerts["Delete 1 source?"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        // SwiftUI exposes the destructive alert action under both its label and identifier.
+        alert.buttons.matching(identifier: "sources.confirmDelete").firstMatch.tap()
         wait(app) { app.staticTexts["Sources (1)"].exists && app.staticTexts["Deleted 1 source."].exists }
         XCTAssertEqual(target.count, 0)
         XCTAssertTrue(app.staticTexts["0 selected"].exists)
