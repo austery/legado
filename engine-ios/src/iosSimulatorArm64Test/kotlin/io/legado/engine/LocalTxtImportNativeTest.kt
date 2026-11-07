@@ -140,7 +140,7 @@ class LocalTxtImportNativeTest {
             } finally {
                 NativeSQLiteDriver().open((root / "test.db").toString()).use { it.execSQL("DROP TRIGGER fail_txt_chapter") }
             }
-            // Cancellation inside the copy loop leaves no staging file, copy or shelf row.
+            // Cancellation before admission leaves no staging file, copy or shelf row.
             val owned = NativeLocalTxt.root().toPath()
             val beforeCancel = fs.listRecursively(owned).toList().toSet()
             fs.write(input) { writeUtf8("cancelled before admission") }

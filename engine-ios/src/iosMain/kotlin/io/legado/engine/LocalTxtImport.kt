@@ -140,5 +140,7 @@ internal object LocalTxtImport {
         catch (error: NativeShelfException) { throw error }
         catch (error: IllegalArgumentException) { throw error }
         catch (error: CacheUnavailable) { throw error }
+        // An upstream TOC rule timing out on the file's content is a rule failure, not storage.
+        catch (error: io.legado.app.exception.RegexTimeoutException) { throw error }
         catch (error: Exception) { throw ShelfStorageFailure(error.message ?: "Shelf storage failed", error) }
 }
