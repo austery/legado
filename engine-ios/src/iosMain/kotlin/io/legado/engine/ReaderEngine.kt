@@ -689,7 +689,9 @@ class ReaderEngine {
         val content = usable ?: run {
             if (NativeLocalTxt.owns(book)) {
                 TextFile.clear()
-                val localBody = TextFile.getContent(book, chapter)
+                // The owned copy can disappear after verify(); that is unavailable local content.
+                val localBody = try { TextFile.getContent(book, chapter) }
+                    catch (error: okio.IOException) { throw CacheUnavailable("The saved TXT file is missing or has changed") }
                 if (localBody.isEmpty()) throw CacheUnavailable("TXT chapter is empty")
                 validateBookmarkBody(bookmark, localBody)
                 BookStorageProviders.get().saveText(book, chapter, localBody)

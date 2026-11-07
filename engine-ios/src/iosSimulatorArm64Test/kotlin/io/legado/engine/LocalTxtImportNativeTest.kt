@@ -16,6 +16,7 @@ import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.model.fileBook.*
 import io.legado.app.utils.IosRuleRegex
 import io.legado.app.utils.RuleRegexes
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -143,9 +144,12 @@ class LocalTxtImportNativeTest {
             val owned = NativeLocalTxt.root().toPath()
             val beforeCancel = fs.listRecursively(owned).toList().toSet()
             fs.write(input) { writeUtf8("cancelled before admission") }
-            val cancelled = launch(start = CoroutineStart.ATOMIC) { LocalTxtImport.import(input.toString(), "Cancelled.txt") }
+            var thrown: Throwable? = null
+            val cancelled = launch(start = CoroutineStart.ATOMIC) {
+                try { LocalTxtImport.import(input.toString(), "Cancelled.txt") } catch (error: Throwable) { thrown = error; throw error }
+            }
             cancelled.cancel(); cancelled.join()
-            assertTrue(cancelled.isCancelled)
+            assertIs<CancellationException>(thrown)
             assertEquals(beforeCancel, fs.listRecursively(owned).toList().toSet())
             assertEquals(2, db.nativeShelfDao.listBooks().size)
             // An unreadable picked file is invalid input, not a network failure.

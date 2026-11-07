@@ -31,23 +31,27 @@ internal object LocalTxtImport {
         require(filename.isNotBlank() && '/' !in filename && '\\' !in filename) { "Invalid file name" }
         val fs = FileSystem.SYSTEM
         val root = NativeLocalTxt.root().toPath()
-        fs.createDirectories(root)
+        local { fs.createDirectories(root) }
         val staging = root / ("." + NSUUID().UUIDString + ".staging")
         var created: okio.Path? = null
         var createdIdentity: String? = null
         try {
             var count = 0L
             val hashing = HashingSink.sha256(local { fs.sink(staging) })
-            hashing.buffer().use { output ->
-                selected { fs.source(path.toPath()) }.buffer().use { input ->
-                    val buffer = Buffer()
-                    while (true) {
-                        currentCoroutineContext().ensureActive()
-                        val read = selected { input.read(buffer, 8192) }
-                        if (read == -1L) break
-                        count += read
-                        require(count <= MAX_BYTES) { "TXT files must be at most 10 MiB" }
-                        local { output.write(buffer, read) }
+            // Reads of the picked file are classified first; the rest, including the final
+            // flush when the staging sink closes, is owned storage.
+            local {
+                hashing.buffer().use { output ->
+                    selected { fs.source(path.toPath()) }.buffer().use { input ->
+                        val buffer = Buffer()
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val read = selected { input.read(buffer, 8192) }
+                            if (read == -1L) break
+                            count += read
+                            require(count <= MAX_BYTES) { "TXT files must be at most 10 MiB" }
+                            output.write(buffer, read)
+                        }
                     }
                 }
             }
@@ -77,7 +81,8 @@ internal object LocalTxtImport {
                 name = filename.substringBeforeLast('.'), type = BookType.text or BookType.local,
                 charset = "UTF-8", latestChapterTime = File(target.toString()).lastModified())
             TextFile.clear()
-            val catalog = TextFile.getChapterList(candidate)
+            // Upstream parsing reads the owned copy and the TOC rule table; its failures here are local storage.
+            val catalog = database { TextFile.getChapterList(candidate) }
             require(catalog.isNotEmpty()) { "The TXT file has no chapters" }
             candidate.totalChapterNum = catalog.size
             candidate.latestChapterTitle = catalog.last().title
@@ -129,9 +134,11 @@ internal object LocalTxtImport {
     private inline fun <T> selected(action: () -> T): T = try { action() }
         catch (error: IOException) { throw IllegalArgumentException("The selected file cannot be read", error) }
 
-    /** Shelf database access; typed shelf failures keep their own classification. */
+    /** Shelf database and local parsing; typed failures and input checks keep their own classification. */
     private inline fun <T> database(action: () -> T): T = try { action() }
         catch (error: CancellationException) { throw error }
         catch (error: NativeShelfException) { throw error }
+        catch (error: IllegalArgumentException) { throw error }
+        catch (error: CacheUnavailable) { throw error }
         catch (error: Exception) { throw ShelfStorageFailure(error.message ?: "Shelf storage failed", error) }
 }
