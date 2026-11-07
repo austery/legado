@@ -932,7 +932,7 @@ private class MissingEntity(message: String) : Exception(message)
 private class InvalidInput(message: String) : Exception(message)
 private class HttpFailure(status: Int) : Exception("HTTP $status")
 
-internal class ShelfStorageFailure(message: String) : Exception(message)
+internal class ShelfStorageFailure(message: String, cause: Throwable? = null) : Exception(message, cause)
 private data class CommittedSourceSwitch(val entry: NativeShelfEntry, val oldBookId: String,
     val revision: Long, val bodyHash: String)
 private data class PreparedSourceSwitch(val original: Book, val revision: Long,

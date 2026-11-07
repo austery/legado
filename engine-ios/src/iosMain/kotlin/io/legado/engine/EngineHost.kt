@@ -140,10 +140,12 @@ internal object EngineHost {
         io.legado.app.help.book.LocalBookLocators.register(LocalTxtLocator(io.legado.app.help.book.IosLocalBookLocator()))
         if (runCatching { io.legado.app.help.DefaultDataResourceProviders.get() }.isFailure) {
             io.legado.app.help.DefaultDataResourceProviders.register(object : io.legado.app.help.DefaultDataResourceProvider {
+                // Upstream contract: throw when a resource cannot be read. The app bundles only
+                // upstream txtTocRule.json; other names fail as they did with no provider.
                 override fun readResource(name: String): String {
                     val path = platform.Foundation.NSBundle.mainBundle.pathForResource(name.substringBeforeLast('.'), "json")
-                    if (path == null && name != "txtTocRule.json") return "[]"
-                    return io.legado.app.utils.File(requireNotNull(path) { "Missing bundled TXT chapter rules" }).readText()
+                        ?: error("Bundled default data is not available: $name")
+                    return io.legado.app.utils.File(path).readText()
                 }
             })
         }

@@ -7,6 +7,8 @@ import io.legado.app.data.*
 import io.legado.app.data.dao.*
 import io.legado.app.help.DefaultDataResourceProvider
 import io.legado.app.help.DefaultDataResourceProviders
+import io.legado.app.data.entities.Book
+import io.legado.app.help.book.LocalBookLocator
 import io.legado.app.help.book.LocalBookLocators
 import io.legado.app.help.book.NativeLocalBookLocator
 import io.legado.app.help.file.AppFilesDir
@@ -14,6 +16,8 @@ import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.model.fileBook.*
 import io.legado.app.utils.IosRuleRegex
 import io.legado.app.utils.RuleRegexes
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okio.FileSystem
 import okio.Path.Companion.toPath
@@ -77,7 +81,7 @@ class LocalTxtImportNativeTest {
                 override val appDb: AppDatabase get() = error("synthetic database unavailable")
             })
             try {
-                val failure = assertFails { LocalTxtImport.import(input.toString(), "Unavailable.txt") }
+                val failure = assertFailsWith<ShelfStorageFailure> { LocalTxtImport.import(input.toString(), "Unavailable.txt") }
                 assertEquals("synthetic database unavailable", failure.message)
                 assertEquals(ownedBefore, fs.listRecursively(NativeLocalTxt.root().toPath()).toList().toSet())
                 val originalBytes = fs.read(input) { readByteArray() }
@@ -85,7 +89,7 @@ class LocalTxtImportNativeTest {
                     fs.write(input) { writeUtf8("unseen copy with uncertain database admission") }
                     val digest = fs.read(input) { readByteString().sha256().hex() }
                     val retained = NativeLocalTxt.root().toPath() / digest / "book.txt"
-                    val uncertain = assertFails { LocalTxtImport.import(input.toString(), "Uncertain.txt") }
+                    val uncertain = assertFailsWith<ShelfStorageFailure> { LocalTxtImport.import(input.toString(), "Uncertain.txt") }
                     assertEquals("synthetic database unavailable", uncertain.message)
                     assertTrue(fs.exists(retained))
                     assertEquals(digest, fs.read(retained) { readByteString().sha256().hex() })
@@ -135,8 +139,22 @@ class LocalTxtImportNativeTest {
             } finally {
                 NativeSQLiteDriver().open((root / "test.db").toString()).use { it.execSQL("DROP TRIGGER fail_txt_chapter") }
             }
+            // Cancellation inside the copy loop leaves no staging file, copy or shelf row.
+            val owned = NativeLocalTxt.root().toPath()
+            val beforeCancel = fs.listRecursively(owned).toList().toSet()
+            fs.write(input) { writeUtf8("cancelled before admission") }
+            val cancelled = launch(start = CoroutineStart.ATOMIC) { LocalTxtImport.import(input.toString(), "Cancelled.txt") }
+            cancelled.cancel(); cancelled.join()
+            assertTrue(cancelled.isCancelled)
+            assertEquals(beforeCancel, fs.listRecursively(owned).toList().toSet())
+            assertEquals(2, db.nativeShelfDao.listBooks().size)
+            // An unreadable picked file is invalid input, not a network failure.
+            assertFailsWith<IllegalArgumentException> { LocalTxtImport.import((root / "absent.txt").toString(), "Absent.txt") }
+            assertEquals(beforeCancel, fs.listRecursively(owned).toList().toSet())
             fs.write(NativeLocalTxt.path(savedBook).toPath()) { writeUtf8("tampered") }
-            assertFails { LocalTxtImport.verify(savedBook) }
+            assertFailsWith<CacheUnavailable> { LocalTxtImport.verify(savedBook) }
+            fs.delete(NativeLocalTxt.path(savedBook).toPath())
+            assertFailsWith<CacheUnavailable> { LocalTxtImport.verify(savedBook) }
             assertEquals(resume, db.nativeResumeDao.get(savedBook.bookUrl))
             assertEquals(listOf(bookmark), db.nativeBookmarkDao.list(savedBook.origin, savedBook.bookUrl))
             Unit
@@ -145,9 +163,17 @@ class LocalTxtImportNativeTest {
             if (previousDb != null) AppDatabaseProviders.register(previousDb) else AppDatabaseProviders.reset()
             if (previousAccessor != null) AppDbProviders.register(previousAccessor) else AppDbProviders.unregister()
             if (previousDirs != null) AppFilesDirs.register(previousDirs) else AppFilesDirs.reset()
-            previousResources?.let { DefaultDataResourceProviders.register(it) }
+            // Upstream registries have no reset; restore the unregistered failure instead of leaking test doubles.
+            DefaultDataResourceProviders.register(previousResources ?: object : DefaultDataResourceProvider {
+                override fun readResource(name: String): String = error("DefaultDataResourceProviders not registered")
+            })
+            LocalBookLocators.register(previousLocator ?: object : LocalBookLocator {
+                override fun getLocalPath(book: Book): String? = error("LocalBookLocators not registered")
+                override fun getReadableFileRef(book: Book): String? = error("LocalBookLocators not registered")
+                override fun removeLocalPathCache(book: Book): Unit = error("LocalBookLocators not registered")
+            })
+            // NativeFileBookAccessor is stateless and identical to what EngineHost registers.
             previousFiles?.let { FileBookProviders.register(it) }
-            previousLocator?.let { LocalBookLocators.register(it) }
             fs.deleteRecursively(root)
         }
     }

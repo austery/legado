@@ -80,11 +80,12 @@ final class ResumeEngineTests: XCTestCase {
             if sequence == 2 { try Data("tampered".utf8).write(to: owned) }
             else { try FileManager.default.removeItem(at: owned) }
             let save = await write { engine.saveReadingPosition(token: token, eventSequence: Int64(sequence), utf16Offset: 0, completion: $0) }
-            XCTAssertTrue(save is EngineFailure)
+            // A changed or missing owned copy is unavailable local content, never NETWORK or a generic failure.
+            XCTAssertEqual((save as? EngineFailure)?.code, .cacheUnavailable, "save \(sequence)")
             let bookmark = await write { engine.saveBookmark(token: token, utf16Offset: 0, completion: $0) }
-            XCTAssertTrue(bookmark is EngineFailure)
+            XCTAssertEqual((bookmark as? EngineFailure)?.code, .cacheUnavailable, "bookmark \(sequence)")
             let reopen = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
-            XCTAssertTrue(reopen is EngineFailure)
+            XCTAssertEqual((reopen as? EngineFailure)?.code, .cacheUnavailable, "reopen \(sequence)")
             XCTAssertEqual(try searchStoredRows(book.id), before)
         }
         // Restore only this test's bytes, then force a local cache miss through the real engine.
