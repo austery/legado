@@ -155,6 +155,66 @@ final class SourceManagementTests: XCTestCase {
         XCTAssertFalse(current.contains { $0.id == a || $0.id == b })
     }
 
+    func testDeleteRemovesOnlySelectedSourcesWithSameNameAcrossSessions() async throws {
+        let first = try await engine(); defer { first.close() }
+        let prefix = "https://delete-\(UUID().uuidString).invalid"
+        let a = prefix + "/a", b = prefix + "/b", kept = prefix + "/kept"
+        _ = await call { first.importSources(json: "[\(source(a, name: "Same")),\(source(b, name: "Same", enabled: false)),\(source(kept, name: "Same"))]", completion: $0) }
+        let reply = await call { first.deleteSources(ids: [a, b, a], completion: $0) }
+        let remaining = try XCTUnwrap(reply as? ManagedSourcesReply).sources
+        XCTAssertFalse(remaining.contains { $0.id == a || $0.id == b })
+        XCTAssertTrue(remaining.contains { $0.id == kept })
+        let second = try await engine(); defer { second.close() }
+        let persisted = try await list(second)
+        XCTAssertEqual(persisted.filter { $0.id.hasPrefix(prefix) }.map(\.id), [kept])
+        let enabled = await call { second.listSources(completion: $0) }
+        let enabledIDs = try XCTUnwrap(enabled as? SourcesReply).sources.map(\.id)
+        XCTAssertFalse(enabledIDs.contains(a)); XCTAssertTrue(enabledIDs.contains(kept))
+        let exported = await call { second.exportSources(ids: [a], completion: $0) }
+        XCTAssertTrue(exported is EngineFailure)
+    }
+
+    func testDeleteWithUnknownOrEmptySelectionChangesNothing() async throws {
+        let engine = try await engine(); defer { engine.close() }
+        let id = "https://delete-unknown-\(UUID().uuidString).invalid"
+        _ = await call { engine.importSources(json: source(id), completion: $0) }
+        let unknown = await call { engine.deleteSources(ids: [id, id + "/missing"], completion: $0) }
+        XCTAssertTrue(unknown is EngineFailure)
+        let empty = await call { engine.deleteSources(ids: [], completion: $0) }
+        XCTAssertTrue(empty is EngineFailure)
+        let current = try await list(engine)
+        XCTAssertTrue(current.contains { $0.id == id })
+    }
+
+    func testDeletePersistenceFailureKeepsEverySelectedSource() async throws {
+        let engine = try await engine(); defer { engine.close() }
+        let prefix = "https://delete-rollback-\(UUID().uuidString).invalid"
+        let a = prefix + "/a", b = prefix + "/b"
+        _ = await call { engine.importSources(json: "[\(source(a)),\(source(b))]", completion: $0) }
+        try sql("CREATE TRIGGER source_delete_failure BEFORE DELETE ON book_sources WHEN OLD.bookSourceUrl = '\(b)' BEGIN SELECT RAISE(ABORT, 'injected source delete failure'); END")
+        defer { try? sql("DROP TRIGGER source_delete_failure") }
+        let result = await call { engine.deleteSources(ids: [a, b], completion: $0) }
+        XCTAssertTrue(result is EngineFailure)
+        let current = try await list(engine)
+        XCTAssertTrue(current.contains { $0.id == a }); XCTAssertTrue(current.contains { $0.id == b })
+    }
+
+    func testImportPreviewOpenedBeforeDeleteIsRejectedAsStale() async throws {
+        let first = try await engine(); let second = try await engine()
+        defer { first.close(); second.close() }
+        let id = "https://delete-stale-\(UUID().uuidString).invalid"
+        _ = await call { first.importSources(json: source(id), completion: $0) }
+        let reply = await call { first.previewSourceImport(json: source(id, updated: 2), completion: $0) }
+        let preview = try XCTUnwrap(reply as? SourceImportPreview)
+        let deleted = await call { second.deleteSources(ids: [id], completion: $0) }
+        XCTAssertTrue(deleted is ManagedSourcesReply)
+        let result = await call { first.commitSourceImport(token: preview.token, ids: [id],
+            keepName: false, keepGroups: false, keepEnabled: false, completion: $0) }
+        XCTAssertEqual((result as? EngineFailure)?.code, .staleUpdate)
+        let current = try await list(second)
+        XCTAssertFalse(current.contains { $0.id == id })
+    }
+
     func testGroupAndEnableChangesPersistAcrossEngineSessions() async throws {
         let first = try await engine(); defer { first.close() }
         let id = "https://groups-\(UUID().uuidString).invalid"

@@ -56,6 +56,7 @@ def main() -> None:
                    'ReaderUITests/testDiscoveryOptionsEmptyUnsupportedAndVisibilityPersist',
                    'ReaderUITests/testOtherEngineSourceChangeEndsVisibleSearch',
                    'ReaderUITests/testSourceImportGroupsDisableAndRelaunch',
+                   'ReaderUITests/testSourceDeleteConfirmationRemovesOnlySelectedAndRelaunch',
                    'ReaderUITests/testGlobalPrefetchToggleCachesTwoAndSurvivesRelaunch',
                    'ReaderUITests/testOfflineCacheControlsAndProtectedRelaunch',
                    'ReaderUITests/testSourceSwitchProcessLossBeforeCommitAndAfterCommitBeforeAcknowledgment',

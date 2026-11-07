@@ -19,6 +19,46 @@ final class OfflineCacheTests: XCTestCase {
         XCTAssertTrue((missing as? EngineFailure)?.message.contains("disabled") == true)
     }
 
+    func testDeletingSourceKeepsShelfBookAndCachedReading() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, chapters, cached) = try await fixture(engine)
+        let deleted = await call { engine.deleteSources(ids: [book.sourceId], completion: $0) }
+        XCTAssertFalse(try XCTUnwrap(deleted as? ManagedSourcesReply).sources.contains { $0.id == book.sourceId })
+        let reopened = ReaderEngine(); defer { reopened.close() }
+        XCTAssertTrue(await call { reopened.initialize(completion: $0) } is EngineReady)
+        let shelf = await call { reopened.listShelf(completion: $0) }
+        let orphan = try XCTUnwrap((shelf as? ShelfReply)?.books.first {
+            $0.book.sourceId == book.sourceId && $0.book.id == book.id })
+        XCTAssertEqual(orphan.sourceName, "Source deleted")
+        let opened = await call { reopened.openShelfBook(sourceId: book.sourceId, bookId: book.id, completion: $0) }
+        XCTAssertEqual((opened as? ShelfEntryReply)?.chapters.count, chapters.count)
+        let read = await call { reopened.loadChapter(sourceId: book.sourceId, bookId: book.id,
+            chapterId: chapters[0].id, cacheOnly: false, completion: $0) }
+        XCTAssertEqual((read as? ContentReply)?.text, cached.text)
+        XCTAssertEqual((read as? ContentReply)?.fromCache, true)
+        let missing = await call { reopened.loadChapter(sourceId: book.sourceId, bookId: book.id,
+            chapterId: chapters[1].id, cacheOnly: false, completion: $0) }
+        XCTAssertEqual((missing as? EngineFailure)?.code, .cacheUnavailable)
+        XCTAssertTrue((missing as? EngineFailure)?.message.contains("source was deleted") == true)
+        // The existing manual switch needs only the shelf row and the target source.
+        let alternate = book.sourceId + "-alternate"
+        let suffix = String(book.title.dropFirst("Path C Book".count))
+        let json = try await control(alternate, "/sources.json")
+            .replacingOccurrences(of: "class.name@text", with: "class.name@text##$##" + suffix)
+            .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$##" + suffix)
+        _ = await call { reopened.importSources(json: json, completion: $0) }
+        let search = await call { reopened.search(sourceId: alternate, query: "Path", page: 1, completion: $0) }
+        let candidate = try XCTUnwrap((search as? SearchReply)?.books.first)
+        _ = await call { reopened.loadBook(sourceId: alternate, bookId: candidate.id, completion: $0) }
+        let toc = await call { reopened.loadToc(sourceId: alternate, bookId: candidate.id, completion: $0) }
+        let replacement = try XCTUnwrap((toc as? TocReply)?.chapters.first)
+        let prepared = await call { reopened.prepareSourceSwitch(oldSourceId: book.sourceId, oldBookId: book.id,
+            sourceId: alternate, bookId: candidate.id, chapterId: replacement.id, completion: $0) }
+        let plan = try XCTUnwrap(prepared as? SourceSwitchPrepared)
+        let committed = await call { reopened.commitSourceSwitch(token: plan.token, completion: $0) }
+        XCTAssertEqual((committed as? ShelfEntryReply)?.entry.book.sourceId, alternate)
+    }
+
     func testImmediateCancellationAndClosedEngineDeliverExactlyOneTerminalResult() async throws {
         let engine = ReaderEngine(); defer { engine.close() }
         let (book, chapters, _) = try await fixture(engine)

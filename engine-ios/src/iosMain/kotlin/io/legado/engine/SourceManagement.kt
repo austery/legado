@@ -53,6 +53,13 @@ internal class SourceManagement {
         return list()
     }
 
+    /** Upstream path: one transaction for rows and source variables, then config and cache cleanup. */
+    suspend fun delete(ids: List<String>): ManagedSourcesReply {
+        val selectedIds = selected(ids).map { it.bookSourceUrl }.toSet()
+        SourceHelp.deleteBookSourceParts(dao.allPart().filter { it.bookSourceUrl in selectedIds })
+        return list()
+    }
+
     suspend fun group(ids: List<String>, value: String, add: Boolean): ManagedSourcesReply {
         val group = value.trim()
         require(group.isNotEmpty() && !AppPattern.splitGroupRegex.containsMatchIn(group) && '\n' !in group && '\r' !in group) {
