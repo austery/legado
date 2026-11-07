@@ -20,6 +20,7 @@ import io.legado.app.help.book.isPdf
 import io.legado.app.help.book.requireBookSaveDir
 import io.legado.app.help.config.PreferenceProviders
 import io.legado.app.help.config.OLD_COVERS_REF_SEGMENT
+import io.legado.app.help.copyToFileAtomically
 import io.legado.app.help.file.desktopAppCacheDir
 import io.legado.app.help.file.desktopAppRootDir
 import io.legado.app.help.file.desktopResolveStoredRef
@@ -42,7 +43,9 @@ import io.legado.app.utils.InputStream
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.UrlUtil
 import io.legado.app.utils.atomicWriteTempPath
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.FileNotFoundException
@@ -124,7 +127,19 @@ class DesktopFileBookAccessor(
         }
     }
 
-    override fun getBookInputStream(book: Book): InputStream {
+    /**
+     * 同步叶子的下载回退: 本方法要返回 InputStream, 只能阻塞等下载完成。
+     *
+     * 阻塞形态不变, 但**不**自建无父作用域: [parent] 是本页真实请求 Job (取消即停下这次回退),
+     * 没有可归属的请求时 (纯解析入口) 传 null, 本叶自己当根, 不去借页面外的 Job。
+     * [FileBook.downloadRemoteBook] 本身是挂起函数, 挂起链一律直接调它, 不走这条。
+     */
+    private fun downloadRemoteBookBlocking(book: Book, parent: Job?): Boolean =
+        runBlocking(parent ?: kotlin.coroutines.EmptyCoroutineContext) {
+            FileBook.downloadRemoteBook(book)
+        }
+
+    override fun getBookInputStream(book: Book, parent: Job?): InputStream {
         // 对齐 app 端 FileBookAccessorImpl.getBookInputStream: 文件失效时回退
         // "重新解压压缩包" → "下载远程文件", 全失败才抛 FileNotFoundException
         val inputStream = openLocalFile(book) ?: run {
@@ -132,11 +147,11 @@ class DesktopFileBookAccessor(
             val archiveFile = findArchiveFile(book)
             val webDavUrl = book.getRemoteUrl()
             if (archiveFile != null) {
-                importFromArchive(archiveFile.toURI().toString(), book.originName) {
+                importFromArchive(archiveFile.toURI().toString(), book.originName, parent) {
                     it.contains(book.originName)
-                }.firstOrNull()?.let { getBookInputStream(it) }
-            } else if (webDavUrl != null && FileBook.downloadRemoteBook(book)) {
-                getBookInputStream(book)
+                }.firstOrNull()?.let { getBookInputStream(it, parent) }
+            } else if (webDavUrl != null && downloadRemoteBookBlocking(book, parent)) {
+                getBookInputStream(book, parent)
             } else {
                 null
             }
@@ -173,44 +188,65 @@ class DesktopFileBookAccessor(
     override fun importFromArchive(
         archiveFileUri: String,
         saveFileName: String?,
-        filter: ((String) -> Boolean)?
+        filter: ((String) -> Boolean)?,
+    ): List<Book> = importFromArchive(archiveFileUri, saveFileName, null, filter)
+
+    override fun importFromArchive(
+        archiveFileUri: String,
+        saveFileName: String?,
+        parent: kotlinx.coroutines.Job?,
+        filter: ((String) -> Boolean)?,
     ): List<Book> {
         val archiveFile = resolveLocalFile(archiveFileUri)
+        // 每次导入独占工作目录; 不与同 URI 的并发/历史解包共享 md5 槽
+        val workDir = File(
+            desktopAppCacheDir(),
+            archiveTempFolderName + "/req-" + java.util.UUID.randomUUID(),
+        )
+        try {
         // 对齐 app 端 ArchiveUtils.deCompress: 按 filter 过滤条目, 解到目标目录, 返回文件列表
-        val files = deCompress(archiveFileUri, archiveFile, filter)
+        val files = deCompress(archiveFile, workDir, filter)
         if (files.isEmpty()) {
             throw NoStackTraceException(appString(AppStringKey.unsupport_archivefile_entry))
         }
-        return files.map { file ->
-            saveBookFile(file.inputStream(), saveFileName ?: file.name).let { uriStr ->
-                importLocalFile(uriStr).apply {
+        val result = arrayListOf<Book>()
+        files.forEach { file ->
+            parent?.ensureActive()
+            // 包内批次按原合同: 任一失败即停批 (与 map 一致); 独立外部请求各自继续
+            val book = saveBookFile(file.inputStream(), saveFileName ?: file.name).let { uriStr ->
+                importLocalFile(uriStr, parent).apply {
                     //附加压缩包名称 以便解压文件被删后再解压
                     origin = "${BookType.localTag}::${archiveFile.name}"
                     addType(BookType.archive)
-                    runBlocking { AppDbProviders.get().bookDao.update(this@apply) }
                 }
             }
+            runBlocking(parent ?: kotlin.coroutines.EmptyCoroutineContext) {
+                AppDbProviders.get().bookDao.update(book)
+            }
+            result.add(book)
+        }
+        return result
+        } finally {
+            runCatching { workDir.deleteRecursively() }
         }
     }
 
     /**
-     * 解压到 `{desktopAppCacheDir}/ArchiveTemp/{md5_16(uri)}` 并返回解出的文件。
+     * 解压到每请求独占目录并返回解出的文件。
      *
      * 对齐 app 端 `ArchiveUtils.deCompress` + `LibArchiveUtils.unArchive` 语义
      * (md5(uri) 命名工作目录 / 路径穿越校验 / filter 过滤条目), 底层换
      * [DesktopArchiveCodec] (commons-compress + junrar) 替代 native libarchive。
      */
     private fun deCompress(
-        archiveUri: String,
         archiveFile: File,
+        destDir: File,
         filter: ((String) -> Boolean)?
     ): List<File> {
         val codec = archiveSupport
             ?: throw UnsupportedOperationException("压缩包解压需注入 archiveSupport (commons-compress/junrar 留 :desktop), headless 不支持")
         codec.checkArchive(archiveFile.name)
-        val destDir = Paths.get(
-            desktopAppCacheDir(), archiveTempFolderName, MD5Utils.md5Encode16(archiveUri)
-        ).toFile().apply { mkdirs() }
+        destDir.mkdirs()
         return codec.unArchive(archiveFile, destDir, filter)
     }
 
@@ -220,7 +256,10 @@ class DesktopFileBookAccessor(
      * 判型 / 构造 Book / 落库在 [FileBookLocalImportShared] (四端唯一一份), 此处只取平台文件信息。
      * 压缩包判据仍用本端解包能力 ([getArchiveFilesName], 解包器未注入时由其报错)。
      */
-    override fun importLocalFile(uriStr: String): Book = runBlocking {
+    override fun importLocalFile(uriStr: String): Book = importLocalFile(uriStr, null)
+
+    override fun importLocalFile(uriStr: String, parent: kotlinx.coroutines.Job?): Book =
+        runBlocking(parent ?: kotlin.coroutines.EmptyCoroutineContext) {
         val file = resolveLocalFile(uriStr)
         FileBookLocalImportShared.importLocalFile(
             accessor = this@DesktopFileBookAccessor,
@@ -234,6 +273,7 @@ class DesktopFileBookAccessor(
             archiveHasBookFile = { ref ->
                 getArchiveFilesName(resolveLocalFile(ref)).any { FileBook.isBookFile(it) }
             },
+            parent = parent,
         )
     }
 
@@ -308,34 +348,47 @@ class DesktopFileBookAccessor(
         } else {
             WebDav.fromPath(str.substring(BookType.webDavTag.length)).downloadInputStream()
         }
-        return saveBookFile(inputStream, fileName)
+        return saveBookFile(inputStream, fileName, currentCoroutineContext()[Job])
     }
 
-    override fun saveBookFile(inputStream: InputStream, fileName: String): String {
+    override fun saveBookFile(
+        inputStream: InputStream,
+        fileName: String,
+        parent: Job?,
+    ): String {
         // desktop 无 SAF, 用有效书籍保存目录 + java.io.File (app 端走 defaultBookTreeUri + DocumentFile);
         // 返回存储引用: 数据根下存相对引用 (`books/x.epub`, 便携移动后有效), 兼容旧 file: URI
         //
-        // 异常口径与 app 端 FileBook.saveBookFile 文件路径分支逐字一致: 写不进去 (目录被删/无写权限/
-        // 磁盘满) 一律转 `SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e")`,
-        // 好让既有 `Throwable.isSecurityException()` 的调用方 (RemoteBookViewModelShared 的
-        // onPermissionDenied / ReaderScreenModel 的权限请求链) 拉起"去设置目录"出口;
-        // 原版该分支同样是 `catch (e: Exception)` 包住整段写 (含 copyTo), 故此处不另分类型。
-        val file = File(bookSaveDir(), fileName)
+        // 落盘协议与 app 端同一条: 目录可用性先行探测 (探不出 = 目录被删/无写权限 -> 权限类提示),
+        // 内容先整份写同目录临时件再原子改名就位 —— 目标名在写入期间始终是完整内容;
+        // 传输错误原样透传, 不再统一包装成权限失败 (那会把网络/取消说成目录问题)。
+        //
+        // 整个保存过程 (含目录解析与探测) 都在 use 内: 保存入口的消费契约是"进来就把流吃掉",
+        // 目录未设置/探测失败抛异常时也必须关闭调用方交来的流。
         inputStream.use { input ->
+            val file = File(bookSaveDir(), fileName)
+            val probe = File(atomicWriteTempPath(file.absolutePath))
             try {
-                file.outputStream().use { output -> input.copyTo(output) }
+                FileOutputStream(probe).close()
             } catch (e: Exception) {
-                throw SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e").apply {
+                throw SecurityException(
+                    "请重新设置书籍保存位置\nPermission Denial\n$e"
+                ).apply {
                     addSuppressed(e)
                 }
+            } finally {
+                probe.delete()
             }
+            // 复用既有整份写入原语 (准备循环每块前与最终替换前都核父), 不再自建等价拷贝
+            copyToFileAtomically(file.absolutePath, input, parent)
+            return desktopStoredLocalRef(file)
         }
-        return desktopStoredLocalRef(file)
     }
 
     /** web 上传临时文件落盘 (对齐 app 端: 委托 inputStream 重载)。 */
     override fun saveBookFileFromPath(filePath: String, fileName: String): String =
-        saveBookFile(File(filePath).inputStream(), fileName)
+        // web 上传通道没有可归属的页面请求: 父门显式 null
+        saveBookFile(File(filePath).inputStream(), fileName, null)
 
     /**
      * 流式保存 WebDav 远端书籍文件 ("下载到本地" / "刷新远端更新" 链路)。
@@ -369,7 +422,10 @@ class DesktopFileBookAccessor(
         } finally {
             probe.delete()
         }
+        // 进入下载前与收尾前核父资格: 取消不再白下整份
+        currentCoroutineContext()[Job]?.ensureActive()
         webDav.downloadTo(file.absolutePath, true)
+        currentCoroutineContext()[Job]?.ensureActive()
         return desktopStoredLocalRef(file)
     }
 
