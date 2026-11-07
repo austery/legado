@@ -52,6 +52,51 @@ final class ResumeEngineTests: XCTestCase {
         return try JSONDecoder().decode([String].self, from: data)
     }
 
+    func testLocalTxtTamperAndMissingFileCannotOverwriteWarmCacheAnchors() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let ready = await call { engine.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: source) }
+        let bytes = Data(("第一章 开始\n" + UUID().uuidString + "\nsecond paragraph\n第二章 继续\nlast paragraph\n").utf8)
+        try bytes.write(to: source)
+        let imported = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        let book = try XCTUnwrap((imported as? ShelfEntryReply)?.entry.book)
+        let opened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        let content = try XCTUnwrap(opened as? ContentReply)
+        let token = try XCTUnwrap(content.reading?.token)
+        let offset = (content.text as NSString).range(of: "second paragraph").location
+        XCTAssertNotEqual(offset, NSNotFound); XCTAssertGreaterThan(offset, 0)
+        let saved = await write { engine.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: Int32(offset), completion: $0) }
+        XCTAssertTrue(saved is ReadingSaved)
+        let marked = await write { engine.saveBookmark(token: token, utf16Offset: Int32(offset), completion: $0) }
+        XCTAssertTrue(marked is BookmarkSaved)
+        let before = try searchStoredRows(book.id)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        XCTAssertTrue(book.id.hasPrefix("native-txt://"))
+        let owned = documents.appendingPathComponent("books/native-txt").appendingPathComponent(String(book.id.dropFirst("native-txt://".count)))
+        defer { try? bytes.write(to: owned) }
+        for sequence in 2...3 {
+            if sequence == 2 { try Data("tampered".utf8).write(to: owned) }
+            else { try FileManager.default.removeItem(at: owned) }
+            let save = await write { engine.saveReadingPosition(token: token, eventSequence: Int64(sequence), utf16Offset: 0, completion: $0) }
+            XCTAssertTrue(save is EngineFailure)
+            let bookmark = await write { engine.saveBookmark(token: token, utf16Offset: 0, completion: $0) }
+            XCTAssertTrue(bookmark is EngineFailure)
+            let reopen = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+            XCTAssertTrue(reopen is EngineFailure)
+            XCTAssertEqual(try searchStoredRows(book.id), before)
+        }
+        // Restore only this test's bytes, then force a local cache miss through the real engine.
+        try bytes.write(to: owned)
+        try FileManager.default.removeItem(at: cacheURL(book: book, chapter: content.chapter))
+        let restored = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        let reply = try XCTUnwrap(restored as? ContentReply)
+        XCTAssertEqual(reply.text, content.text)
+        XCTAssertEqual(reply.reading?.paragraphUtf16Offset, Int32(offset))
+        XCTAssertEqual(try searchStoredRows(book.id), before)
+    }
+
     func testCachedSearchOriginalCoordinatesCoverageNoNetworkOrPersistenceAndVerifiedOpen() async throws {
         let engine = ReaderEngine(); defer { engine.close() }
         let (base, _, book, content) = try await fixture(engine)

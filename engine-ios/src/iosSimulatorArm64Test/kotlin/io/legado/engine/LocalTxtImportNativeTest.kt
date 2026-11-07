@@ -80,7 +80,19 @@ class LocalTxtImportNativeTest {
                 val failure = assertFails { LocalTxtImport.import(input.toString(), "Unavailable.txt") }
                 assertEquals("synthetic database unavailable", failure.message)
                 assertEquals(ownedBefore, fs.listRecursively(NativeLocalTxt.root().toPath()).toList().toSet())
+                val originalBytes = fs.read(input) { readByteArray() }
+                try {
+                    fs.write(input) { writeUtf8("unseen copy with uncertain database admission") }
+                    val digest = fs.read(input) { readByteString().sha256().hex() }
+                    val retained = NativeLocalTxt.root().toPath() / digest / "book.txt"
+                    val uncertain = assertFails { LocalTxtImport.import(input.toString(), "Uncertain.txt") }
+                    assertEquals("synthetic database unavailable", uncertain.message)
+                    assertTrue(fs.exists(retained))
+                    assertEquals(digest, fs.read(retained) { readByteString().sha256().hex() })
+                    assertFalse(fs.listRecursively(NativeLocalTxt.root().toPath()).any { it.name.endsWith(".staging") })
+                } finally { fs.write(input) { write(originalBytes) } }
             } finally { bind() }
+            assertEquals(listOf(savedBook), db.nativeShelfDao.listBooks())
             db.close(); TextFile.clear()
             val movedRoot = (root.toString() + "-relocated").toPath()
             fs.atomicMove(root, movedRoot)

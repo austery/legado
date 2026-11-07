@@ -287,7 +287,9 @@ final class ReaderBoundaryTests: XCTestCase {
         model.start(); try await settle(model)
         let firstPeer = ReaderModel(); defer { firstPeer.cancel() }
         firstPeer.start(); try await settle(firstPeer)
-        let sameBytes = directory.appendingPathComponent(title + ".TXT")
+        let peerDirectory = directory.appendingPathComponent("peer")
+        try FileManager.default.createDirectory(at: peerDirectory, withIntermediateDirectories: true)
+        let sameBytes = peerDirectory.appendingPathComponent(title + ".txt")
         try Data(text.utf8).write(to: sameBytes)
         model.importTxt(source)
         firstPeer.importTxt(sameBytes)
