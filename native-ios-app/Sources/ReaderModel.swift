@@ -756,7 +756,11 @@ final class ReaderModel: ObservableObject {
     }
 
     func deleteSources(_ ids: [String]) {
-        perform(retry: { [weak self] in self?.deleteSources(ids) }, start: {
+        perform(retry: { [weak self] in self?.deleteSources(ids) }, failure: { [weak self] _ in
+            // Cleanup after commit can fail with the rows already gone; show the stored list
+            // without `perform`, which would clear the failure message.
+            _ = self?.engine.listManagedSources { reply in self?.acceptManagedSources(reply) }
+        }, start: {
             self.engine.deleteSources(ids: ids, completion: $0)
         }) { [weak self] reply in
             guard let self, reply is ManagedSourcesReply else { return }

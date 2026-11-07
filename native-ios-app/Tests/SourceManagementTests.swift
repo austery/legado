@@ -191,8 +191,10 @@ final class SourceManagementTests: XCTestCase {
         let prefix = "https://delete-rollback-\(UUID().uuidString).invalid"
         let a = prefix + "/a", b = prefix + "/b"
         _ = await call { engine.importSources(json: "[\(source(a)),\(source(b))]", completion: $0) }
-        try sql("CREATE TRIGGER source_delete_failure BEFORE DELETE ON book_sources WHEN OLD.bookSourceUrl = '\(b)' BEGIN SELECT RAISE(ABORT, 'injected source delete failure'); END")
-        defer { try? sql("DROP TRIGGER source_delete_failure") }
+        // Fail the later source-variable statement so only the outer transaction can restore the rows.
+        try sql("INSERT OR REPLACE INTO caches (`key`, value, deadline) VALUES ('sourceVariable_\(b)', 'kept', 0)")
+        try sql("CREATE TRIGGER source_delete_failure BEFORE DELETE ON caches WHEN OLD.`key` = 'sourceVariable_\(b)' BEGIN SELECT RAISE(ABORT, 'injected source delete failure'); END")
+        defer { try? sql("DROP TRIGGER source_delete_failure"); try? sql("DELETE FROM caches WHERE `key` = 'sourceVariable_\(b)'") }
         let result = await call { engine.deleteSources(ids: [a, b], completion: $0) }
         XCTAssertTrue(result is EngineFailure)
         let current = try await list(engine)

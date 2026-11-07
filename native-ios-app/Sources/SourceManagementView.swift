@@ -122,11 +122,10 @@ struct SourceManagementView: View {
         .alert(deleteTitle, isPresented: Binding(get: { !pendingDelete.isEmpty }, set: {
             if !$0 { pendingDelete = [] }
         })) {
-            Button("Delete", role: .destructive) {
-                let ids = pendingDelete; pendingDelete = []
-                model.deleteSources(ids)
-            }.accessibilityIdentifier("sources.confirmDelete")
-            Button("Cancel", role: .cancel) { pendingDelete = [] }
+            // The binding setter clears pendingDelete after dismissal, so the title stays stable.
+            Button("Delete", role: .destructive) { model.deleteSources(pendingDelete) }
+                .accessibilityIdentifier("sources.confirmDelete")
+            Button("Cancel", role: .cancel) {}
         } message: { Text(deleteMessage) }
         .sheet(isPresented: Binding(get: { detailID != nil }, set: { if !$0 { detailID = nil } }), onDismiss: {
             if let id = pendingDetailExport { pendingDetailExport = nil; model.exportSources([id]) }
