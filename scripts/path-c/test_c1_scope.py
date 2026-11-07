@@ -60,6 +60,19 @@ class ScopeTest(unittest.TestCase):
         head = self.commit()
         self.assertEqual(plan(self.root, self.event(head), 'pull_request')[0], 'regression')
 
+    def test_markdown_issue_template_skips_heavy_regression(self) -> None:
+        self.write('.github/ISSUE_TEMPLATE/03-slice.md', '# Slice\n\n[Guide](../../README.md)\n')
+        head = self.commit()
+        mode, paths, _ = plan(self.root, self.event(head), 'pull_request')
+        self.assertEqual(mode, 'docs')
+        self.assertEqual(paths, ['.github/ISSUE_TEMPLATE/03-slice.md'])
+
+    def test_issue_template_forms_config_and_nested_markdown_require_full_regression(self) -> None:
+        for path in ('.github/ISSUE_TEMPLATE/01-bug.yml', '.github/ISSUE_TEMPLATE/config.yml',
+                     '.github/ISSUE_TEMPLATE/nested/slice.md', '.github/workflows/notes.md',
+                     '.github/pull_request_template.md'):
+            self.assertFalse(document(path), path)
+
     def test_more_than_api_page_of_paths_is_fully_classified(self) -> None:
         for number in range(105):
             self.write(f'docs/architecture/{number}.md', '# Note\n')

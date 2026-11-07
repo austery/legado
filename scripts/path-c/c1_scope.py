@@ -26,7 +26,9 @@ def document(path: str) -> bool:
     parts = PurePosixPath(path).parts
     return (not any(part in ('.', '..') for part in parts)
             and (path in DOCUMENTS or
-                 (path.startswith('docs/architecture/') and path.endswith('.md'))))
+                 (path.startswith('docs/architecture/') and path.endswith('.md')) or
+                 # Markdown issue templates are read only by GitHub's issue form UI.
+                 (parts[:-1] == ('.github', 'ISSUE_TEMPLATE') and path.endswith('.md'))))
 
 
 def changed_paths(root: Path, base: str, head: str, pull_request: bool) -> list[str]:
