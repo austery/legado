@@ -31,6 +31,7 @@ internal object LocalTxtImport {
         fs.createDirectories(root)
         val staging = root / ("." + NSUUID().UUIDString + ".staging")
         var created: okio.Path? = null
+        var createdIdentity: String? = null
         try {
             var count = 0L
             val hashing = HashingSink.sha256(fs.sink(staging))
@@ -62,8 +63,9 @@ internal object LocalTxtImport {
             } else {
                 fs.atomicMove(staging, target)
                 created = target
+                createdIdentity = NativeLocalTxt.identity(digest)
             }
-            val reference = "file://${File(target.toString()).absolutePath}"
+            val reference = NativeLocalTxt.identity(digest)
             val db = AppDatabaseProviders.get().appDb
             val existing = db.bookDao.getBook(reference)
             if (existing != null) {
@@ -82,19 +84,29 @@ internal object LocalTxtImport {
             return withContext(NonCancellable) { db.nativeShelfDao.admitLocalTxt(candidate, catalog) }
         } finally {
             withContext(NonCancellable) {
-                created?.let { path ->
-                    val ref = "file://${File(path.toString()).absolutePath}"
-                    if (AppDatabaseProviders.get().appDb.bookDao.getBook(ref) == null) fs.delete(path, mustExist = false)
+                // A failed database lookup leaves admission uncertain. Preserve the copy.
+                try {
+                    created?.let { path ->
+                        val absent = runCatching {
+                            AppDatabaseProviders.get().appDb.bookDao.getBook(requireNotNull(createdIdentity)) == null
+                        }.getOrDefault(false)
+                        if (absent) runCatching {
+                            fs.delete(path, mustExist = false)
+                            val parent = requireNotNull(path.parent)
+                            if (fs.list(parent).isEmpty()) fs.delete(parent)
+                        }
+                    }
+                } finally {
+                    try { runCatching { fs.delete(staging, mustExist = false) } }
+                    finally { TextFile.clear() }
                 }
             }
-            fs.delete(staging, mustExist = false)
-            TextFile.clear()
         }
     }
 
     fun verify(book: Book) {
         require(NativeLocalTxt.owns(book)) { "Unrecognized local TXT identity" }
-        val path = book.bookUrl.removePrefix("file://").toPath()
+        val path = NativeLocalTxt.path(book).toPath()
         val fs = FileSystem.SYSTEM
         val size = fs.metadata(path).size ?: error("TXT size unavailable")
         require(size in 1..MAX_BYTES && fs.read(path) { readByteString().sha256().hex() } == path.parent!!.name) {

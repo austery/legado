@@ -50,6 +50,8 @@ struct FixtureReaderApp: App {
                     HStack {
                         Text("SYNTHETIC UI HOST").font(.caption2)
                         Text("Fixture position").accessibilityIdentifier("fixture.position").accessibilityValue(positionStatus)
+                        Text("Shelf completion").accessibilityIdentifier("fixture.shelfCompletion")
+                            .accessibilityValue("\(model.txtImportRevision)|\(model.busy)|\(model.message ?? "")")
                         Text("Stored record").accessibilityIdentifier("fixture.stored").accessibilityValue(storedStatus)
                         Text("Switch committed").accessibilityIdentifier("fixture.switchCommit").accessibilityValue(switchCommitted ? "true" : "false")
                         if scenario == "sources" {

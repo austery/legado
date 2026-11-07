@@ -9,6 +9,7 @@ final class ReaderUITests: XCTestCase {
         app.launch()
         defer { app.terminate() }
         func choose(_ name: String) {
+            let before = app.staticTexts["fixture.shelfCompletion"].value as? String
             let importButton = app.buttons["shelf.importTxt"]
             XCTAssertTrue(importButton.waitForExistence(timeout: 40)); importButton.tap()
             let browse = app.buttons["Browse"]
@@ -20,6 +21,10 @@ final class ReaderUITests: XCTestCase {
             let file = app.cells[name + ", txt"]
             XCTAssertTrue(file.waitForExistence(timeout: 10), app.debugDescription)
             file.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+            wait(app) {
+                let completion = app.staticTexts["fixture.shelfCompletion"].value as? String
+                return !file.exists && completion != before && completion?.hasSuffix("|false|") == true && importButton.isEnabled
+            }
         }
         choose("Local Journey")
         let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch

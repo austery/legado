@@ -137,7 +137,7 @@ internal object EngineHost {
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()
         io.legado.app.model.fileBook.registerNativeFileBookAccessor()
-        io.legado.app.help.book.registerIosLocalBookLocator()
+        io.legado.app.help.book.LocalBookLocators.register(LocalTxtLocator(io.legado.app.help.book.IosLocalBookLocator()))
         if (runCatching { io.legado.app.help.DefaultDataResourceProviders.get() }.isFailure) {
             io.legado.app.help.DefaultDataResourceProviders.register(object : io.legado.app.help.DefaultDataResourceProvider {
                 override fun readResource(name: String): String {

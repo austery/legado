@@ -25,7 +25,7 @@ class LocalTxtImportNativeTest {
     @Test
     fun duplicatesReopenAndFailuresPreserveNativeAnchors() = runBlocking {
         val fs = FileSystem.SYSTEM
-        val root = (NSTemporaryDirectory() + "native-txt-" + NSUUID().UUIDString).toPath()
+        var root = (NSTemporaryDirectory() + "native-txt-" + NSUUID().UUIDString).toPath()
         fs.createDirectories(root)
         fun open() = Room.databaseBuilder<AppDatabase>((root / "test.db").toString()).setDriver(NativeSQLiteDriver())
             .addMigrations(*DatabaseMigrations.migrations).build()
@@ -43,16 +43,16 @@ class LocalTxtImportNativeTest {
         try {
             bind()
             AppFilesDirs.register(object : AppFilesDir {
-                override val filesDir = root.toString()
-                override val cacheDir = (root / "cache").toString()
+                override val filesDir get() = root.toString()
+                override val cacheDir get() = (root / "cache").toString()
                 override val externalFilesDir: String? = null
                 override val externalCacheDir: String? = null
             })
             DefaultDataResourceProviders.register(object : DefaultDataResourceProvider { override fun readResource(name: String) = "[]" })
             FileBookProviders.register(NativeFileBookAccessor())
-            LocalBookLocators.register(NativeLocalBookLocator())
+            LocalBookLocators.register(LocalTxtLocator(NativeLocalBookLocator()))
             RuleRegexes.register(IosRuleRegex)
-            val input = root / "input.txt"
+            var input = root / "input.txt"
             fs.write(input) { writeUtf8("\uFEFFfirst paragraph\nsecond paragraph 🌿\nlast paragraph\n") }
             val admitted = LocalTxtImport.import(input.toString(), "Original.txt")
             assertTrue(NativeLocalTxt.owns(admitted.book))
@@ -71,7 +71,26 @@ class LocalTxtImportNativeTest {
             assertEquals(admitted.chapters, duplicate.chapters)
             assertEquals(resume, db.nativeResumeDao.get(savedBook.bookUrl))
             assertEquals(listOf(bookmark), db.nativeBookmarkDao.list(savedBook.origin, savedBook.bookUrl))
-            db.close(); TextFile.clear(); db = open(); bind()
+            // An unavailable database must not mask the failure or leave staging files.
+            val ownedBefore = fs.listRecursively(NativeLocalTxt.root().toPath()).toList().toSet()
+            AppDatabaseProviders.register(object : AppDatabaseProvider {
+                override val appDb: AppDatabase get() = error("synthetic database unavailable")
+            })
+            try {
+                val failure = assertFails { LocalTxtImport.import(input.toString(), "Unavailable.txt") }
+                assertEquals("synthetic database unavailable", failure.message)
+                assertEquals(ownedBefore, fs.listRecursively(NativeLocalTxt.root().toPath()).toList().toSet())
+            } finally { bind() }
+            db.close(); TextFile.clear()
+            val movedRoot = (root.toString() + "-relocated").toPath()
+            fs.atomicMove(root, movedRoot)
+            root = movedRoot
+            input = root / "input.txt"
+            db = open(); bind()
+            assertEquals(savedBook.bookUrl, db.nativeShelfDao.listBooks().single().bookUrl)
+            val relocatedDuplicate = LocalTxtImport.import(input.toString(), "Relocated.txt")
+            assertEquals(savedBook, relocatedDuplicate.book)
+            assertEquals(admitted.chapters, relocatedDuplicate.chapters)
             fs.delete(input)
             val reopened = db.nativeShelfDao.openBook(savedBook.origin, savedBook.bookUrl)
             LocalTxtImport.verify(reopened.book)
@@ -93,17 +112,18 @@ class LocalTxtImportNativeTest {
             }
             try {
                 val owned = NativeLocalTxt.root().toPath()
-                val beforeFiles = fs.listRecursively(owned).filter { fs.metadata(it).isRegularFile }.toList().toSet()
+                val beforeFiles = fs.listRecursively(owned).toList().toSet()
                 fs.write(input) { writeUtf8("transaction must fail before admission") }
-                assertFails { LocalTxtImport.import(input.toString(), "Rollback.txt") }
+                val failure = assertFails { LocalTxtImport.import(input.toString(), "Rollback.txt") }
+                assertTrue(generateSequence(failure) { it.cause }.any { it.message?.contains("synthetic TXT failure") == true })
                 assertEquals(2, db.nativeShelfDao.listBooks().size)
-                assertEquals(beforeFiles, fs.listRecursively(owned).filter { fs.metadata(it).isRegularFile }.toList().toSet())
+                assertEquals(beforeFiles, fs.listRecursively(owned).toList().toSet())
                 assertEquals(resume, db.nativeResumeDao.get(savedBook.bookUrl))
                 assertEquals(listOf(bookmark), db.nativeBookmarkDao.list(savedBook.origin, savedBook.bookUrl))
             } finally {
                 NativeSQLiteDriver().open((root / "test.db").toString()).use { it.execSQL("DROP TRIGGER fail_txt_chapter") }
             }
-            fs.write(savedBook.bookUrl.removePrefix("file://").toPath()) { writeUtf8("tampered") }
+            fs.write(NativeLocalTxt.path(savedBook).toPath()) { writeUtf8("tampered") }
             assertFails { LocalTxtImport.verify(savedBook) }
             assertEquals(resume, db.nativeResumeDao.get(savedBook.bookUrl))
             assertEquals(listOf(bookmark), db.nativeBookmarkDao.list(savedBook.origin, savedBook.bookUrl))
@@ -112,7 +132,7 @@ class LocalTxtImportNativeTest {
             db.close(); TextFile.clear()
             if (previousDb != null) AppDatabaseProviders.register(previousDb) else AppDatabaseProviders.reset()
             if (previousAccessor != null) AppDbProviders.register(previousAccessor) else AppDbProviders.unregister()
-            previousDirs?.let { AppFilesDirs.register(it) }
+            if (previousDirs != null) AppFilesDirs.register(previousDirs) else AppFilesDirs.reset()
             previousResources?.let { DefaultDataResourceProviders.register(it) }
             previousFiles?.let { FileBookProviders.register(it) }
             previousLocator?.let { LocalBookLocators.register(it) }

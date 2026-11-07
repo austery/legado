@@ -514,6 +514,8 @@ final class ReaderModel: ObservableObject {
         }
     }
 
+    @Published private(set) var txtImportRevision = 0
+
     func importTxt(_ url: URL) {
         perform(preservingReading: true, retry: { [weak self] in self?.importTxt(url) }, start: { completion in
             let scoped = url.startAccessingSecurityScopedResource()
@@ -523,6 +525,7 @@ final class ReaderModel: ObservableObject {
             }
         }) { [weak self] reply in
             guard let self, reply is ShelfEntryReply else { return }
+            self.txtImportRevision += 1
             self.refreshShelf()
         }
     }
