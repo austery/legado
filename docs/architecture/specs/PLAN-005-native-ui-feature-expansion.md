@@ -28,6 +28,10 @@ integration PR #42. Current product snapshot: `61562bc558d76d901a854f79136d28e90
 integrated KMP upstream: `d31c0a270e7c8610e9679dbbda5a6bee06927952`.
 See [maintenance status](../../MAINTENANCE.md#current-limits-and-completed-pilot).
 
+Update 2026-11-06: the owner-confirmed priorities are recorded in the
+[required journey checklist](2026-11-06-required-journey-checklist.md).
+It supersedes the coverage backlog order below.
+
 No feature slice is active under this plan. Bookmarks, in-book search and other
 remaining coverage candidates require their own approval and acceptance.
 Interactive login remains a follow-up; upstream fields do not establish native
