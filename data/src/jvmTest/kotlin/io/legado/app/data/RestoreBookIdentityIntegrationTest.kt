@@ -68,6 +68,10 @@ class RestoreBookIdentityIntegrationTest {
                 override val keyboardAssistsDao get() = database.keyboardAssistsDao
             override suspend fun <R> runInTransactionSuspending(block: suspend () -> R): R =
                 database.useWriterConnection { writer -> writer.immediateTransaction { block() } }
+            override suspend fun <R> runInTransactionSuspending(
+                onCommitted: () -> Unit,
+                block: suspend () -> R,
+            ): R = database.runInImmediateTransaction(onCommitted, block)
         })
         try {
             val old = Book(bookUrl = "old", origin = "source", name = "Known", author = "Author", durChapterPos = 37)

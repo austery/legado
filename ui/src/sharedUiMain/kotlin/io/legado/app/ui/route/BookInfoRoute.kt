@@ -731,7 +731,7 @@ fun BookInfoRoute(
                         // 阅读器返回: 刷新阅读进度 + 书架状态 (对照 app 端 readBookResult launcher)
                         RouteResults.READER -> {
                             (result.payload as? RouteResultPayload.ChangeSource)?.let { changed ->
-                                bookSource = changed.source
+                                screenModel.bookSource = changed.source
                                 screenModel.acceptSourceReturn(changed.book, changed.toc)
                             }
                             val b = screenModel.state.value.book ?: book

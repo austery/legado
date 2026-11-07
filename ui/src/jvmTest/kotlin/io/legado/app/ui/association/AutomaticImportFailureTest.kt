@@ -8,6 +8,7 @@ import io.legado.app.data.AppDbProviders
 import io.legado.app.data.DatabaseMigrations
 import io.legado.app.data.dao.HttpTTSDao
 import io.legado.app.data.entities.HttpTTS
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.ui.book.info.edit.BookInfoEditIdentityIntegrationTest
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -90,9 +91,10 @@ class AutomaticImportFailureTest {
             override val httpTTSDao = dao
         })
         try {
-            val hook = UiRuleSubAutoUpdateHook(this)
+            val hook = UiRuleSubAutoUpdateHook()
             val json = """[{"id":123,"name":"Fixture","url":"https://fixture.invalid/tts"}]"""
-            val error = assertFailsWith<IllegalStateException> { hook.importByType(5, json) }
+            // Upstream reports an uncommitted write as NoStackTraceException carrying the cause message.
+            val error = assertFailsWith<NoStackTraceException> { hook.importByType(5, json) }
             assertEquals("Injected write failure", error.message)
             assertEquals(0, database.httpTTSDao.count())
             fail = false
