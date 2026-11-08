@@ -89,3 +89,5 @@ for owner-approved slices; it adds no automatic merge authorization.
 Physical iPad touch/layout comfort, live providers, signing/distribution and system
 permissions require their own applicable evidence and authorization. Synthetic
 fixture success does not establish those outcomes.
+
+<!-- Temporary ruleset probe 25305446 -->
