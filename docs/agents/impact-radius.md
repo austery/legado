@@ -2,27 +2,19 @@
 
 ## North Star
 
-The product direction sits above every ADR here:
 [Legado native reader North Star](/Users/leipeng/Documents/research-notes/05-archive/2026-10-22_legado-native-ui_north-star-and-maintenance.md)
-(owner-confirmed 2026-10-23; outside this repository, so linked by absolute
-path).
+(Lei's lineage note, outside this repository, linked by absolute path). Agents
+read only its `## Current core` section.
 
-- **Mission:** a native iPad reader that Lei uses every day and can improve
-  directly. It reuses the real Legado/KMP runtime and community book sources.
-  AI carries routine engineering maintenance; Lei decides requirements, reading
-  experience and key decisions.
-- **Intended form:** Swift native UI over the reused execution layer. Other
-  readers (Wanyuan, Fanqie, Apple Books) are references for the two-page /
-  two-column reading experience, not a feature list to match.
-- **Done means** (the note's completion criteria): the required journeys Lei
-  confirms, the agreed two-page layout that keeps book, chapter and paragraph
-  identity, 14 days of natural use on a physical iPad, at least two independent
-  community sources, no unresolved silent progress loss or wrong source/book
-  overwrite, and a real maintenance task done end to end by AI.
+**Provisional:** that note has no `## Current core` section yet; Lei will write
+it. Until then, the Trunk derivation and the `north_star_conflict` examples
+below follow the direction Lei confirmed on 2026-10-23. Re-check both against
+`## Current core` once it exists.
 
 ### How Trunk follows from the mission
 
-The mission depends on three things. A failure in any of them breaks daily
+The mission (a native iPad reader for daily use that reuses the Legado/KMP
+runtime and community sources) depends on three things. A failure in any of them breaks daily
 reading, so the paths that carry them are Trunk below:
 
 1. **Community-source compatibility** (reuse the runtime and the sources): rule
@@ -62,7 +54,7 @@ detail. Stop with `north_star_conflict` when a task would, for example:
 
 ## Policy and scope
 
-The owner's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `8424d9b`)
+The owner's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `32cced5`)
 defines Door (Two-way / One-way), Radius (Leaf / Branch / Trunk), Structure
 (untouched / approved / unapproved / Unknown), the controlled-Branch evidence,
 the review tiers and the execution gates. This file maps those terms onto this
