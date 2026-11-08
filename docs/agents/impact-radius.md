@@ -645,7 +645,8 @@ So every upstream integration merge also does these steps:
 
 - List its `.github/` changes on their own (`git diff <previous base> <merge>
   -- .github`) and review them as verifier changes.
-- Re-check the guards that keep inherited publishing off in this repository:
+- Re-check the guards that limit inherited publishing in this repository (the
+  `ios.yml` manual publish stays open; see One-way effects):
   - `test.yml:38`: the `github.repository != 'austery/legado'` condition;
   - `release.yml:39-41`: publishing runs only when `RELEASE_KEY_STORE` is set;
   - `ios.yml:353-361`: the manual publish of the `multiplatform-test` prerelease.
