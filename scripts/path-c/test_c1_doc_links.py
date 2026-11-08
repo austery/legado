@@ -81,6 +81,35 @@ class CheckTest(unittest.TestCase):
     def test_code_spans_are_not_checked(self) -> None:
         self.assertEqual(self.run_check('Write `[x](/Users/someone/note.md)` as a code span.\n'), [])
 
+    def test_multi_line_labels_nested_parentheses_and_quotes_are_checked(self) -> None:
+        found = self.run_check(
+            '[read\nmore](missing-a.md) [x](missing(a(b)).md)\n\n'
+            '> [q][ref]\n>\n> [ref]: missing-b.md\n')
+        self.assertEqual(len(found), 3, found)
+
+    def test_code_spans_pair_only_equal_backtick_runs(self) -> None:
+        found = self.run_check('One ` tick, [gone](missing.md), then ``literal``.\n')
+        self.assertEqual(len(found), 1, found)
+
+    def test_code_span_does_not_cross_paragraphs(self) -> None:
+        found = self.run_check('Open ` here.\n\n[gone](missing.md)\n\nClose ` here.\n')
+        self.assertEqual(len(found), 1, found)
+
+    def test_indented_code_and_quoted_fences_are_not_checked(self) -> None:
+        self.assertEqual(self.run_check(
+            'Text.\n\n    [example](/Users/example/file.md)\n\n'
+            '> ~~~\n> [x](/abs/path.md)\n> ~~~\n'), [])
+
+    def test_list_continuation_links_are_still_checked(self) -> None:
+        found = self.run_check('- item\n  [gone](missing.md)\n')
+        self.assertEqual(len(found), 1, found)
+
+    def test_entities_escapes_and_setext_headings_resolve(self) -> None:
+        self.write('docs/file(name).md', 'Setext title\n============\n')
+        self.assertEqual(self.run_check(
+            '[e](target&#46;md) [b](file\\(name\\).md#setext-title) [s](#local)\n\n'
+            'Local\n-----\n[^1]: a footnote, not a link\n'.replace('#local', '#local')), [])
+
     def test_link_leaving_repository_fails(self) -> None:
         self.assertIn('leaves repository', self.run_check('[out](../../outside.md)\n')[0])
 
