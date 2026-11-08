@@ -363,6 +363,9 @@ source.
 
 ### What Structure approved needs here
 
+This list applies to database and persisted-format paths. A decision record needs
+Lei's approval of that ADR and no migration evidence.
+
 - The H1 approved before implementation names each added or altered entity,
   column, index, view, migration, persisted key and file-layout element.
 - This repository has no down migrations, and Room offers no reverse migration
@@ -689,8 +692,9 @@ Review models and commands are pinned in global-skills
 
 **Structure approved.**
 
-- The review of the strictest tier that applies, plus the migration fixture and
-  snapshot-and-restore evidence above. Almost every Structure path is in
+- The review of the strictest tier that applies. A database or persisted-format
+  path also needs the migration fixture and snapshot-and-restore evidence above.
+  Almost every Structure path is in
   `data/`, `core/` or `foundation/` (Trunk), and migrations are a
   wrong-but-green domain, so in practice this is L2.
 - Lei: H1 approval before work; merge approval.
@@ -763,7 +767,13 @@ the native manual switch already exists (`ReaderEngine.kt:130`,
 
 ## Prerequisites before automatic merge
 
-As of 2026-11-08, automatic merge stays off. Reasons:
+In this section, **automatic merge** means the policy's standing authorization:
+an agent merges without Lei's approval of that PR. GitHub's **auto-merge** is a
+different setting: it merges a PR when the PR meets its requirements.
+
+Automatic merge stays off. The evidence here was read on 2026-11-08 at
+`native-reader` `d9845fed3` and from the live ruleset, not at the revision named
+under [Policy and scope](#policy-and-scope). Reasons:
 
 - **AGENTS.md requires Lei's explicit approval for every merge.** The policy's
   standing authorization, which replaces the per-PR merge confirmation, cannot
@@ -771,17 +781,20 @@ As of 2026-11-08, automatic merge stays off. Reasons:
   something this map settles.
 - **What GitHub already enforces.** The ruleset `Protect native-reader` requires:
   - a PR;
-  - code-owner approval for paths in `.github/CODEOWNERS`, which a new push
-    dismisses. Other paths need 0 approvals, so the setting for unattributed
-    Copilot PRs adds no approval there;
+  - code-owner approval for paths in `.github/CODEOWNERS`;
   - the status check `C1 engine regression`, with up-to-date branches.
 
-  It also blocks deletion and force-push. `.github/CODEOWNERS` copies named paths
-  from this map, so change both together.
+  A new push dismisses a code-owner approval. Other paths need 0 approvals, so
+  the setting for unattributed Copilot PRs adds no approval there. The ruleset
+  also blocks deletion and force-push.
+- **What CODEOWNERS covers.** It copies named paths from this map, so change both
+  together. It covers each file and directory named under [Paths](#paths). It
+  does not cover [Not covered by paths](#not-covered-by-paths-treat-as-unknown),
+  because that section describes content, not a fixed path list.
 - **What GitHub leaves open.** The repository admin role can bypass the ruleset,
   and Lei's account holds that role. Agents do not use the bypass. The repository
-  setting allows auto-merge, so an agent turns it on for a PR only after Lei
-  approves that PR.
+  setting allows auto-merge. An agent turns it on for a PR only after Lei approves
+  that PR's head, and pins that head with `--match-head-commit`.
 - **What is missing:**
   - Conditions that depend on a diff's content. CODEOWNERS matches whole paths,
     so agents and reviewers still apply the content conditions in this map;

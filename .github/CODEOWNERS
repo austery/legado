@@ -56,6 +56,7 @@
 /data/src/commonMain/kotlin/io/legado/app/help/HomeTabHelpShared.kt @austery
 /data/src/commonMain/kotlin/io/legado/app/help/storage/BackupShared.kt @austery
 /data/src/commonMain/kotlin/io/legado/app/help/storage/RestoreShared.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/storage/BackupConfigShared.kt @austery
 /core/src/iosMain/kotlin/io/legado/app/help/config/IosPreferenceProvider.kt @austery
 /foundation/src/iosMain/kotlin/io/legado/app/utils/IosSecurityScopedStorage.kt @austery
 /native-ios-app/Sources/ReadingPreferences.swift @austery
