@@ -2,9 +2,10 @@
 
 ## North Star
 
-[Legado native reader North Star](/Users/leipeng/Documents/research-notes/05-archive/2026-10-22_legado-native-ui_north-star-and-maintenance.md)
-(Lei's lineage note, outside this repository, linked by absolute path). Agents
-read only its `## Current core` section. Lei confirmed that section on
+`/Users/leipeng/Documents/research-notes/05-archive/2026-10-22_legado-native-ui_north-star-and-maintenance.md`
+(Lei's lineage note, a path on Lei's machine outside this repository; it is a
+code span, not a link, because link checks reject machine-specific targets).
+Agents read only its `## Current core` section. Lei confirmed that section on
 2026-11-08.
 
 ### How Trunk follows from the mission
@@ -96,7 +97,7 @@ These also stop and go to Lei, but the North Star is not their source:
 
 ## Policy and scope
 
-Lei's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `32cced5`) defines:
+Lei's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `54322db`) defines:
 
 - Door: Two-way or One-way;
 - Radius: Leaf, Branch, Trunk or Unknown;
