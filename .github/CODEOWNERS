@@ -9,6 +9,7 @@
 /docs/architecture/ @austery
 /docs/VALIDATION.md @austery
 /docs/MAINTENANCE.md @austery
+/docs/_archive/README.md @austery
 /scripts/path-c/ @austery
 /scripts/ci/ @austery
 /scripts/build-ios-native.sh @austery

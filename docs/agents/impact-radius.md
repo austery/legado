@@ -363,8 +363,7 @@ source.
 
 ### What Structure approved needs here
 
-An ADR needs Lei's approval of that ADR. It needs no migration evidence, and that
-approval replaces the H1. Every other Structure path needs this list.
+This list does not apply to an ADR. An ADR needs Lei's approval of that ADR.
 
 - The H1 approved before implementation names each added or altered entity,
   column, index, view, migration, persisted key and file-layout element.
@@ -692,12 +691,12 @@ Review models and commands are pinned in global-skills
 
 **Structure approved.**
 
-- The review of the strictest tier that applies. Every Structure path except an
-  ADR also needs the migration fixture and snapshot-and-restore evidence above.
+- The review of the strictest tier that applies, plus the migration fixture and
+  snapshot-and-restore evidence above. An ADR does not need that evidence.
   Almost every Structure path is in
   `data/`, `core/` or `foundation/` (Trunk), and migrations are a
   wrong-but-green domain, so in practice this is L2.
-- Lei: H1 approval before work (for an ADR, approval of that ADR); merge approval.
+- Lei: H1 approval before work; merge approval.
 
 **L2.** Everything the policy's execution gate 1 stops: Trunk, Door One-way,
 Radius Unknown, a Branch without controlled-Branch evidence, Structure
@@ -772,7 +771,8 @@ an agent merges without Lei's approval of that PR. GitHub's **auto-merge** is a
 different setting: it merges a PR when the PR meets its requirements.
 
 Agents read the evidence here on 2026-11-08: the ruleset and repository settings
-from GitHub, and `.github/CODEOWNERS` at the commit that last changed this section.
+from GitHub, and `.github/CODEOWNERS` at `native-reader` `d9845fed3` plus the lines
+for `BackupConfigShared.kt` and `docs/_archive/README.md`, added with this text.
 This evidence is newer than the revision named under
 [Policy and scope](#policy-and-scope).
 
@@ -807,10 +807,14 @@ Automatic merge stays off. Reasons:
   - The repository setting allows auto-merge. An agent turns it on for a PR only
     after Lei gives merge approval for that PR's head, and passes that head with
     `--match-head-commit`.
-  - GitHub's documents do not say that it rechecks that value at merge. They state
-    only that a push from someone without write permission turns auto-merge off.
+  - GitHub's auto-merge pages say that auto-merge turns off when someone without
+    write permission pushes or switches the base branch. They do not say what a
+    push with write permission does, or that GitHub rechecks that head at merge.
     So a new head voids the approval: turn auto-merge off before a push, then ask
     Lei to approve the new head.
+  - GitHub enforces an approval from the `austery` account, not Lei's decision. An
+    agent session signed in with that account can approve a PR. Agents do this
+    only when Lei explicitly tells them to.
 - **What is missing:**
   - Conditions that depend on a diff's content. CODEOWNERS matches whole paths,
     so agents and reviewers still apply the content conditions in this map;
