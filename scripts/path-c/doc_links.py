@@ -139,7 +139,7 @@ def problems(root: Path, path: str, content: str) -> list[str]:
     found: list[str] = []
     for line, target in sorted(set(targets(content))):
         decoded = unquote(target)
-        if decoded.startswith('//'):
+        if target.startswith('//') and urlsplit(target).netloc:
             message: Optional[str] = None  # Protocol-relative URL: external, not a local path.
         elif (decoded.startswith('/') or decoded.lower().startswith('file:')
                 or WINDOWS_PATH.match(decoded)):

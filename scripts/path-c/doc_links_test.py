@@ -109,6 +109,11 @@ class CheckTest(unittest.TestCase):
     def test_protocol_relative_url_is_external(self) -> None:
         self.assertEqual(self.run_check('[remote](//example.com/docs)\n'), [])
 
+    def test_encoded_slashes_are_not_a_protocol_relative_url(self) -> None:
+        found = self.run_check('[a](%2F%2Fmissing.md) [b](/%2FUsers/someone/note.md)\n')
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(all('machine-specific' in message for message in found))
+
     def test_link_leaving_repository_fails(self) -> None:
         self.assertIn('leaves repository', self.run_check('[out](../../outside.md)\n')[0])
 
