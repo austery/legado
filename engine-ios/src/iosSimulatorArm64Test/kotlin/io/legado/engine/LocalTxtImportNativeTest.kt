@@ -155,8 +155,18 @@ class LocalTxtImportNativeTest {
             // An unreadable picked file is invalid input, not a network failure.
             assertFailsWith<IllegalArgumentException> { LocalTxtImport.import((root / "absent.txt").toString(), "Absent.txt") }
             assertEquals(beforeCancel, fs.listRecursively(owned).toList().toSet())
+            // Files shorter than upstream's three-byte BOM probe keep their exact body.
+            for (tiny in listOf("a", "ab")) {
+                fs.write(input) { writeUtf8(tiny) }
+                val imported = LocalTxtImport.import(input.toString(), "$tiny.txt")
+                assertEquals(tiny, TextFile.getContent(imported.book, imported.chapters.single()))
+            }
             fs.write(NativeLocalTxt.path(savedBook).toPath()) { writeUtf8("tampered") }
             assertFailsWith<CacheUnavailable> { LocalTxtImport.verify(savedBook) }
+            // Re-importing the original bytes never overwrites a changed owned copy.
+            fs.write(input) { writeUtf8("\uFEFFfirst paragraph\nsecond paragraph 🌿\nlast paragraph\n") }
+            assertFailsWith<CacheUnavailable> { LocalTxtImport.import(input.toString(), "Original.txt") }
+            assertEquals("tampered", fs.read(NativeLocalTxt.path(savedBook).toPath()) { readUtf8() })
             fs.delete(NativeLocalTxt.path(savedBook).toPath())
             assertFailsWith<CacheUnavailable> { LocalTxtImport.verify(savedBook) }
             assertEquals(resume, db.nativeResumeDao.get(savedBook.bookUrl))

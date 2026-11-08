@@ -544,7 +544,8 @@ class ReaderEngine {
     fun importTxt(path: String, filename: String, completion: (EngineReply) -> Unit): EngineRequest =
         request(completion, interruptCache = false) {
             val entry = LocalTxtImport.import(path, filename)
-            withContext(NonCancellable) { acceptShelfEntry(entry) }
+            // Admission already committed; a retry reaches the duplicate path.
+            withContext(NonCancellable) { shelfOperation { acceptShelfEntry(entry) } }
         }
 
     fun checkNewChapters(sourceId: String, bookId: String,
@@ -678,7 +679,9 @@ class ReaderEngine {
         if (position < 0) throw MissingEntity("Chapter is not in the catalog")
         val chapter = toc[position]
         val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.get(bookId)
-        val cached = BookStorageProviders.get().getContent(book, chapter)?.takeIf { it.isNotEmpty() }
+        // An owned TXT body always comes from the verified file, so an altered cache cannot supply anchors.
+        val cached = if (NativeLocalTxt.owns(book)) null
+            else BookStorageProviders.get().getContent(book, chapter)?.takeIf { it.isNotEmpty() }
         val expected = saved?.takeIf { it.chapterUrl == chapterId }
         val usable = cached?.takeIf {
             if (searchHit != null) cachedSearch.matches(searchHit, it)
@@ -694,8 +697,17 @@ class ReaderEngine {
                     catch (error: okio.IOException) { throw CacheUnavailable("The saved TXT file is missing or has changed") }
                 if (localBody.isEmpty()) throw CacheUnavailable("TXT chapter is empty")
                 validateBookmarkBody(bookmark, localBody)
-                BookStorageProviders.get().saveText(book, chapter, localBody)
-                if (BookStorageProviders.get().getContent(book, chapter) != localBody) throw CacheUnavailable("TXT cache verification failed")
+                if (searchHit != null && !cachedSearch.matches(searchHit, localBody)) throw CacheUnavailable("Search result no longer matches this chapter")
+                try {
+                    BookStorageProviders.get().saveText(book, chapter, localBody)
+                    if (BookStorageProviders.get().getContent(book, chapter) != localBody) {
+                        throw okio.IOException("Saved chapter body could not be verified")
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: okio.IOException) {
+                    storageNotice = "Text is available for this session, but progress was not saved: ${error.message}"
+                }
                 return@run localBody
             }
             if (cacheOnly) throw CacheUnavailable("Chapter cache is missing or differs from saved progress")

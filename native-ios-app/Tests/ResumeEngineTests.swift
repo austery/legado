@@ -52,6 +52,67 @@ final class ResumeEngineTests: XCTestCase {
         return try JSONDecoder().decode([String].self, from: data)
     }
 
+    private func importLocalTxt(_ engine: ReaderEngine) async throws -> (BookSnapshot, ContentReply) {
+        let ready = await call { engine.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try Data(("第一章 开始\n" + UUID().uuidString + "\nsecond paragraph\n").utf8).write(to: source)
+        let imported = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        let book = try XCTUnwrap((imported as? ShelfEntryReply)?.entry.book)
+        let opened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        return (book, try XCTUnwrap(opened as? ContentReply))
+    }
+
+    func testLocalTxtReadsTheOwnedFileWhenTheChapterCacheWasAltered() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, content) = try await importLocalTxt(engine)
+        let cache = cacheURL(book: book, chapter: content.chapter)
+        try Data("altered but readable text".utf8).write(to: cache)
+        let reopened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((reopened as? ContentReply)?.text, content.text)
+        XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), content.text)
+    }
+
+    func testLocalTxtCacheWriteFailureKeepsReadingAndIsNotNetwork() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, content) = try await importLocalTxt(engine)
+        let cache = cacheURL(book: book, chapter: content.chapter)
+        try FileManager.default.removeItem(at: cache)
+        // A non-empty directory at the cache path makes the atomic chapter write fail.
+        try FileManager.default.createDirectory(at: cache.appendingPathComponent("blocker"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let reopened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertNil((reopened as? EngineFailure)?.code)
+        XCTAssertEqual((reopened as? ContentReply)?.text, content.text)
+    }
+
+    func testLocalTxtReplyDatabaseFailureIsStorageAndTheBookStaysAdmitted() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let ready = await call { engine.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try Data(("第一章 开始\n" + UUID().uuidString + "\n").utf8).write(to: source)
+        func groups(_ statement: String) throws {
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("legado.db")
+            var database: OpaquePointer?
+            XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+            defer { sqlite3_close(database) }
+            XCTAssertEqual(sqlite3_exec(database, statement, nil, nil, nil), SQLITE_OK)
+        }
+        // The shelf organization read that builds the reply fails after admission commits.
+        try groups("ALTER TABLE book_groups RENAME TO book_groups_hidden")
+        var restored = false
+        defer { if !restored { try? groups("ALTER TABLE book_groups_hidden RENAME TO book_groups") } }
+        let failed = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        XCTAssertEqual((failed as? EngineFailure)?.code, .storage)
+        try groups("ALTER TABLE book_groups_hidden RENAME TO book_groups"); restored = true
+        let retried = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        let book = try XCTUnwrap((retried as? ShelfEntryReply)?.entry.book)
+        XCTAssertEqual(try searchStoredRows(book.id).isEmpty, false)
+    }
+
     func testLocalTxtTamperAndMissingFileCannotOverwriteWarmCacheAnchors() async throws {
         let engine = ReaderEngine(); defer { engine.close() }
         let ready = await call { engine.initialize(completion: $0) }

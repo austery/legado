@@ -14,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import okio.Buffer
+import okio.ByteString.Companion.toByteString
 import okio.FileSystem
 import okio.HashingSink
 import okio.IOException
@@ -61,6 +62,7 @@ internal object LocalTxtImport {
                 ?.removePrefix("\uFEFF") ?: throw IllegalArgumentException("The TXT file must use UTF-8 encoding")
             require(text.isNotBlank() && '\u0000' !in text) { "The TXT file has no readable text" }
             val digest = hashing.hash.hex()
+            if (bytes.toByteString().sha256().hex() != digest) throw ShelfStorageFailure("The staged TXT copy could not be verified")
             val target = root / digest / "book.txt"
             local { fs.createDirectories(target.parent!!) }
             if (local { fs.exists(target) }) {
@@ -84,6 +86,8 @@ internal object LocalTxtImport {
             // Upstream parsing reads the owned copy and the TOC rule table; its failures here are local storage.
             val catalog = database { TextFile.getChapterList(candidate) }
             require(catalog.isNotEmpty()) { "The TXT file has no chapters" }
+            // Upstream counts its three-byte BOM probe as body, so a shorter file would read past its end.
+            catalog.last().let { last -> if ((last.end ?: 0L) > count) last.end = count }
             candidate.totalChapterNum = catalog.size
             candidate.latestChapterTitle = catalog.last().title
             currentCoroutineContext().ensureActive()

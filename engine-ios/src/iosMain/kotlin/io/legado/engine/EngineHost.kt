@@ -136,8 +136,8 @@ internal object EngineHost {
         registerNativeSourceProviders()
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()
-        io.legado.app.model.fileBook.registerNativeFileBookAccessor()
         io.legado.app.help.book.LocalBookLocators.register(LocalTxtLocator(io.legado.app.help.book.IosLocalBookLocator()))
+        io.legado.app.model.fileBook.registerNativeFileBookAccessor()
         if (runCatching { io.legado.app.help.DefaultDataResourceProviders.get() }.isFailure) {
             io.legado.app.help.DefaultDataResourceProviders.register(object : io.legado.app.help.DefaultDataResourceProvider {
                 // Upstream contract: throw when a resource cannot be read. The app bundles only

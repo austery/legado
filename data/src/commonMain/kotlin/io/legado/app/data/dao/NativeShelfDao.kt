@@ -368,7 +368,7 @@ abstract class NativeShelfDao {
     private fun requireTextBook(book: Book) {
         if (book.type and BookType.text == 0 || (book.type and BookType.local != 0 && !NativeLocalTxt.owns(book)) ||
             book.origin == BookType.localTag || book.origin.startsWith(BookType.webDavTag)) {
-            throw NativeShelfException(NativeShelfFailure.UNSUPPORTED_BOOK, "Only source-backed text books belong to this shelf")
+            throw NativeShelfException(NativeShelfFailure.UNSUPPORTED_BOOK, "Only source-backed text books and app-owned TXT copies belong to this shelf")
         }
     }
 }
