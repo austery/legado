@@ -788,9 +788,10 @@ under [Policy and scope](#policy-and-scope). Reasons:
   the setting for unattributed Copilot PRs adds no approval there. The ruleset
   also blocks deletion and force-push.
 - **What CODEOWNERS covers.** It copies named paths from this map, so change both
-  together. It covers each file and directory named under [Paths](#paths). It
-  does not cover [Not covered by paths](#not-covered-by-paths-treat-as-unknown),
-  because that section describes content, not a fixed path list.
+  together. It covers each Structure file and directory named under
+  [Paths](#paths). It does not cover
+  [Not covered by paths](#not-covered-by-paths-treat-as-unknown), because that
+  section describes content, not a fixed path list.
 - **What GitHub leaves open.** The repository admin role can bypass the ruleset,
   and Lei's account holds that role. Agents do not use the bypass. The repository
   setting allows auto-merge. An agent turns it on for a PR only after Lei approves
