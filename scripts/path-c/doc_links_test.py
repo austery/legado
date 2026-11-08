@@ -6,11 +6,14 @@ job discovers with the system Python. Run it with:
         --with-requirements scripts/path-c/requirements-doc-links.txt \
         python -m unittest discover -s scripts/path-c -p 'doc_links_test.py'
 """
+import contextlib
+import io
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
-from doc_links import check, maintained
+from doc_links import check, main, maintained
 
 
 class MaintainedTest(unittest.TestCase):
@@ -26,9 +29,10 @@ class MaintainedTest(unittest.TestCase):
                      'modules/web/README.md', 'data/src/commonMain/kotlin/org/jsoup/README.md'):
             self.assertFalse(maintained(path), path)
 
-    def test_archive_payloads_are_skipped_but_indexes_are_checked(self) -> None:
+    def test_only_the_top_archive_index_is_checked(self) -> None:
         self.assertTrue(maintained('docs/_archive/README.md'))
-        self.assertTrue(maintained('docs/_archive/2026-specs/README.md'))
+        # An archived README stays byte-for-byte, so its old links must not fail the check.
+        self.assertFalse(maintained('docs/_archive/2026-specs/README.md'))
         self.assertFalse(maintained('docs/_archive/2026-specs/SPEC-004.md'))
         self.assertFalse(maintained('docs/_archive/a/b/README.md'))
 
@@ -101,6 +105,13 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(self.run_check(
             '[a](styled.md#usage) [b](styled.md#setup) [c](styled.md#code-and-bold)\n'), [])
 
+    def test_repeated_headings_get_github_anchors(self) -> None:
+        self.write('docs/dup.md', '# A\n\n# A\n\n# A-1\n')
+        found = self.run_check(
+            '[a](dup.md#a) [b](dup.md#a-1) [c](dup.md#a-1-1) [gone](dup.md#a-2)\n')
+        self.assertEqual(len(found), 1, found)
+        self.assertIn('#a-2', found[0])
+
     def test_html_ids_count_only_outside_code(self) -> None:
         self.write('docs/ids.md', '<a id="real"></a>\n\n```\n<a id="ghost"></a>\n```\n')
         found = self.run_check('[ok](ids.md#real) [bad](ids.md#ghost)\n')
@@ -115,6 +126,11 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(len(found), 2, found)
         self.assertTrue(all('machine-specific' in message for message in found))
 
+    def test_directory_link_fails(self) -> None:
+        found = self.run_check('[dir](../src/) [bare](../src)\n')
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(all('missing link' in message for message in found))
+
     def test_link_leaving_repository_fails(self) -> None:
         self.assertIn('leaves repository', self.run_check('[out](../../outside.md)\n')[0])
 
@@ -128,6 +144,40 @@ class CheckTest(unittest.TestCase):
     def test_no_maintained_files_is_an_error(self) -> None:
         with self.assertRaises(ValueError):
             check(self.root, ['README.md'])
+
+
+class MainTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+
+    def write(self, path: str, text: str, tracked: bool = True) -> None:
+        file = self.root / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(text)
+        if tracked:
+            subprocess.run(['git', 'add', path], cwd=self.root, check=True)
+
+    def run_main(self) -> tuple[int, str]:
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+            status = main(self.root)
+        return status, errors.getvalue()
+
+    def test_tracked_broken_link_fails_and_is_reported(self) -> None:
+        self.write('docs/page.md', 'Intro.\n\n[gone](missing.md)\n')
+        status, errors = self.run_main()
+        self.assertEqual(status, 1)
+        self.assertIn('docs/page.md:3: missing link', errors)
+        self.assertIn('1 broken Markdown link(s).', errors)
+
+    def test_untracked_files_are_not_checked(self) -> None:
+        self.write('docs/page.md', '[ok](other.md)\n')
+        self.write('docs/other.md', '# Other\n')
+        self.write('docs/draft.md', '[gone](missing.md)\n', tracked=False)
+        self.assertEqual(self.run_main(), (0, ''))
 
 
 if __name__ == '__main__':
