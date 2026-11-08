@@ -6,15 +6,12 @@
 (Lei's lineage note, outside this repository, linked by absolute path). Agents
 read only its `## Current core` section.
 
-**Provisional:** that note has no `## Current core` section yet; Lei will write
-it. Until then, the Trunk derivation and the `north_star_conflict` examples
-below follow the direction Lei confirmed on 2026-10-23. Re-check both against
-`## Current core` once it exists.
+The Trunk derivation and the `north_star_conflict` examples below were checked
+against `## Current core` as Lei confirmed it on 2026-11-08.
 
 ### How Trunk follows from the mission
 
-The mission (a native iPad reader for daily use that reuses the Legado/KMP
-runtime and community sources) depends on three things. A failure in any of them breaks daily
+The mission in `## Current core` depends on three things. A failure in any of them breaks daily
 reading, so the paths that carry them are Trunk below:
 
 1. **Community-source compatibility** (reuse the runtime and the sources): rule
@@ -33,24 +30,35 @@ reading, so the paths that carry them are Trunk below:
 A task inside a non-goal is a product decision for Lei, not an implementation
 detail. Stop with `north_star_conflict` when a task would, for example:
 
+From `## Current core`:
+
 - Match another reader's full feature set (Wanyuan, Fanqie or Apple Books)
-  because the reference has it, rather than for a journey Lei confirmed.
+  because the reference has it, rather than for a journey Lei confirmed
+  (product form: references, not feature parity).
 - Write a private parser or rule runtime, or patch core parsing and rule
   execution in a private fork, instead of reusing the upstream runtime
-  ([ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#decision)).
+  (mission: reuse the real runtime; see also
+  [ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#decision)).
 - Take on long-term private per-site rule maintenance instead of using
-  maintained community rules or alternative sources.
+  maintained community rules or alternative sources (non-goal).
+- Promise or certify that every community source keeps working, for example a
+  task that treats a dead third-party site as a product defect to fix in this
+  repository (non-goal).
 - Follow the newest upstream automatically as a goal. Updates need a
-  compatibility, security or product reason.
-- Hand routine technical work back to Lei as a standing duty: editing sources,
-  reading CI logs, fixing the environment, resolving Git conflicts, or running
-  recovery commands.
-- Add new recurring paid cost, unlimited automatic runs, publishing or
-  deployment without a separate owner decision.
+  compatibility, security or product reason (non-goal).
+- Hand routine technical work back to Lei as a standing duty: fixing sources,
+  reading CI logs, fixing the environment, resolving upstream or Git conflicts,
+  or running recovery commands (division of work and non-goal).
+- Introduce a new data format, a new recurring cost, unlimited automatic runs,
+  publishing or deployment, or a change to the responsibility boundary, without
+  Lei's decision (non-goal: Lei decides these).
+
+From ADR-001 (product decisions below the North Star):
+
 - Exchange shelf or progress data with another reader, or keep the database
-  readable by an unmodified old client. ADR-001 lists both as non-goals (B and C).
+  readable by an unmodified old client (non-goals B and C).
 - Separate product storage or replace the runtime pre-emptively, without a
-  blocked requirement or observed recurring maintenance cost (ADR-001 bounded MVP).
+  blocked requirement or observed recurring maintenance cost (bounded MVP).
 
 ## Policy and scope
 
