@@ -9,7 +9,8 @@ revision rather than copying commands from an earlier run.
 
 Use an ARM64 Mac, full Xcode with the selected iOS Simulator runtime, JDK 21 plus
 the JDK 17 build-logic toolchain, the Gradle wrapper, Android SDK for project
-configuration, Python 3.9+ and XcodeGen. Exact CI versions and setup are in the
+configuration, Python 3.9+, uv with Python 3.13 for the Markdown link check, and
+XcodeGen. Exact CI versions and setup are in the
 workflow. See [engine reproduction](../engine-ios/README.md#reproduce).
 
 C1 first runs lightweight scope/static checks on a hosted runner. An explicit
@@ -22,13 +23,27 @@ requires regression. Manual dispatch always requests full validation.
 
 Documentation-only changes run routing/gate unit checks, diff whitespace, changed
 inline repository links/anchors and Markdown fences, plus inbound references to
-affected documents. Static checks do not execute fenced examples or certify remote
-links, images, generated diagrams, machine-local paths, reference-style links or
+affected documents. Both heavy jobs are skipped for this mode. The required aggregate
+passes only when the scope/static job succeeds and both jobs are skipped as expected;
+its result explicitly says runtime regression was not applicable.
+Classification/static-check failure, unknown mode, untrusted fork or unexpected job
+outcomes cannot pass.
+
+Every mode also runs the Markdown link check `scripts/path-c/doc_links.py`, built on
+markdown-it-py on Python 3.13 (pinned with hashes in
+`scripts/path-c/requirements-doc-links.txt`, installed only into a temporary virtual
+environment). It runs after the mode is selected, so a link failure fails the
+scope/static job and does not start heavy jobs that the mode skips. Every relative
+Markdown link in this project's own documents must resolve to an existing file, and
+absolute or `file:` links fail. It skips upstream-owned Markdown, app content and
+archived files (but checks the archive index). Run it locally before publishing a
+documentation change:
+`uv run --no-project --python 3.13 --with-requirements scripts/path-c/requirements-doc-links.txt python scripts/path-c/doc_links.py`.
+
+Static checks do not execute fenced examples or certify remote links, raw HTML links,
+links inside image alt text, generated diagrams, machine-local paths in code spans or
+plain text, a local path written as `//path` (it reads as a protocol-relative URL), or
 semantic truth; AI review supplies semantic and evidence-boundary assessment.
-Both heavy jobs are skipped for this mode. The required aggregate passes only when
-the scope/static job succeeds and both jobs are skipped as expected; its result
-explicitly says runtime regression was not applicable. Classification/static-check
-failure, unknown mode, untrusted fork or unexpected job outcomes cannot pass.
 
 Automatic PR/push C1 currently uses the repository's local runner. Manual cloud
 execution is diagnostic; the process-interruption job still requires the local

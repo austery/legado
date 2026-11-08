@@ -44,6 +44,20 @@ jobs:
       - name: Classify complete diff and check documentation
         id: scope
         run: python3 scripts/path-c/c1_scope.py plan
+      # After the scope step: an empty run_regression output starts both heavy jobs.
+      - name: Select Python for the Markdown link check
+        id: link-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          update-environment: false
+      - name: Check Markdown links in project documents
+        run: |
+          "${{ steps.link-python.outputs.python-path }}" -m venv "$RUNNER_TEMP/doc-links"
+          "$RUNNER_TEMP/doc-links/bin/pip" install --quiet --require-hashes --no-deps \
+            -r scripts/path-c/requirements-doc-links.txt
+          "$RUNNER_TEMP/doc-links/bin/python" -m unittest discover -s scripts/path-c -p 'doc_links_test.py'
+          "$RUNNER_TEMP/doc-links/bin/python" scripts/path-c/doc_links.py
 
   regression:
     name: C1 engine regression
@@ -74,7 +88,8 @@ jobs:
     needs: scope
     if: ${{ always() && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ fromJSON((inputs.execution || 'local') != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
-    timeout-minutes: 90
+    # 90 min of work plus up to 45 min waiting for the shared Mac lock.
+    timeout-minutes: 135
     defaults:
       run:
         shell: bash
@@ -93,6 +108,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # insight-engine-personal's runner shares this Mac; queue heavy jobs across both repositories.
+      - name: Wait for the shared Mac heavy-CI lock
+        id: machine-lock
+        if: (inputs.execution || 'local') == 'local'
+        run: bash scripts/ci/ci-machine-lock.sh acquire
       - name: Preflight hosted ARM64 environment
         if: (inputs.execution || 'local') != 'local'
         env:
@@ -265,13 +285,17 @@ jobs:
             ci-results/
             !ci-results/native-product/DerivedData/
           retention-days: 7
+      - name: Release the shared Mac heavy-CI lock
+        if: always() && steps.machine-lock.outcome == 'success'
+        run: bash scripts/ci/ci-machine-lock.sh release
 
   native-process:
     name: C1 local interruption and offline restart
     needs: scope
     if: ${{ always() && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: [self-hosted, macOS, ARM64, legado-macos-local]
-    timeout-minutes: 60
+    # 60 min of work plus up to 45 min waiting for the shared Mac lock.
+    timeout-minutes: 105
     defaults:
       run:
         shell: bash
@@ -283,6 +307,10 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # insight-engine-personal's runner shares this Mac; queue heavy jobs across both repositories.
+      - name: Wait for the shared Mac heavy-CI lock
+        id: machine-lock
+        run: bash scripts/ci/ci-machine-lock.sh acquire
       - name: Configure local toolchain caches
         run: |
           echo "GRADLE_USER_HOME=$RUNNER_TOOL_CACHE/legado/gradle" >> "$GITHUB_ENV"
@@ -332,3 +360,6 @@ jobs:
             ci-results/native-process/
             !ci-results/native-process/DerivedData/
           retention-days: 7
+      - name: Release the shared Mac heavy-CI lock
+        if: always() && steps.machine-lock.outcome == 'success'
+        run: bash scripts/ci/ci-machine-lock.sh release
