@@ -94,6 +94,21 @@ class CheckTest(unittest.TestCase):
             '```\n[x](/abs/path.md)\n```\n\nText.\n\n    [y](/Users/example/file.md)\n\n'
             '> ~~~\n> [z](/abs/path.md)\n> ~~~\n'), [])
 
+    def test_heading_anchor_uses_displayed_text(self) -> None:
+        self.write('docs/styled.md', '# _Usage_\n\n## [Setup](https://example.com)\n\n'
+                   '### `code` and **bold**\n')
+        self.assertEqual(self.run_check(
+            '[a](styled.md#usage) [b](styled.md#setup) [c](styled.md#code-and-bold)\n'), [])
+
+    def test_html_ids_count_only_outside_code(self) -> None:
+        self.write('docs/ids.md', '<a id="real"></a>\n\n```\n<a id="ghost"></a>\n```\n')
+        found = self.run_check('[ok](ids.md#real) [bad](ids.md#ghost)\n')
+        self.assertEqual(len(found), 1, found)
+        self.assertIn('#ghost', found[0])
+
+    def test_protocol_relative_url_is_external(self) -> None:
+        self.assertEqual(self.run_check('[remote](//example.com/docs)\n'), [])
+
     def test_link_leaving_repository_fails(self) -> None:
         self.assertIn('leaves repository', self.run_check('[out](../../outside.md)\n')[0])
 

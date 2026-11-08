@@ -38,6 +38,7 @@ UPSTREAM_DIRS = (
     'headless/', 'iosApp/', 'modules/', 'ohosApp/', 'ui/',
 )
 WINDOWS_PATH = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')
+HTML_ID = re.compile(r'\b(?:id|name)=["\']([^"\']+)')
 LINE_SUFFIX = re.compile(r'\.[^:/#?]+:\d+(?:-\d+)?(?:[#?].*)?$')
 
 
@@ -88,19 +89,32 @@ def slug(title: str) -> str:
     return re.sub(r'[^\w\- ]', '', title.strip().lower()).replace(' ', '-')
 
 
+def heading_text(inline: Token) -> str:
+    """Return the displayed text of a heading, without Markdown markup or link targets."""
+    parts: list[str] = []
+    for child in inline.children or []:
+        if child.type in ('text', 'code_inline'):
+            parts.append(child.content)
+        elif child.type in ('softbreak', 'hardbreak'):
+            parts.append(' ')
+    return ''.join(parts)
+
+
 def anchors(content: str) -> set[str]:
-    """Return GitHub-style anchors for headings, plus explicit HTML ids."""
+    """Return GitHub-style anchors for headings, plus ids of real HTML elements."""
     tokens = PARSER.parse(content)
     result: set[str] = set()
     counts: dict[str, int] = {}
     for index, token in enumerate(tokens):
-        if token.type != 'heading_open':
-            continue
-        base = slug(tokens[index + 1].content)
-        count = counts.get(base, 0)
-        counts[base] = count + 1
-        result.add(base if count == 0 else f'{base}-{count}')
-    result.update(re.findall(r'(?:id|name)=["\']([^"\']+)', content))
+        if token.type == 'heading_open':
+            base = slug(heading_text(tokens[index + 1]))
+            count = counts.get(base, 0)
+            counts[base] = count + 1
+            result.add(base if count == 0 else f'{base}-{count}')
+        html_parts = [token] if token.type == 'html_block' else [
+            child for child in token.children or [] if child.type == 'html_inline']
+        for part in html_parts:
+            result.update(HTML_ID.findall(part.content))
     return result
 
 
@@ -125,9 +139,11 @@ def problems(root: Path, path: str, content: str) -> list[str]:
     found: list[str] = []
     for line, target in sorted(set(targets(content))):
         decoded = unquote(target)
-        if (decoded.startswith('/') or decoded.lower().startswith('file:')
+        if decoded.startswith('//'):
+            message: Optional[str] = None  # Protocol-relative URL: external, not a local path.
+        elif (decoded.startswith('/') or decoded.lower().startswith('file:')
                 or WINDOWS_PATH.match(decoded)):
-            message: Optional[str] = f'machine-specific link (use a code span): {decoded}'
+            message = f'machine-specific link (use a code span): {decoded}'
         elif '://' not in decoded and LINE_SUFFIX.search(decoded):
             message = f'line suffix makes a missing link target (cite the line outside the link): {decoded}'
         elif urlsplit(target).scheme or urlsplit(target).netloc or not target:
