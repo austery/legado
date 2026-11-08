@@ -363,6 +363,8 @@ source.
 
 ### What Structure approved needs here
 
+This list does not apply to an ADR. An ADR needs Lei's approval of that ADR.
+
 - The H1 approved before implementation names each added or altered entity,
   column, index, view, migration, persisted key and file-layout element.
 - This repository has no down migrations, and Room offers no reverse migration
@@ -690,7 +692,8 @@ Review models and commands are pinned in global-skills
 **Structure approved.**
 
 - The review of the strictest tier that applies, plus the migration fixture and
-  snapshot-and-restore evidence above. Almost every Structure path is in
+  snapshot-and-restore evidence above. An ADR does not need that evidence.
+  Almost every Structure path is in
   `data/`, `core/` or `foundation/` (Trunk), and migrations are a
   wrong-but-green domain, so in practice this is L2.
 - Lei: H1 approval before work; merge approval.
@@ -763,25 +766,68 @@ the native manual switch already exists (`ReaderEngine.kt:130`,
 
 ## Prerequisites before automatic merge
 
-As of 2026-11-08, automatic merge stays off. Reasons:
+In this section, **automatic merge** means the policy's standing authorization:
+an agent merges without Lei's approval of that PR. GitHub's **auto-merge** is a
+different setting: it merges a PR when the PR meets its requirements.
+
+Agents read the evidence here on 2026-11-08: the ruleset and repository settings
+from GitHub, and `.github/CODEOWNERS` at `native-reader` `d9845fed3` plus the lines
+for `BackupConfigShared.kt` and `docs/_archive/README.md`, added with this text.
+This evidence is newer than the revision named under
+[Policy and scope](#policy-and-scope).
+
+Automatic merge stays off. Reasons:
 
 - **AGENTS.md requires Lei's explicit approval for every merge.** The policy's
   standing authorization, which replaces the per-PR merge confirmation, cannot
   apply here until Lei changes `AGENTS.md`. That is Lei's decision, not
   something this map settles.
-- **What GitHub already enforces.** The ruleset `Protect native-reader` requires
-  a PR (0 approvals; extra approval for unattributed changes), the status check
-  `C1 engine regression` with up-to-date branches, and blocks deletion and
-  force-push. Repository auto-merge is disabled.
+- **What GitHub already enforces.** The ruleset `Protect native-reader` requires:
+  - a PR;
+  - code-owner approval for paths in `.github/CODEOWNERS`;
+  - the status check `C1 engine regression`, with up-to-date branches.
+
+  A new reviewable commit dismisses a code-owner approval. Other paths need 0
+  approvals, so GitHub's extra approval for unattributed Copilot changes
+  (`require_extra_approval_for_unattributed_changes`) adds none there. The ruleset
+  also blocks deletion and force-push.
+- **What CODEOWNERS covers.** It copies named paths from this map. Change both
+  together. It covers the Structure files and directories listed under
+  [Paths](#paths). It does not cover:
+  - files that [Paths](#paths) names only as a writer or a check site, such as
+    `NativeBookmarkDao.kt`;
+  - the WebDAV, iCloud sync and `IosBackstageWebView.kt` files named under
+    [Not covered by paths](#not-covered-by-paths-treat-as-unknown).
+
+  A PR that changes only those files needs 0 approvals. There, agents and reviewers
+  apply this map's content rules; GitHub does not.
+- **What GitHub leaves open.**
+  - The repository admin role can bypass the ruleset. Lei's account holds that
+    role. Agents do not use the bypass.
+  - The repository setting allows auto-merge. An agent turns it on for a PR only
+    after Lei gives merge approval for that PR's head, and passes that head with
+    `--match-head-commit`.
+  - GitHub's auto-merge pages say that auto-merge turns off when someone without
+    write permission pushes or switches the base branch. They do not say what a
+    push with write permission does, or that GitHub rechecks that head at merge.
+    So a new head voids the approval: turn auto-merge off before a push, then ask
+    Lei to approve the new head.
+  - GitHub enforces an approval from the `austery` account, not Lei's decision. An
+    agent session signed in with that account can approve a PR. Agents do this
+    only when Lei explicitly tells them to.
 - **What is missing:**
-  - No CODEOWNERS and no code-owner review, so Structure and verifier paths are
-    followed by agents, not enforced by GitHub.
+  - Conditions that depend on a diff's content. CODEOWNERS matches whole paths,
+    so agents and reviewers still apply the content conditions in this map;
+    GitHub does not enforce them.
   - A PR can change the check that judges it. `c1-engine.yml` runs on
-    `pull_request` from the PR's own revision, on the self-hosted runner. Until a
-    rule outside the PR guards verifier paths, a passing C1 does not prove the
-    verifier is unchanged.
+    `pull_request` from the PR's own revision, on the self-hosted runner. A
+    passing C1 alone does not prove the verifier is unchanged. For verifier paths
+    in CODEOWNERS, the guard is Lei's approval, not an automatic check.
   - Agent identity. A GitHub App is installed for agent writes, but it has no
-    Workflows permission. Workflow changes still go through Lei's account.
+    Workflows permission. Workflow pushes still go through Lei's account. Agents
+    open PRs with the App, because GitHub does not count an author's own approval.
+    A PR opened from Lei's account cannot get code-owner approval without the
+    bypass.
   - Runner reliability. The C1 runner shares this Mac with local work and with
     another repository's runner. `scripts/ci/ci-machine-lock.sh` serializes heavy
     CI jobs; local fixture work can still take the fixture ports and fail CI.
