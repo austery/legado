@@ -44,7 +44,12 @@ them breaks daily reading, so the paths that carry them are Trunk (see
      `:167`) and `ReadingText.swift` (`acceptPageTurn`, defined at `:302` and wired at
      `:267`, which reports the offset at `:309`; also on scroll at `:213` and on find at `:367`). The
      offset reaches the durable save through `NativeReaderApp.swift:72` and
-     `ReaderModel.swift:995-999`.
+     `ReaderModel.swift:995-999`;
+   - in-chapter find and cached search, whose result range becomes that offset:
+     `ChapterFind.swift` (the find request and the `ChapterFindContext.matches`
+     guard, `:10-15`) is accepted at `ReadingText.swift:352-354` and reported at
+     `:367`; `CachedSearchSheet.swift` feeds the same path through
+     `NativeReaderApp.swift:150-153`.
 
 ### `north_star_conflict` examples
 
@@ -80,10 +85,12 @@ These also stop and go to Lei, but the North Star is not their source:
 - [ADR-001](../architecture/decisions/ADR-001-native-experience-and-upstream-ownership.md)
   (an architecture decision record) lists two compatibility goals that "are not
   project goals", B and C: exchange shelf or progress data with another reader,
-  or keep the database readable by an unmodified old client. ADR-001
-  bounded MVP (minimum viable product): separate product storage or replace the runtime without a blocked
-  requirement or observed recurring cost. These are new design intent, which
-  stops automation under the policy's execution gate 1.
+  or keep the database readable by an unmodified old client.
+- ADR-001's bounded MVP (minimum viable product) policy: do not separate product
+  storage or replace the runtime without a blocked requirement or an observed
+  recurring cost.
+- Both items above are new design intent, which stops automation under the
+  policy's execution gate 1.
 - Publishing, deployment, live-provider calls, paid calls and other actions the
   policy's execution gate 5 says need separate approval.
 
@@ -240,15 +247,19 @@ Structure.
 - `data/src/commonMain/kotlin/io/legado/app/data/dao/NativeResumeDao.kt`
   (`NativeBodyCoordinates`, `:17-40`): the stored coordinate version
   (`VERSION = "native-body-v1"`), the body hash (`sha256`) and the paragraph rule
-  (`paragraphStart`). These values are written into resume rows
-  (`NativeShelfDao.kt:270-271`) and bookmark rows, and checked again when a
-  cached search hit is opened (`CachedChapterSearch.kt:48`, `:78`).
-- `native-ios-app/Sources/ReadingText.swift` (`paragraphStart`, `:114-134`): the
+  (`paragraphStart`). Writers: resume rows (`NativeResumeDao.kt:80`, `:102`;
+  also the source switch at `NativeShelfDao.kt:270-271`), bookmark rows
+  (`NativeBookmarkDao.kt:68-77`) and cached search hits
+  (`CachedChapterSearch.kt:48`). Checks: cached search hits
+  (`CachedChapterSearch.kt:78`), the eviction guard (`OfflineCache.kt:68-69`)
+  and bookmark open (`ReaderEngine.kt:632-650`).
+- `native-ios-app/Sources/ReadingText.swift` (`paragraphStart`, `:115-135`): the
   Swift copy of the same paragraph rule.
 
 A change to the paragraph rule on either side, without a new `VERSION`, moves
-every saved position to a different paragraph and the version check never
-fires. Change both sides together and bump `VERSION`.
+saved positions where the old and new rules differ, and bookmarks there fail
+to open; the version check never fires. Change both sides together, bump
+`VERSION`, and re-check every check site listed above.
 
 **Chapter cache files**
 
@@ -324,11 +335,17 @@ source.
 - New key prefixes in the `caches` table or in `cache_manager/` can be added by
   any upstream helper or by a source's JS. A new prefix outside `SourceConfig.kt`
   and `BaseSource.kt` is Structure Unknown.
-- WebDAV and iCloud backup (`data/src/commonMain/kotlin/io/legado/app/help/AppWebDavShared.kt`,
-  remote directories at `:89-95`, backup upload at `:251`). Neither
-  `engine-ios` nor `native-ios-app` calls them, and Lei does not use them
-  (2026-11-08). A change that wires them into the native app is Structure
-  Unknown until its remote layout is designed.
+- WebDAV (`data/src/commonMain/kotlin/io/legado/app/help/AppWebDavShared.kt`,
+  remote directories at `:89-95`, backup upload at `:251`). Lei does not use it
+  (2026-11-08).
+- iCloud progress and backup sync
+  (`core/src/iosMain/kotlin/io/legado/app/help/sync/IosICloud.kt`,
+  `IosICloudBackupSync.kt`, `IosICloudProgressSync.kt`): an iCloud key-value
+  store for progress and iCloud Documents for backup, gated by
+  `IosICloud.enabled`.
+- Neither `engine-ios` nor `native-ios-app` calls WebDAV or iCloud sync. A change
+  that wires either into the native app is Structure Unknown until its remote
+  layout is designed.
 - Cookies and web storage of the backstage `WKWebView`
   (`data/src/iosMain/kotlin/io/legado/app/help/http/IosBackstageWebView.kt`)
   live in the system data store. The repository cannot version or roll them back.
@@ -392,12 +409,14 @@ because the engine and every upstream client consume it. Hubs to name in a PR:
 
 **Native app composition and the reading position** (`native-ios-app/Sources/`):
 
-- `ReaderModel.swift`, except a new method that does not touch position saving,
-  the reading session or shelf writes (that is Branch, below);
+- `ReaderModel.swift`, except a new method for a Branch view that does not touch
+  position saving, the reading session or shelf writes (that is Branch, below);
 - `NativeReaderApp.swift` and `ReadingSaveCoordinator.swift`;
 - `ReadingText.swift` and `ReadingSpreadView.swift`, including layout and
-  pagination changes, because they compute the paragraph offset that is saved
-  (see [How Trunk follows](#how-trunk-follows-from-the-mission), item 3).
+  pagination changes, because they compute the paragraph offset that is saved;
+- `ChapterFind.swift` and `CachedSearchSheet.swift`, because their result range
+  becomes that offset (see [How Trunk follows](#how-trunk-follows-from-the-mission),
+  item 3).
 
 **Build and toolchain:** `gradle/libs.versions.toml`, `settings.gradle.kts`,
 `build-logic/`, `build.gradle.kts`, `gradle.properties`,
@@ -421,7 +440,11 @@ change; the notes below are the starting point, not that evidence.
 (`engine-ios/src/iosMain/kotlin/io/legado/engine/`):
 
 - `NativeDiscovery.kt`: runs a source's explore rules for the Discover screen.
-  It reads sources and writes only the regenerable explore cache. Called only
+  The engine code itself writes only the regenerable explore cache. But the
+  rules run source JS (`BookSourceExtensionsShared.kt:127`), and that JS can
+  persist source variables through `source.put()` (`BaseSource.kt:288`, written
+  to disk at `NativeSourceCacheProvider.native.kt:88`). A change to when or how
+  rules run therefore falls under the write-path exception below. Called only
   from `DiscoveryModel.swift` through `ReaderEngine`.
 - `CachedChapterSearch.kt`: searches cached chapter text. It reads chapter files
   and checks `NativeBodyCoordinates` (`:48`, `:78`); it writes nothing.
@@ -431,20 +454,26 @@ change; the notes below are the starting point, not that evidence.
 **An additive `ReaderEngine` export** that leaves existing exports, replies and
 errors unchanged, together with the Swift caller that uses it.
 
-**One Swift feature view or model** (`native-ios-app/Sources/`). Each reaches
-the engine only through `ReaderModel.swift` or `DiscoveryModel.swift`:
+**One Swift feature view or model** (`native-ios-app/Sources/`). The views reach
+the engine through `ReaderModel.swift` or `DiscoveryModel.swift`:
 
-- `DiscoveryModel.swift`, `DiscoveryView.swift`: Discover screen; read-only
-  engine calls (`startDiscovery`, `loadMoreDiscovery` and similar).
-- `ChapterFind.swift`: in-chapter find; no model write.
-- `CachedSearchSheet.swift`: opens a cached search hit (`openCachedSearchHit`).
+- `DiscoveryModel.swift`: calls the Discover engine exports (`startDiscovery`,
+  `loadMoreDiscovery`, `refreshDiscovery` and similar). Discover can run source
+  JS; see `NativeDiscovery.kt` above.
+- `DiscoveryView.swift`: Discover screen; also opens a result in the reader
+  through `ReaderModel.select` (`:135`).
 - `BookmarkSheet.swift`: opens and deletes bookmarks (`deleteBookmark`).
-- `ShelfView.swift`: shelf browsing, groups and removal (`removeShelfBooks`,
-  `deleteShelfGroup`, `changeShelfGroups`).
-- `SourceManagementView.swift`: source import, enable, groups and delete
-  (`confirmSourceImport`, `deleteSources`).
-- `ReadingPreferences.swift`: reading style and shelf layout settings. Its file
-  is also a Structure path.
+- `ShelfView.swift`: shelf browsing, sort (`setShelfSort`), groups
+  (`createShelfGroup`, `renameShelfGroup`, `changeShelfGroups`,
+  `deleteShelfGroup`), removal (`removeShelfBooks`), and new-chapter checks
+  (`checkNewChapters`, which writes catalog rows through the engine,
+  `ReaderModel.swift:517-529`).
+- `SourceManagementView.swift`: source import (`confirmSourceImport`), export,
+  enable and discovery switches, groups (`changeSourceGroup`) and delete
+  (`deleteSources`).
+- `ReadingPreferences.swift`: reading style, shelf layout and the prefetch
+  setting (`prefetchNextTwo`, `:29`); no engine calls. Its file is also a
+  Structure path.
 - `ReaderModel.swift` may gain a new method for one of these views if the method
   does not touch position saving, the reading session or shelf writes.
 
@@ -453,7 +482,9 @@ the engine only through `ReaderModel.swift` or `DiscoveryModel.swift`:
 revert cannot undo. Lei decided on 2026-11-08 that such a view stays **Radius
 Branch**: a wrong change stays inside that screen's action. A change to which
 items the action selects or deletes (for example "Select visible" in
-`SourceManagementView.swift:71`) has **Door One-way**, so it takes the L2 row.
+`SourceManagementView.swift:71`) has **Door One-way**, so it takes the L2 tier.
+This rule covers only those three views. The reader's change-source UI lives in
+`NativeReaderApp.swift` and `ReaderModel.swift`, which are Trunk.
 
 **Exception for engine write paths:** a change to engine code that writes,
 deletes or evicts shared persistent state is not Branch by file name. Examples:
@@ -622,15 +653,16 @@ Review models and commands are pinned in global-skills
 
 **Structure approved.**
 
-- The review of the strictest row that applies, plus the migration fixture and
+- The review of the strictest tier that applies, plus the migration fixture and
   snapshot-and-restore evidence above. Almost every Structure path is in
   `data/`, `core/` or `foundation/` (Trunk), and migrations are a
   wrong-but-green domain, so in practice this is L2.
 - Lei: H1 approval before work; merge approval.
 
 **L2.** Everything the policy's execution gate 1 stops: Trunk, Door One-way,
-Radius Unknown, Structure unapproved or Unknown, an Always stop item,
-author–reviewer disagreement, or new design intent. Also the wrong-but-green
+Radius Unknown, a Branch without controlled-Branch evidence, Structure
+unapproved or Unknown, author–reviewer disagreement, or new design intent. This
+map adds every Always stop item. Also the wrong-but-green
 domains, where a wrong change still passes every test: crash recovery, paid
 calls, irreversible publication and migrations.
 
@@ -676,12 +708,14 @@ the native manual switch already exists (`ReaderEngine.kt:130`,
    resume record (`NativeShelfDao.kt:263-272`). The old chapter folder stays
    orphaned on disk, and the automatic loop removes the confirmation the manual
    switch has. It writes shared persistent state, so by the Branch exception it
-   is Trunk, and it takes the L2 row.
-3. **Swift ticket: Radius Branch, Door One-way.** In the reader, the "Source
-   deleted" state offers "Change source automatically". It starts the new
-   export, which rewrites shelf, catalog and reading session
-   (`ReaderEngine.kt:181-204`). By the rule for Swift views that start an
-   irreversible write, it is Branch with a One-way Door, so it takes the L2 row.
+   is Trunk, and it takes the L2 tier.
+3. **Swift ticket: Radius Trunk, Door One-way.** In the reader, the "Source
+   deleted" state offers "Change source automatically". The reader's
+   change-source UI lives in `NativeReaderApp.swift`, and the call needs a
+   `ReaderModel.swift` method that touches the reading session and shelf
+   writes; both are Trunk. The new export rewrites shelf, catalog and reading
+   session (`ReaderEngine.kt:181-204`), so the Door is One-way. It takes the L2
+   tier.
 4. **Leaf ticket.** The red tint for the Sources Delete button: styling inside
    one view, no model call.
 5. **Stops.**
