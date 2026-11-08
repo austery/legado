@@ -1,6 +1,68 @@
 # Impact radius map
 
-The owner's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `73f1fba`)
+## North Star
+
+The product direction sits above every ADR here:
+[Legado native reader North Star](/Users/leipeng/Documents/research-notes/05-archive/2026-10-22_legado-native-ui_north-star-and-maintenance.md)
+(owner-confirmed 2026-10-23; outside this repository, so linked by absolute
+path).
+
+- **Mission:** a native iPad reader that Lei uses every day and can improve
+  directly. It reuses the real Legado/KMP runtime and community book sources.
+  AI carries routine engineering maintenance; Lei decides requirements, reading
+  experience and key decisions.
+- **Intended form:** Swift native UI over the reused execution layer. Other
+  readers (Wanyuan, Fanqie, Apple Books) are references for the two-page /
+  two-column reading experience, not a feature list to match.
+- **Done means** (the note's completion criteria): the required journeys Lei
+  confirms, the agreed two-page layout that keeps book, chapter and paragraph
+  identity, 14 days of natural use on a physical iPad, at least two independent
+  community sources, no unresolved silent progress loss or wrong source/book
+  overwrite, and a real maintenance task done end to end by AI.
+
+### How Trunk follows from the mission
+
+The mission depends on three things. A failure in any of them breaks daily
+reading, so the paths that carry them are Trunk below:
+
+1. **Community-source compatibility** (reuse the runtime and the sources): rule
+   execution, networking and JS in `data/`, `core/`, `foundation/` and the
+   QuickJS tree; the source import format (`KS_JSON`, `entities/rule/`); and every
+   upstream integration merge.
+2. **Lei's reading data** (no silent progress loss or wrong overwrite): the Room
+   database, the shared `Book` writers, the native resume and bookmark DAOs,
+   chapter cache files, and the native save path (`ReadingSaveCoordinator.swift`).
+3. **Native reading identity** (book, chapter and paragraph survive layout
+   changes): the `ReaderEngine` contract, `EngineHost`, and the native
+   composition root (`ReaderModel.swift`, `NativeReaderApp.swift`).
+
+### `north_star_conflict` examples
+
+A task inside a non-goal is a product decision for Lei, not an implementation
+detail. Stop with `north_star_conflict` when a task would, for example:
+
+- Match another reader's full feature set (Wanyuan, Fanqie or Apple Books)
+  because the reference has it, rather than for a journey Lei confirmed.
+- Write a private parser or rule runtime, or patch core parsing and rule
+  execution in a private fork, instead of reusing the upstream runtime
+  ([ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#decision)).
+- Take on long-term private per-site rule maintenance instead of using
+  maintained community rules or alternative sources.
+- Follow the newest upstream automatically as a goal. Updates need a
+  compatibility, security or product reason.
+- Hand routine technical work back to Lei as a standing duty: editing sources,
+  reading CI logs, fixing the environment, resolving Git conflicts, or running
+  recovery commands.
+- Add new recurring paid cost, unlimited automatic runs, publishing or
+  deployment without a separate owner decision.
+- Exchange shelf or progress data with another reader, or keep the database
+  readable by an unmodified old client. ADR-001 lists both as non-goals (B and C).
+- Separate product storage or replace the runtime pre-emptively, without a
+  blocked requirement or observed recurring maintenance cost (ADR-001 bounded MVP).
+
+## Policy and scope
+
+The owner's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `8424d9b`)
 defines Door (Two-way / One-way), Radius (Leaf / Branch / Trunk), Structure
 (untouched / approved / unapproved / Unknown), the controlled-Branch evidence,
 the review tiers and the execution gates. This file maps those terms onto this
