@@ -634,6 +634,24 @@ Treat these as **Unknown**. The missing evidence is stated for each:
   mirror sync, and any edit to an upstream-owned file that is not part of an
   approved H1.
 
+### Inherited workflows in an upstream integration merge
+
+The upstream (`huajideshutiao/legado`, the parent of this fork) is maintained
+mostly by one person, with no published roadmap, and changes daily. Its
+`.github/` changes arrive with every upstream integration merge. Example: the
+merge in PR #68 (`7a23c081f`) changed `ios.yml` and `sync-quickjs-ng.yml`.
+
+So every upstream integration merge also does these steps:
+
+- List its `.github/` changes on their own (`git diff <previous base> <merge>
+  -- .github`) and review them as verifier changes.
+- Re-check the guards that keep inherited publishing off in this repository:
+  - `test.yml:38`: the `github.repository != 'austery/legado'` condition;
+  - `release.yml:39-41`: publishing runs only when `RELEASE_KEY_STORE` is set;
+  - `ios.yml:353-361`: the manual publish of the `multiplatform-test` prerelease.
+- Stop and ask Lei when any guard changed, a workflow gains a new trigger or
+  write permission, or a new workflow appears.
+
 A path on the docs-only allowlist in `c1_scope.py` gets cheaper CI. That is a
 CI routing fact, not a Leaf classification.
 
