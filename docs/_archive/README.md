@@ -8,8 +8,9 @@ search them when they need to know why something is the way it is.
 The procedure is the task closeout in
 `~/Documents/global-skills/agents/DOC-LIFECYCLE.md` (a path on Lei's machine):
 move the file unchanged with `git mv`, add one line below, and repair incoming
-links. `python3 scripts/path-c/doc_links.py` checks this index but not the
-archived files.
+links. The link check `scripts/path-c/doc_links.py`
+([command](../VALIDATION.md#environment-and-execution)) checks this index but not
+the archived files.
 
 ## Index
 

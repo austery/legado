@@ -162,7 +162,7 @@ Read the radius rules with these dependency edges in mind:
   Every edit to an upstream-owned file is a future merge conflict as well as a
   runtime change.
 - C1 executes the engine and the native product. For `:ui` it only compiles the
-  iOS simulator target and runs `:ui:jvmTest` (`c1-engine.yml:204-205`). No C1
+  iOS simulator target and runs `:ui:jvmTest` (`c1-engine.yml:218-219`). No C1
   lane runs the Android, desktop, OHOS or upstream Compose iOS clients.
 
 ## Structure paths
@@ -437,7 +437,7 @@ because the engine and every upstream client consume it. Hubs to name in a PR:
 `data/build.gradle.kts`, `core/build.gradle.kts`, `foundation/build.gradle.kts`,
 `engine-ios/build.gradle.kts`, and `scripts/build-ios-native.sh` (it builds the
 QuickJS library; SQLite comes from the system, `-lsqlite3` at
-`data/build.gradle.kts:373`; C1 runs the script at `c1-engine.yml:197`).
+`data/build.gradle.kts:373`; C1 runs the script at `c1-engine.yml:211`).
 
 **Upstream integration:** any upstream integration merge into `native-reader`,
 whatever its diff size. See ADR-002 and the maintenance record's
@@ -557,7 +557,7 @@ Classification:
   merge-conflict cost, which ADR-001 asks to keep low. Leave them as upstream
   ships them.
 - **CI still reaches `ui/`.** C1 compiles `:ui` for the iOS simulator and runs
-  `:ui:jvmTest` (`c1-engine.yml:204-205`), so a shared-module change that
+  `:ui:jvmTest` (`c1-engine.yml:218-219`), so a shared-module change that
   breaks `:ui` still fails the required check.
 
 `modules/quickjs-test` is not client code. It is test support for the Trunk
