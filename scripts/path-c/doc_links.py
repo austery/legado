@@ -21,7 +21,7 @@ import sys
 from typing import Optional
 from urllib.parse import urlsplit
 
-from c1_scope import check_link, links
+from c1_scope import check_link
 
 ROOT = Path(__file__).resolve().parents[2]
 ARCHIVE = 'docs/_archive/'
@@ -31,8 +31,17 @@ UPSTREAM_DIRS = (
     'app/', 'benchmark/', 'core/', 'data/', 'desktop/', 'desktop-core/', 'foundation/',
     'headless/', 'iosApp/', 'modules/', 'ohosApp/', 'ui/',
 )
-# An editor-style line suffix (ReaderEngine.kt:130) looks like a URI scheme to urlsplit.
-FILE_LINE = re.compile(r'^([^:#?]*[^:/#?]\.[^:/#?]+):\d+(?:-\d+)?(#.*)?$')
+FENCE = re.compile(r'^\s{0,3}(`{3,}|~{3,})')
+CODE_SPAN = re.compile(r'(`+)(?:(?!\1).)+?\1', re.DOTALL)
+# Inline link or image: [text](destination "optional title").
+INLINE = re.compile(
+    r'!?\[(?:[^\[\]\n]|\[[^\]\n]*\])*\]\(\s*(<[^>\n]*>|[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)'
+    r'(?:\s+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^)\n]*\)))?\s*\)')
+# Reference definition: [label]: destination "optional title".
+REFERENCE = re.compile(r'^\s{0,3}\[[^\]\n]+\]:\s*(<[^>\n]*>|\S+)', re.MULTILINE)
+AUTOLINK = re.compile(r'<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\s]*)>')
+WINDOWS_PATH = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')
+LINE_SUFFIX = re.compile(r'\.[^:/#?]+:\d+(?:-\d+)?(?:[#?].*)?$')
 
 
 def maintained(path: str) -> bool:
@@ -45,20 +54,44 @@ def maintained(path: str) -> bool:
     return len(PurePosixPath(path[len(ARCHIVE):]).parts) <= 2 and path.endswith('/README.md')
 
 
+def targets(content: str) -> list[str]:
+    """Return link destinations outside code: inline, reference definitions and autolinks."""
+    visible: list[str] = []
+    fence: Optional[str] = None
+    for line in content.splitlines():
+        marker = FENCE.match(line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+            continue
+        if fence is None:
+            visible.append(line)
+    if fence is not None:
+        raise ValueError('Unclosed Markdown fence')
+    text = CODE_SPAN.sub('', '\n'.join(visible))
+    found = INLINE.findall(text) + REFERENCE.findall(text) + AUTOLINK.findall(text)
+    return [target[1:-1] if target.startswith('<') else target for target in found]
+
+
 def problems(root: Path, path: str, content: str) -> list[str]:
     """Return one message per broken link in a maintained file."""
     try:
-        targets = links(content)
+        found_targets = targets(content)
     except ValueError as error:
         return [f'{path}: {error}']
     found: list[str] = []
-    for target in sorted(targets):
-        if target.startswith('/') or target.lower().startswith('file:'):
+    for target in sorted(set(found_targets)):
+        if (target.startswith('/') or target.lower().startswith('file:')
+                or WINDOWS_PATH.match(target)):
             found.append(f'{path}: machine-specific link (use a code span): {target}')
             continue
-        line_link = None if '://' in target else FILE_LINE.match(target)
-        if line_link:
-            target = line_link.group(1) + (line_link.group(2) or '')
+        if '://' not in target and LINE_SUFFIX.search(target):
+            found.append(f'{path}: line suffix makes a missing link target '
+                         f'(cite the line outside the link): {target}')
+            continue
         parsed = urlsplit(target)
         if parsed.scheme or parsed.netloc:
             continue

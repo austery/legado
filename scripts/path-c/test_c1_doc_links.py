@@ -48,8 +48,9 @@ class CheckTest(unittest.TestCase):
 
     def test_resolving_links_pass(self) -> None:
         self.assertEqual(self.run_check(
-            '[t](target.md) [s](target.md#section-two) [code](../src/Main.kt) '
-            '[line](../src/Main.kt:1) [web](https://example.com) [self](#top)\n# Top\n'), [])
+            '[t](target.md) [s](target.md#section-two "Title") [code](../src/Main.kt) '
+            '[web](https://example.com) <https://example.com> [self](#top) [r][ref]\n'
+            '# Top\n\n[ref]: target.md\n'), [])
 
     def test_missing_file_fails(self) -> None:
         found = self.run_check('[gone](missing.md)\n')
@@ -63,6 +64,22 @@ class CheckTest(unittest.TestCase):
         found = self.run_check('[a](/Users/someone/note.md) [b](file:///tmp/x.md) [c](/app/X.kt)\n')
         self.assertEqual(len(found), 3)
         self.assertTrue(all('machine-specific' in message for message in found))
+
+    def test_other_link_forms_are_checked(self) -> None:
+        found = self.run_check(
+            '[titled](missing-a.md "Title") [angle](<missing b.md>) [r][ref] '
+            '<file:///Users/someone/note.md> [win](C:/Users/someone/note.md)\n\n'
+            '[ref]: missing-c.md\n')
+        self.assertEqual(len(found), 5, found)
+        self.assertEqual(sum('machine-specific' in message for message in found), 2)
+
+    def test_line_suffix_in_a_link_fails(self) -> None:
+        found = self.run_check('[line](../src/Main.kt:1) [bare](Main.kt:12-20)\n')
+        self.assertEqual(len(found), 2)
+        self.assertTrue(all('line suffix' in message for message in found))
+
+    def test_code_spans_are_not_checked(self) -> None:
+        self.assertEqual(self.run_check('Write `[x](/Users/someone/note.md)` as a code span.\n'), [])
 
     def test_link_leaving_repository_fails(self) -> None:
         self.assertIn('leaves repository', self.run_check('[out](../../outside.md)\n')[0])
