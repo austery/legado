@@ -49,6 +49,13 @@ class C1GateTest(unittest.TestCase):
                          (mode == 'regression' and engine == process == 'success')))
             self.assertEqual(accepted(mode, scope, engine, process, trusted), expected)
 
+    def test_link_check_runs_after_the_scope_step(self) -> None:
+        # A failure before the scope step leaves run_regression empty, which starts both heavy jobs.
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/c1-engine.yml').read_text()
+        scope = workflow.index('id: scope')
+        self.assertLess(scope, workflow.index('id: link-python'))
+        self.assertLess(scope, workflow.index('scripts/path-c/doc_links.py'))
+
     def test_workflow_gate_executes_the_tested_policy(self) -> None:
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.github/workflows/c1-engine.yml').read_text()

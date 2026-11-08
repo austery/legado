@@ -41,8 +41,9 @@ documentation change:
 `uv run --no-project --python 3.13 --with-requirements scripts/path-c/requirements-doc-links.txt python scripts/path-c/doc_links.py`.
 
 Static checks do not execute fenced examples or certify remote links, raw HTML links,
-generated diagrams, machine-local paths in code spans or plain text, or semantic
-truth; AI review supplies semantic and evidence-boundary assessment.
+links inside image alt text, generated diagrams, machine-local paths in code spans or
+plain text, a local path written as `//path` (it reads as a protocol-relative URL), or
+semantic truth; AI review supplies semantic and evidence-boundary assessment.
 
 Automatic PR/push C1 currently uses the repository's local runner. Manual cloud
 execution is diagnostic; the process-interruption job still requires the local

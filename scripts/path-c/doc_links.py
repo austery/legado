@@ -24,7 +24,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import Iterator, Optional
+from typing import Iterator, Mapping, Optional, TypedDict
 from urllib.parse import unquote, urlsplit
 
 from markdown_it import MarkdownIt
@@ -43,6 +43,12 @@ UPSTREAM_DIRS = (
 WINDOWS_PATH = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')
 HTML_ID = re.compile(r'\b(?:id|name)=["\']([^"\']+)')
 LINE_SUFFIX = re.compile(r'\.[^:/#?]+:\d+(?:-\d+)?(?:[#?].*)?$')
+
+
+class Reference(TypedDict, total=False):
+    """The fields of a markdown-it reference definition that this check reads."""
+    href: str
+    map: list[int]
 
 
 def parser() -> MarkdownIt:
@@ -82,9 +88,9 @@ def targets(content: str) -> list[tuple[int, str]]:
     env: EnvType = {}
     found = list(_inline_links(PARSER.parse(content, env)))
     # Reference definitions count even when no link uses them.
-    for reference in env.get('references', {}).values():
-        found.append((reference.get('map', [0])[0] + 1 if reference.get('map') else 1,
-                      str(reference.get('href', ''))))
+    references: Mapping[str, Reference] = env.get('references', {})
+    for reference in references.values():
+        found.append(((reference.get('map') or [0])[0] + 1, reference.get('href', '')))
     return found
 
 
