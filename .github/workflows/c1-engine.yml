@@ -41,6 +41,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Check routing and gate regressions
         run: python3 -m unittest discover -s scripts/path-c -p 'test_c1_*.py'
+      - name: Classify complete diff and check documentation
+        id: scope
+        run: python3 scripts/path-c/c1_scope.py plan
+      # After the scope step: an empty run_regression output starts both heavy jobs.
       - name: Select Python for the Markdown link check
         id: link-python
         uses: actions/setup-python@v5
@@ -54,9 +58,6 @@ jobs:
             -r scripts/path-c/requirements-doc-links.txt
           "$RUNNER_TEMP/doc-links/bin/python" -m unittest discover -s scripts/path-c -p 'doc_links_test.py'
           "$RUNNER_TEMP/doc-links/bin/python" scripts/path-c/doc_links.py
-      - name: Classify complete diff and check documentation
-        id: scope
-        run: python3 scripts/path-c/c1_scope.py plan
 
   regression:
     name: C1 engine regression
