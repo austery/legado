@@ -611,7 +611,8 @@ Treat these as **Unknown**. The missing evidence is stated for each:
   - `scripts/path-c/` (including `c1_scope.py`, `native_product_ci.py`,
     `reader_ui_ci.py`, `kotlin_native_ci.py`, `verify_url_tests.py`, and fixture
     servers), `scripts/ci/` (including `ci-machine-lock.sh`, the lock shared
-    with `insight-engine-personal`) and `scripts/build-ios-native.sh`.
+    with `insight-engine-personal`), `scripts/build-ios-native.sh`, and the pinned
+    verification dependency `scripts/path-c/requirements-doc-links.txt`.
   - `engine-ios/fixtures/`, `engine-ios/harness/`, `native-ios-app/UITestHost/`
     and `native-ios-app/ui-tests.yml`.
   - Existing files in the test source sets and test resources:
