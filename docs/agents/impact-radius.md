@@ -1,6 +1,6 @@
 # Impact radius map
 
-The owner's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `3872eff`)
+The owner's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `73f1fba`)
 defines Door (Two-way / One-way), Radius (Leaf / Branch / Trunk), Structure
 (untouched / approved / unapproved / Unknown), the controlled-Branch evidence,
 the review tiers and the execution gates. This file maps those terms onto this
@@ -139,6 +139,20 @@ Renaming any part of the chapter layout orphans every cached chapter. After a
 source is deleted, cached chapters are the only copy of that book's text, so this
 loss cannot be repaired by downloading again.
 
+**Config files and backup format**
+
+- `data/src/commonMain/kotlin/io/legado/app/help/config/ReadBookConfigShared.kt`:
+  the serialized `ReadStyleConfig` model (`:912`), the files
+  `readConfig.json` and `shareReadConfig.json` (`:886-889`), and their encoding
+  (`:268-282`).
+- `core/src/commonMain/kotlin/io/legado/app/help/config/ThemeConfigStore.kt`
+  (`themeConfig.json`), `data/src/commonMain/kotlin/io/legado/app/help/PinnedExploreHelp.kt`
+  (`exploreFavorites.json`) and `data/src/commonMain/kotlin/io/legado/app/help/DirectLinkUploadShared.kt`
+  (`directLinkUploadRule.json`).
+- `data/src/commonMain/kotlin/io/legado/app/help/storage/BackupShared.kt`
+  (backup file list and content, `:108-128`), `RestoreShared.kt` and
+  `BackupConfigShared.kt` (`restoreIgnore.json`): the backup and restore format.
+
 **Preference and grant stores**
 
 - `core/src/iosMain/kotlin/io/legado/app/help/config/IosPreferenceProvider.kt`
@@ -153,6 +167,9 @@ that could collide with another store's key is Structure Unknown.
 
 ### Not covered by paths: treat as Unknown
 
+- Other upstream helpers that write a named JSON file under `filesDir`. Search
+  for `"<name>.json"` in `data/` and `core/` when a change touches one; a file
+  not listed above is Structure Unknown.
 - Shared preference key names are defined across many upstream config files. A
   renamed key silently resets a setting. No path list covers them; flag any key
   rename as Structure Unknown.
@@ -283,10 +300,10 @@ CI routing fact, not a Leaf classification.
 
 | Classification | Delivery and review | Owner involvement |
 | --- | --- | --- |
-| Leaf, Two-way, Structure untouched | One implementation; `reviewer` agent with separate Standards, Spec and Risk requests | Merge approval (AGENTS.md) |
-| Controlled Branch, Two-way, Structure untouched | The author records consumers and failure propagation per the policy; the `reviewer` Risk request verifies that evidence | Merge approval; a decision only when author and reviewer disagree |
+| Leaf, Two-way, Structure untouched | L1: one implementation; the `reviewer` agent runs Standards and Spec; the vendor that did not author the change runs Risk (Codex `gpt-6-astra`, high, for Claude Code's work; `reviewer` for Codex's work), following `RISK-REVIEW.md`. If that vendor is unavailable, the author vendor's reviewer runs Risk and the PR comment says so | Merge approval (AGENTS.md) |
+| Controlled Branch, Two-way, Structure untouched | L1 as above. The author records consumers and failure propagation per the policy; the Risk review verifies that evidence | Merge approval; a decision only when author and reviewer disagree |
 | Structure approved | The review of the strictest row that applies, plus the migration fixture and snapshot-and-restore evidence above. Almost every Structure path is in `data/`, `core/` or `foundation/` (Trunk), so in practice this is L2 | H1 design approval before work; merge approval |
-| Trunk, One-way, Unknown, Structure unapproved, or an Always stop item | L2: add the cross-vendor review (Codex `gpt-6-astra`, high, for Claude Code's work) and `deep-reviewer` for design questions. Runtime changes also need evidence from a real run: the relevant `native_product_ci.py` suites, a declared UI journey, or a simulator walkthrough with screenshots | H1 design approval before work; decision before merge |
+| Trunk, One-way, Unknown, Structure unapproved, or an Always stop item | L2: the L1 reviews (Risk on the non-author vendor), plus `deep-reviewer` for design questions. Runtime changes also need evidence from a real run: the relevant `native_product_ci.py` suites, a declared UI journey, or a simulator walkthrough with screenshots | H1 design approval before work; decision before merge |
 
 Until this map is merged, the whole repository is L2 (`no_radius_map`).
 
@@ -318,10 +335,13 @@ switch already exists (`ReaderEngine.prepareSourceSwitch`, `ReaderEngine.kt:130`
    catalog, then re-keys bookmarks and the resume record (`NativeShelfDao.kt:263-272`).
    The old chapter folder stays orphaned on disk, and the automatic loop removes
    the confirmation the manual switch has. So this ticket takes the L2 row.
-3. **Leaf ticket.** In the reader, the "Source deleted" state offers "Change
-   source automatically". The red tint for the Sources Delete button can ride
-   here.
-4. **Stops.**
+3. **Swift ticket: Branch.** In the reader, the "Source deleted" state offers
+   "Change source automatically". It calls the new export, which rewrites shelf,
+   catalog and reading session (`ReaderEngine.kt:181-204`), so it is Branch with
+   the engine ticket's One-way Door, not Leaf.
+4. **Leaf ticket.** The red tint for the Sources Delete button: styling inside
+   one view, no model call.
+5. **Stops.**
    - Source ranking by score: upstream already keeps scores in `caches`
      (`SourceConfig.kt:10`). A new score column instead touches the entity
      directories, so Structure is unapproved unless the H1 names it.
