@@ -215,12 +215,15 @@ loss cannot be repaired by downloading again.
 
 **Config files and backup format**
 
-- `data/src/commonMain/kotlin/io/legado/app/help/config/ReadBookConfigShared.kt`:
-  the serialized `ReadStyleConfig` model (`:912`), the files
-  `readConfig.json` and `shareReadConfig.json` (`:886-889`), and their encoding
-  (`:268-282`).
-- `core/src/commonMain/kotlin/io/legado/app/help/config/ThemeConfigStore.kt`
-  (`themeConfig.json`), `data/src/commonMain/kotlin/io/legado/app/help/PinnedExploreHelp.kt`
+- `data/src/commonMain/kotlin/io/legado/app/help/config/` and
+  `core/src/commonMain/kotlin/io/legado/app/help/config/`: the serialized config
+  models and the preference key names. Examples: `ReadBookConfigShared.kt`
+  (the `ReadStyleConfig` model at `:912`, the files `readConfig.json` and
+  `shareReadConfig.json` at `:886-889`, their encoding at `:268-282`),
+  `ThemeConfigProvider.kt` (the `ThemeConfigData` model, `:55`) with
+  `ThemeConfigStore.kt` (reads and writes `themeConfig.json`, `:39`, `:59`),
+  and `SourceConfig.kt`.
+- `data/src/commonMain/kotlin/io/legado/app/help/PinnedExploreHelp.kt`
   (`exploreFavorites.json`) and `data/src/commonMain/kotlin/io/legado/app/help/DirectLinkUploadShared.kt`
   (`directLinkUploadRule.json`).
 - `data/src/commonMain/kotlin/io/legado/app/help/storage/BackupShared.kt`
@@ -395,7 +398,7 @@ CI routing fact, not a Leaf classification.
 | Leaf, Two-way, Structure untouched | L1: one implementation; the `reviewer` agent runs Standards and Spec; the vendor that did not author the change runs Risk (Codex `gpt-6-astra`, high, for Claude Code's work; `reviewer` for Codex's work), following `RISK-REVIEW.md`. If that vendor is unavailable, the author vendor's reviewer runs Risk and the PR comment says so | Merge approval (AGENTS.md) |
 | Controlled Branch, Two-way, Structure untouched | L1 as above. The author records consumers and failure propagation per the policy; the Risk review verifies that evidence | Merge approval; a decision only when author and reviewer disagree |
 | Structure approved | The review of the strictest row that applies, plus the migration fixture and snapshot-and-restore evidence above. Almost every Structure path is in `data/`, `core/` or `foundation/` (Trunk), so in practice this is L2 | H1 design approval before work; merge approval |
-| Trunk, One-way, Unknown, Structure unapproved, or an Always stop item | L2: the L1 reviews (Risk on the non-author vendor), plus `deep-reviewer` for design questions. Runtime changes also need evidence from a real run: the relevant `native_product_ci.py` suites, a declared UI journey, or a simulator walkthrough with screenshots | H1 design approval before work; decision before merge |
+| Trunk, One-way, Unknown, Structure unapproved, or an Always stop item | L2: the L1 reviews, plus Standards and Spec reviews by the vendor that did not author the change (Codex for Claude Code's work, `reviewer` for Codex's work), plus `deep-reviewer` for design questions. Runtime changes also need evidence from a real run: the relevant `native_product_ci.py` suites, a declared UI journey, or a simulator walkthrough with screenshots | H1 design approval before work; decision before merge |
 
 Until this map is merged, the whole repository is L2 (`no_radius_map`).
 
@@ -419,18 +422,19 @@ switch already exists (`ReaderEngine.prepareSourceSwitch`, `ReaderEngine.kt:130`
    Reimplementing it in `engine-ios` is a parallel implementation of an
    upstream capability, which AGENTS.md says needs Lei's explicit decision.
    The H1 also states that no table or column is added.
-2. **Engine ticket: Radius Branch, Door One-way, Structure untouched.** An
+2. **Engine ticket: Radius Trunk, Door One-way, Structure untouched.** An
    additive `ReaderEngine` export that runs the loop over the existing search
    and `prepareSourceSwitch`, plus its engine test. Existing exports stay
    unchanged. Door is One-way because each switch commits through
    `NativeShelfDao.switchSource`, which deletes the old `Book` row and its
    catalog, then re-keys bookmarks and the resume record (`NativeShelfDao.kt:263-272`).
    The old chapter folder stays orphaned on disk, and the automatic loop removes
-   the confirmation the manual switch has. So this ticket takes the L2 row.
-3. **Swift ticket: Branch.** In the reader, the "Source deleted" state offers
+   the confirmation the manual switch has. It writes shared persistent state, so
+   by the exception in the Branch row it is Trunk, and it takes the L2 row.
+3. **Swift ticket: Trunk.** In the reader, the "Source deleted" state offers
    "Change source automatically". It calls the new export, which rewrites shelf,
-   catalog and reading session (`ReaderEngine.kt:181-204`), so it is Branch with
-   the engine ticket's One-way Door, not Leaf.
+   catalog and reading session (`ReaderEngine.kt:181-204`), so it takes the
+   engine ticket's Trunk radius and One-way Door.
 4. **Leaf ticket.** The red tint for the Sources Delete button: styling inside
    one view, no model call.
 5. **Stops.**
