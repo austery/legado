@@ -762,9 +762,10 @@ As of 2026-11-08, automatic merge stays off. Reasons:
   apply here until Lei changes `AGENTS.md`. That is Lei's decision, not
   something this map settles.
 - **What GitHub already enforces.** The ruleset `Protect native-reader` requires:
-  - a PR, with extra approval for unattributed changes;
+  - a PR;
   - code-owner approval for paths in `.github/CODEOWNERS`, which a new push
-    dismisses (other paths need 0 approvals);
+    dismisses. Other paths need 0 approvals, so the setting for unattributed
+    Copilot PRs adds no approval there;
   - the status check `C1 engine regression`, with up-to-date branches.
 
   It also blocks deletion and force-push. `.github/CODEOWNERS` copies named paths
