@@ -251,8 +251,9 @@ Structure.
   also the source switch at `NativeShelfDao.kt:270-271`), bookmark rows
   (`NativeBookmarkDao.kt:68-77`) and cached search hits
   (`CachedChapterSearch.kt:48`). Checks: cached search hits
-  (`CachedChapterSearch.kt:78`), the eviction guard (`OfflineCache.kt:68-69`)
-  and bookmark open (`ReaderEngine.kt:632-650`).
+  (`CachedChapterSearch.kt:78`), the eviction guard (`OfflineCache.kt:68-69`),
+  bookmark open (`ReaderEngine.kt:632-650`), resume save
+  (`NativeResumeDao.kt:91`) and resume restore (`ReaderEngine.kt:713`).
 - `native-ios-app/Sources/ReadingText.swift` (`paragraphStart`, `:115-135`): the
   Swift copy of the same paragraph rule.
 
@@ -274,7 +275,10 @@ to open; the version check never fires. Change both sides together, bump
 - `data/src/commonMain/kotlin/io/legado/app/help/book/BookExtensionsShared.kt`
   (`getFolderNameNoCache`, `:39-43`): the folder-name algorithm (strip
   `AppPattern.fileNameRegex`, keep 9 characters, append `md5Encode16(bookUrl)`).
-  `Book.getFolderName()` only delegates to it. `BookChapter.getFileName`
+  `foundation/src/commonMain/kotlin/io/legado/app/constant/AppPattern.kt`
+  (`fileNameRegex`, `:44`) is part of that algorithm: changing the characters it
+  strips moves some books' folders. `Book.getFolderName()` only delegates to
+  `getFolderNameNoCache`. `BookChapter.getFileName`
   (`roomEntitiesMain/.../BookChapter.kt:96-99`) is covered by the entity
   directories.
 - `engine-ios/src/iosMain/kotlin/io/legado/engine/EngineBookHelpAccessor.kt`
@@ -402,6 +406,9 @@ because the engine and every upstream client consume it. Hubs to name in a PR:
   changes;
 - `EngineHost.kt` (process-wide provider registration and ordering,
   `:114-141`) and the providers it registers, such as `EngineBookHelpAccessor.kt`;
+- `CachedChapterSearch.kt` hit coordinates and the `verify` check (`:66`,
+  `:78`): an accepted hit (`ReaderEngine.kt:110`) becomes the reading position
+  (`:709`), which is then saved (`ReaderModel.swift:995-999`);
 - `IncrementalSearch.kt` (multi-source search, the first half of change source;
   it wraps the shared `SearchModel`);
 - `EngineOperation.kt` (the failure latch shared by `ReaderEngine`,
@@ -446,8 +453,9 @@ change; the notes below are the starting point, not that evidence.
   to disk at `NativeSourceCacheProvider.native.kt:88`). A change to when or how
   rules run therefore falls under the write-path exception below. Called only
   from `DiscoveryModel.swift` through `ReaderEngine`.
-- `CachedChapterSearch.kt`: searches cached chapter text. It reads chapter files
-  and checks `NativeBodyCoordinates` (`:48`, `:78`); it writes nothing.
+- `CachedChapterSearch.kt`: Branch only for a change to how results are listed
+  or summarized, with evidence that hit coordinates and checks are unchanged.
+  Its hit coordinates and its `verify` check (`:66`) are Trunk (see Trunk).
 - `OfflineCache.kt` and `SourceManagement.kt`: Branch only for changes that do
   not touch their write paths. Their writes fall under the exception below.
 
