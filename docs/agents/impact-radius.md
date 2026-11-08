@@ -268,7 +268,7 @@ Radius answers only how far a failure spreads.
 
 | Radius | In this repository |
 | --- | --- |
-| **Trunk** | **Shared upstream production code** in `data/`, `core/` and `foundation/`, because every client above consumes it. Hubs to name in a PR: `AppDatabase.kt`; the shared `Book` writers (`BookDao` and `data/.../dao/NativeShelfDao.kt`, [ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost)); the native persistence DAOs `NativeResumeDao.kt` and `NativeBookmarkDao.kt` (guarded writes that hold reading-position invariants); `model/webBook/SearchModel.kt`; `help/source/SourceHelp.kt`; the QuickJS vendor tree under `modules/quickjs*` and its host bridge. **Engine contract and composition:** `engine-ios/.../ReaderEngine.kt` when an existing export, reply shape or error mapping changes; `engine-ios/.../EngineHost.kt` (process-wide provider registration and ordering, `:114-141`) and the providers it registers, such as `EngineBookHelpAccessor.kt`; `engine-ios/.../EngineOperation.kt` (the failure latch shared by `ReaderEngine`, `IncrementalSearch`, `NativeDiscovery`, `OfflineCache` and `EngineHost`). **Native app composition and durable state:** `native-ios-app/Sources/ReaderModel.swift`, `NativeReaderApp.swift` and `ReadingSaveCoordinator.swift`. **Build and toolchain:** `gradle/libs.versions.toml`, `settings.gradle.kts`, `build-logic/`, `build.gradle.kts`, `gradle.properties`, `data/build.gradle.kts`, `core/build.gradle.kts`, `foundation/build.gradle.kts`, `engine-ios/build.gradle.kts`. **Upstream integration:** any merge of KMP upstream into `native-reader`, whatever its diff size (ADR-002 and the [B/U0/U1/H record](../MAINTENANCE.md#where-maintenance-reaches-upstream)) |
+| **Trunk** | **Shared upstream production code** in `data/`, `core/` and `foundation/`, because every client above consumes it. Hubs to name in a PR: `AppDatabase.kt`; the shared `Book` writers (`BookDao` and `data/.../dao/NativeShelfDao.kt`, [ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost)); the native persistence DAOs `NativeResumeDao.kt` and `NativeBookmarkDao.kt` (guarded writes that hold reading-position invariants); `model/webBook/SearchModel.kt`; `help/source/SourceHelp.kt`; the modules the engine links through `data`, `core` and `foundation`: `modules/quickjs` and its host bridge, `modules/quickjs-processor` (KSP), `modules/js-api`, `modules/rjpath` and `modules/charset-native` (`data/build.gradle.kts:323,405-406,597-598`, `core/build.gradle.kts:26`, `foundation/build.gradle.kts:46,86`). **Engine contract and composition:** `engine-ios/.../ReaderEngine.kt` when an existing export, reply shape or error mapping changes; `engine-ios/.../EngineHost.kt` (process-wide provider registration and ordering, `:114-141`) and the providers it registers, such as `EngineBookHelpAccessor.kt`; `engine-ios/.../EngineOperation.kt` (the failure latch shared by `ReaderEngine`, `IncrementalSearch`, `NativeDiscovery`, `OfflineCache` and `EngineHost`). **Native app composition and durable state:** `native-ios-app/Sources/ReaderModel.swift`, `NativeReaderApp.swift` and `ReadingSaveCoordinator.swift`. **Build and toolchain:** `gradle/libs.versions.toml`, `settings.gradle.kts`, `build-logic/`, `build.gradle.kts`, `gradle.properties`, `data/build.gradle.kts`, `core/build.gradle.kts`, `foundation/build.gradle.kts`, `engine-ios/build.gradle.kts`. **Upstream integration:** any merge of KMP upstream into `native-reader`, whatever its diff size (ADR-002 and the [B/U0/U1/H record](../MAINTENANCE.md#where-maintenance-reaches-upstream)) |
 | **Branch** | One engine feature file behind an unchanged `ReaderEngine` contract: `IncrementalSearch.kt`, `NativeDiscovery.kt`, `OfflineCache.kt`, `CachedChapterSearch.kt` or `SourceManagement.kt` under `engine-ios/src/iosMain/kotlin/io/legado/engine/`. An **additive** `ReaderEngine` export that leaves existing exports, replies and errors unchanged, together with the Swift caller that uses it. One Swift feature view or model (`ShelfView.swift`, `DiscoveryModel.swift`, `DiscoveryView.swift`, `SourceManagementView.swift`, `BookmarkSheet.swift`, `ChapterFind.swift`, `CachedSearchSheet.swift`, `ReadingText.swift`, `ReadingSpreadView.swift`) that leaves `ReaderModel.swift` unchanged or adds only a new method to it. A Branch counts as controlled only with the policy's controlled-Branch evidence; for engine files this includes naming which upstream helpers the file calls. **Exception:** a change to a path that writes, deletes or evicts shared persistent state is not Branch by file name. Examples: source import merge rules and deletion in `SourceManagement.kt` (`dao.importReviewed` at `:119`, `SourceHelp.deleteBookSourceParts` at `:59`) and chapter eviction in `OfflineCache.kt` (`storage.delContent` at `:111`). Classify it by the shared table or store it writes (Trunk) and treat its Door as One-way unless recovery is shown |
 | **Leaf** | Copy, layout or styling inside one Swift view, with no change to model calls or persisted keys. New tests that leave existing assertions, fixtures, baselines and declared counts unchanged (but see the declared-journey rule under Always stop). Documentation that states no rule: typo or link fixes outside the policy text listed under Always stop |
 
@@ -285,17 +285,34 @@ Radius answers only how far a failure spreads.
   reference for the [upstream-first rule](../../AGENTS.md#upstream-first-features).
   Reading it is free. Editing it is the Unknown row below.
 
+### Upstream clients Lei does not use
+
+Lei confirmed on 2026-11-08 that he does not use the original upstream clients.
+He reads on the iPad about 90% of the time and glances at the iPhone the rest; a
+Mac is not part of his reading. These paths are those clients:
+
+- `ui/` (original Compose UI), `app/` (Android), `desktop/`, `desktop-core/`,
+  `ohosApp/`, `iosApp/` (upstream Compose iOS app), `headless/`, `benchmark/`.
+- Modules only those clients use: `modules/treeview`, `modules/web`,
+  `modules/quickjs-android-native`, `modules/quickjs-test`, and the
+  `modules/*-ohos` modules.
+
+Classification:
+
+- **Radius Leaf for the product.** A runtime failure there does not reach the
+  native app, because `engine-ios` does not link them (`engine-ios/build.gradle.kts:33`).
+- **Always stop for edits.** They are upstream-owned. An edit adds upstream
+  merge-conflict cost and works against the North Star non-goal of handling
+  upstream conflicts. Leave them as upstream ships them; `ui/` stays read-only
+  reference for the upstream-first rule.
+- **CI still reaches `ui/`.** C1 compiles `:ui` for the iOS simulator and runs
+  `:ui:jvmTest` (`.github/workflows/c1-engine.yml:204-205`), so a shared-module
+  change that breaks `:ui` still fails the required check.
+
 ### Unknown until evidence exists
 
 Treat these as **Unknown**. The missing evidence is stated for each:
 
-- `ui/`, `app/`, `desktop/`, `desktop-core/`, `ohosApp/`, `iosApp/`,
-  `headless/`, `benchmark/`, and `modules/` other than the QuickJS tree. C1 only
-  compiles `:ui` for the iOS simulator and runs `:ui:jvmTest`; it runs none of
-  these clients. It is also
-  not recorded whether the owner ships or uses any of them. Missing: an executed
-  lane for the affected client, or an owner statement that the client is
-  unused.
 - `native-ios-app/project.yml` changes other than ATS (ATS is an Always stop).
   It also sets bundle identifiers and capabilities. Missing: a signing and
   install check on the owner's device path.
@@ -351,6 +368,7 @@ Treat these as **Unknown**. The missing evidence is stated for each:
   `docs/architecture/`, and `.github/ISSUE_TEMPLATE/`.
 - **Security boundary.** ATS exceptions in `native-ios-app/project.yml`
   (`NSAppTransportSecurity`, `:44-57`), entitlements, and signing settings.
+- **Upstream clients Lei does not use** (listed above under Radius): any edit.
 - **Upstream integration.** Any merge of KMP upstream, any change to the mirror
   sync, and any edit to an upstream-owned file that is not part of an approved
   H1.
