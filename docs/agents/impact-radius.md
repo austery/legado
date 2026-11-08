@@ -311,6 +311,12 @@ loss cannot be repaired by downloading again.
   (backup file list and content, `:108-128`), `RestoreShared.kt` and
   `BackupConfigShared.kt` (`restoreIgnore.json`): the backup and restore format.
 
+**Decision records**
+
+- `docs/architecture/decisions/`: the ADRs. A new ADR, or a change to an accepted
+  one, needs Lei's approval. Write a new ADR when a decision changes, and change
+  only the old one's status (`Superseded by ADR-N`).
+
 **Preference and grant stores**
 
 - `core/src/iosMain/kotlin/io/legado/app/help/config/IosPreferenceProvider.kt`
@@ -627,7 +633,8 @@ Treat these as **Unknown**. The missing evidence is stated for each:
   validation sections of `native-ios-app/README.md`, `engine-ios/README.md` and
   `scripts/path-c/README.md` (VALIDATION.md points to them),
   `docs/MAINTENANCE.md`, `docs/agents/`, ADRs, accepted specs under
-  `docs/architecture/`, and `.github/ISSUE_TEMPLATE/`.
+  `docs/architecture/`, `.github/ISSUE_TEMPLATE/`, and the archive index
+  `docs/_archive/README.md`.
 - **Security boundary.** ATS exceptions in `native-ios-app/project.yml`
   (`NSAppTransportSecurity`, `:44-83`), entitlements, and signing settings.
 - **Upstream clients Lei does not use** (listed under Radius): any edit.
@@ -777,7 +784,6 @@ As of 2026-11-08, automatic merge stays off. Reasons:
   - Runner reliability. The C1 runner shares this Mac with local work and with
     another repository's runner. `scripts/ci/ci-machine-lock.sh` serializes heavy
     CI jobs; local fixture work can still take the fixture ports and fail CI.
-  - No CI link check covers `docs/agents/`. `c1_scope.py` checks links only in
-    allowlisted documents, and `docs/agents/` is not on the allowlist. So
-    changes to this map run full C1 but get no link, anchor or fence check;
-    run one by hand.
+  - `docs/agents/` is not on the docs-only allowlist in `c1_scope.py`, so
+    changes to this map run full C1. Its links are checked by
+    `scripts/path-c/doc_links.py`, which C1 runs in every mode.

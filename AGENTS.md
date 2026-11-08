@@ -15,6 +15,11 @@ and [current maintenance baseline](docs/MAINTENANCE.md). Record the owner's H1 b
 implementation and leave H2 pending until the owner assesses the result. All merges
 require Lei's explicit approval for the PR; plan approval is not merge approval.
 
+Before publishing a PR that closes a task, follow the task closeout in
+`~/Documents/global-skills/agents/DOC-LIFECYCLE.md`. Archive: `docs/_archive/`. Link
+check: `python3 scripts/path-c/doc_links.py`. ADRs live in
+`docs/architecture/decisions/`, a Structure path.
+
 ## Upstream-first features
 
 Before designing a feature, storage change or engine export, trace how the

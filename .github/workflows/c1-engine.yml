@@ -41,6 +41,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Check routing and gate regressions
         run: python3 -m unittest discover -s scripts/path-c -p 'test_c1_*.py'
+      - name: Check Markdown links in project documents
+        run: python3 scripts/path-c/doc_links.py
       - name: Classify complete diff and check documentation
         id: scope
         run: python3 scripts/path-c/c1_scope.py plan
