@@ -25,6 +25,14 @@ inline repository links/anchors and Markdown fences, plus inbound references to
 affected documents. Static checks do not execute fenced examples or certify remote
 links, images, generated diagrams, machine-local paths, reference-style links or
 semantic truth; AI review supplies semantic and evidence-boundary assessment.
+Every mode also runs the Markdown link check `scripts/path-c/doc_links.py`, built on
+markdown-it-py on Python 3.13 (pinned with hashes in
+`scripts/path-c/requirements-doc-links.txt`, installed only into a temporary virtual
+environment). Every relative Markdown link
+in this project's own documents must resolve, and absolute or `file:` links fail. It
+skips upstream-owned Markdown, app content and archived files (but checks the
+archive indexes). Run it locally before publishing a documentation change:
+`uv run --no-project --python 3.13 --with-requirements scripts/path-c/requirements-doc-links.txt python scripts/path-c/doc_links.py`.
 Both heavy jobs are skipped for this mode. The required aggregate passes only when
 the scope/static job succeeds and both jobs are skipped as expected; its result
 explicitly says runtime regression was not applicable. Classification/static-check
