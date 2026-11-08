@@ -1,0 +1,302 @@
+# Impact radius map
+
+The owner's global `PERSONAL-REPO-AUTOMATION.md` (global-skills `3872eff`)
+defines Door (Two-way / One-way), Radius (Leaf / Branch / Trunk), Structure
+(untouched / approved / unapproved / Unknown), the controlled-Branch evidence,
+the review tiers and the execution gates. This file maps those terms onto this
+repository and sets the review depth for each class. It grants no merge
+authority. [`AGENTS.md`](../../AGENTS.md) still requires Lei's explicit approval
+for every PR merge (see [Prerequisites](#prerequisites-before-automatic-merge)).
+
+Evidence in this file was read at `native-reader` `e74d8a07c` on 2026-11-08.
+Re-check a cited path when it has changed since.
+
+Each change is classified on three separate axes:
+
+1. **Door:** can the change and its effects be undone?
+2. **Radius:** if the change is wrong, how far does the failure spread?
+3. **Structure:** does the change touch a structure path (below)? The changed
+   file paths decide this, not judgment.
+
+Keep Radius and Structure apart. A new Room table with one reader can be Branch by
+radius and still stops at the Structure gate.
+
+## How this repository is built
+
+Read the radius rows with these dependency edges in mind:
+
+- The product is the native iPad app. The Swift code in `native-ios-app/Sources/`
+  reaches the engine almost only through `ReaderModel.swift` (55 lines reference
+  the engine) and `DiscoveryModel.swift` (11 lines). The views hold the model,
+  not the engine.
+- `engine-ios` depends on `:core` only (`engine-ios/build.gradle.kts:33`).
+  `:core` exposes `:data` and `:foundation` (`core/build.gradle.kts:72-73`).
+  The engine does not link `:ui`.
+- The same `data`, `core` and `foundation` modules are also consumed by the
+  original upstream clients: `:ui` (`ui/build.gradle.kts:153-156`), `:app`
+  (`app/build.gradle.kts:328`), `:desktop` (`desktop/build.gradle.kts:181`),
+  `:desktop-core` (`desktop-core/build.gradle.kts:24`), `:headless`
+  (`headless/build.gradle.kts:39`) and `ohosApp`.
+- Most of the tree is vendored KMP upstream. Keeping upstream integration cheap
+  is a project goal ([ADR-001](../architecture/decisions/ADR-001-native-experience-and-upstream-ownership.md#owner-confirmed-policy-round-1-2026-10-13)).
+  Every edit to an upstream-owned file is a future merge conflict as well as a
+  runtime change.
+- C1 executes the engine and the native product. It only compiles `:ui` for the
+  iOS simulator (`.github/workflows/c1-engine.yml:204`). No C1 lane runs the
+  Android, desktop, OHOS or Compose iOS clients.
+
+## Structure paths
+
+### Why the policy fallback paths do not work here
+
+The policy fallback paths miss this repository's persistent structure:
+
+- `**/migrations/**` matches nothing. Migrations live in
+  `DatabaseMigrations*.kt` and `Migration84To85.kt`, and in Room
+  `autoMigrations` inside `AppDatabase.kt`.
+- `**/schema.*` matches nothing. Room schema snapshots are
+  `data/schemas/io.legado.app.data.AppDatabase/<version>.json`.
+- `**/*.sql` matches only test fixtures (`data/src/jvmTest/resources/schema*-fixture.sql`).
+- `**/*.prisma` does not apply.
+
+Under the fallback, a new Room table would read as Structure untouched. Use the
+list below instead.
+
+### Paths
+
+A change that adds, modifies or deletes anything under these paths touches
+Structure:
+
+**Room database (shared by the native app and every upstream client)**
+
+- `data/src/commonMain/kotlin/io/legado/app/data/AppDatabase.kt`: `@Database`
+  version (92), entity and view list, and `autoMigrations` (`:61-80`).
+- `data/src/*/kotlin/io/legado/app/data/DatabaseMigrations*.kt` (common
+  definitions plus the `ios`, `jvmAndAndroid` and `ohos` actuals) and
+  `data/src/commonMain/kotlin/io/legado/app/data/Migration84To85.kt`.
+- `data/schemas/io.legado.app.data.AppDatabase/`.
+- `data/src/commonMain/kotlin/io/legado/app/data/entities/` and
+  `data/src/roomEntitiesMain/kotlin/io/legado/app/data/entities/`, including
+  `entities/rule/`. The rule classes are serialized into JSON columns of
+  `BookSource` (`RuleStringSerializer.kt`, `RawJsonStringSerializer.kt`). A rule
+  class change alters persisted column content and the source import/export
+  format without any migration.
+- `data/src/iosMain/kotlin/io/legado/app/data/IosDatabaseDriver.kt`: database
+  file name and location (`Documents/legado.db`).
+
+**Persisted formats outside table definitions**
+
+- `foundation/src/commonMain/kotlin/io/legado/app/utils/KsJson.shared.kt`:
+  `KS_JSON` decodes community source files (`SourceManagement.kt:77-78`) and
+  encodes exports (`:129`). Its leniency settings decide which community source
+  files still import. This is compatibility goal A in ADR-001.
+- Key formats inside the generic `caches` table:
+  `data/src/commonMain/kotlin/io/legado/app/help/config/SourceConfig.kt`
+  (`sourceScore_{origin}`) and the source variable keys removed by
+  `SourceHelp.deleteBookSourceParts`. See Unknown below.
+
+**Chapter cache files**
+
+- `data/src/commonMain/kotlin/io/legado/app/help/book/BookHelpShared.kt`
+  (`cacheFolderName = "book_cache"`, `:49`) and
+  `data/src/commonMain/kotlin/io/legado/app/help/book/BookStorage.kt`
+  (`getFolderName`, `saveText`). `Book.getFolderName()` and
+  `BookChapter.getFileName` are already covered by the entity directories.
+  Renaming any part orphans every cached chapter. After a source is deleted,
+  cached chapters are the only copy of that book's text, so this loss cannot be
+  repaired by downloading again.
+
+**Preference and grant stores**
+
+- `core/src/iosMain/kotlin/io/legado/app/help/config/IosPreferenceProvider.kt`
+  (iOS backend for all shared preferences).
+- `foundation/src/iosMain/kotlin/io/legado/app/utils/IosSecurityScopedStorage.kt`
+  (`NSUserDefaults` keys for granted directories and the import root).
+- `native-ios-app/Sources/ReadingPreferences.swift` (keys `nativeReader.*.v1`
+  and the Codable reading-style payload).
+
+### Not covered by paths: treat as Unknown
+
+- Shared preference key names are defined across many upstream config files. A
+  renamed key silently resets a setting. No path list covers them; flag any key
+  rename as Structure Unknown.
+- `caches` key prefixes can be added by any upstream helper. A new prefix
+  outside `SourceConfig.kt` is Structure Unknown.
+- Cookies and web storage of the backstage `WKWebView`
+  (`data/src/iosMain/kotlin/io/legado/app/help/http/IosBackstageWebView.kt`)
+  live in the system data store. The repository cannot version or roll them back.
+
+### What Structure approved needs here
+
+- The design approved before implementation (normally the H1 of an Issue that uses the
+  [bounded-slice template](../../.github/ISSUE_TEMPLATE/03-bounded-slice.md))
+  names each added or altered entity, column, index, view, migration, persisted
+  key and file-layout element.
+- This repository has no down migrations, and Room offers no reverse migration
+  ([maintenance record, Room row](../MAINTENANCE.md#critical-dependency-and-acceptance-map)).
+  So the PR attaches, instead of rollback output:
+  - a new `data/src/jvmTest/resources/schema<N>-fixture.sql` for the old version
+    and a test that migrates it forward with data preserved;
+  - a synthetic snapshot-and-restore record that shows how the previous app
+    build recovers. Never use the owner's device database for this.
+- A schema migration that writes data is **One-way** by default. Only the
+  snapshot-and-restore evidence above can show Two-way.
+- Upstream integration merges that move the schema version are Structure
+  touched. Their approval is the upstream sync H1 (see Radius).
+
+## Radius in this repository
+
+Radius answers only how far a failure spreads.
+
+| Radius | In this repository |
+| --- | --- |
+| **Trunk** | **Shared upstream production code** in `data/`, `core/` and `foundation/`, because every client above consumes it. Hubs to name in a PR: `AppDatabase.kt`; the shared `Book` writers (`BookDao` and `data/.../dao/NativeShelfDao.kt`, [ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost)); the native persistence DAOs `NativeResumeDao.kt` and `NativeBookmarkDao.kt` (guarded writes that hold reading-position invariants); `model/webBook/SearchModel.kt`; `help/source/SourceHelp.kt`; the QuickJS vendor tree under `modules/quickjs*` and its host bridge. **Engine contract and composition:** `engine-ios/.../ReaderEngine.kt` when an existing export, reply shape or error mapping changes; `engine-ios/.../EngineHost.kt` (process-wide provider registration and ordering, `:130-156`) and the providers it registers, such as `EngineBookHelpAccessor.kt`; `engine-ios/.../EngineOperation.kt` (the failure latch shared by `ReaderEngine`, `IncrementalSearch`, `NativeDiscovery`, `OfflineCache` and `EngineHost`). **Native app composition and durable state:** `native-ios-app/Sources/ReaderModel.swift`, `NativeReaderApp.swift` and `ReadingSaveCoordinator.swift`. **Build and toolchain:** `gradle/libs.versions.toml`, `settings.gradle.kts`, `build-logic/`, `build.gradle.kts`, `gradle.properties`, `data/build.gradle.kts`, `core/build.gradle.kts`, `foundation/build.gradle.kts`, `engine-ios/build.gradle.kts`. **Upstream integration:** any merge of KMP upstream into `native-reader`, whatever its diff size (ADR-002 and the [B/U0/U1/H record](../MAINTENANCE.md#where-maintenance-reaches-upstream)) |
+| **Branch** | One engine feature file behind an unchanged `ReaderEngine` contract: `IncrementalSearch.kt`, `NativeDiscovery.kt`, `OfflineCache.kt`, `CachedChapterSearch.kt` or `SourceManagement.kt` under `engine-ios/src/iosMain/kotlin/io/legado/engine/`. An **additive** `ReaderEngine` export that leaves existing exports, replies and errors unchanged, together with the Swift caller that uses it. One Swift feature view or model (`ShelfView.swift`, `DiscoveryModel.swift`, `DiscoveryView.swift`, `SourceManagementView.swift`, `BookmarkSheet.swift`, `ChapterFind.swift`, `CachedSearchSheet.swift`, `ReadingText.swift`, `ReadingSpreadView.swift`) that leaves `ReaderModel.swift` unchanged or adds only a new method to it. A Branch counts as controlled only with the policy's controlled-Branch evidence; for engine files this includes naming which upstream helpers the file calls |
+| **Leaf** | Copy, layout or styling inside one Swift view, with no change to model calls or persisted keys. New tests that leave existing assertions, fixtures, baselines and declared counts unchanged (but see the declared-journey rule under Always stop). Documentation that states no rule: typo or link fixes outside the policy text listed under Always stop |
+
+### Coupling that a folder name hides
+
+- `engine-ios/.../IncrementalSearch.kt:10` imports
+  `io.legado.app.ui.book.search.SearchScope`, and `CachedChapterSearch.kt:6`
+  imports `io.legado.app.ui.book.searchContent.LiteralTextSearch`. Both classes
+  live in `data/src/commonMain`, not in the `:ui` module. A change to an
+  `io.legado.app.ui.*` package inside `data/` is shared upstream code (Trunk),
+  even though the package name says "ui".
+- Upstream reference code that the engine does not link (for example
+  `ui/src/commonMain/.../ChangeBookSourceViewModelShared.kt`) is read-only
+  reference for the [upstream-first rule](../../AGENTS.md#upstream-first-features).
+  Reading it is free. Editing it is the Unknown row below.
+
+### Unknown until evidence exists
+
+Treat these as **Unknown**. The missing evidence is stated for each:
+
+- `ui/`, `app/`, `desktop/`, `desktop-core/`, `ohosApp/`, `iosApp/`,
+  `headless/`, `benchmark/`, and `modules/` other than the QuickJS tree. C1 only
+  compiles `:ui` for the iOS simulator; it runs none of these clients. It is also
+  not recorded whether the owner ships or uses any of them. Missing: an executed
+  lane for the affected client, or an owner statement that the client is
+  unused.
+- `native-ios-app/project.yml` changes other than ATS (ATS is an Always stop).
+  It also sets bundle identifiers and capabilities. Missing: a signing and
+  install check on the owner's device path.
+- Any path this file does not name.
+
+## One-way effects in this repository
+
+- Room migrations that write data, and any change that rewrites existing rows on
+  first launch. Room has no reverse migration; old code cannot read new data.
+- Deleting or rewriting user data at runtime, for example source deletion
+  (`SourceHelp.deleteBookSourceParts`) or cache eviction. A code revert does
+  not restore the rows or files.
+- Renaming the chapter cache layout (Structure above): orphaned files are lost
+  for books whose source is gone.
+- Writes to `master`, the upstream mirror. `sync-upstream-mirror.yml` runs daily
+  with `contents: write` and fast-forwards it
+  (`scripts/ci/sync-upstream-mirror.sh --apply`).
+- Releases. `release.yml` (cron on the 1st and 15th) and `test.yml` call
+  `_publish.yml`. On 2026-11-08 `test.yml` skips in `austery/legado`
+  (`test.yml:38`), and `release.yml` skips without the `RELEASE_KEY_STORE`
+  secret; `gh secret list` showed no repository secrets. Adding that secret or
+  changing these guards turns publishing on.
+- IPA distribution to the owner's device, and live community-site requests
+  beyond loopback fixtures.
+
+## Always stop, whatever the class
+
+- **Verifier changes.**
+  - `.github/workflows/`, `.github/scripts/`, `.github/actionlint.yaml`.
+  - `scripts/path-c/` (including `c1_scope.py`, `native_product_ci.py`,
+    `reader_ui_ci.py`, `kotlin_native_ci.py`, `verify_url_tests.py`, and fixture
+    servers) and `scripts/ci/` (including `ci-machine-lock.sh`, the lock shared
+    with `insight-engine-personal`).
+  - `engine-ios/fixtures/`, `engine-ios/harness/`, `native-ios-app/UITestHost/`,
+    `native-ios-app/ui-tests.yml`, `data/src/jvmTest/resources/`.
+  - Existing test assertions, fixtures, timeouts, thresholds and expected counts.
+  - The required check name `C1 engine regression` and the ruleset.
+
+  New coverage is not a verifier change. In particular, a new UI journey must be
+  declared in `scripts/path-c/reader_ui_ci.py` with `expectedTests` raised by
+  the same number. That edit adds coverage and is not a stop. Lowering a count,
+  removing a declared test, or adding a skip is a stop.
+- **Policy text.** `AGENTS.md`, `GLOSSARY.md`, `docs/VALIDATION.md`,
+  `docs/MAINTENANCE.md`, `docs/agents/`, ADRs, accepted specs under
+  `docs/architecture/`, and `.github/ISSUE_TEMPLATE/`.
+- **Security boundary.** ATS exceptions in `native-ios-app/project.yml`
+  (`NSAppTransportSecurity`, `:44-57`), entitlements, and signing settings.
+- **Upstream integration.** Any merge of KMP upstream, any change to the mirror
+  sync, and any edit to an upstream-owned file that is not part of an approved
+  H1.
+
+A path on the docs-only allowlist in `c1_scope.py` gets cheaper CI. That is a
+CI routing fact, not a Leaf classification.
+
+## Review depth
+
+| Classification | Delivery and review | Owner involvement |
+| --- | --- | --- |
+| Leaf, Two-way, Structure untouched | One implementation; `reviewer` agent with separate Standards, Spec and Risk requests | Merge approval (AGENTS.md) |
+| Controlled Branch, Two-way, Structure untouched | The author records consumers and failure propagation per the policy; the `reviewer` Risk request verifies that evidence | Merge approval; a decision only when author and reviewer disagree |
+| Structure approved | L1 review plus the migration fixture and snapshot-and-restore evidence above | H1 design approval before work; merge approval |
+| Trunk, One-way, Unknown, Structure unapproved, or an Always stop item | L2: add the cross-vendor review (Codex `gpt-6-astra`, high, for Claude Code's work) and `deep-reviewer` for design questions. Runtime changes also need evidence from a real run: the relevant `native_product_ci.py` suites, a declared UI journey, or a simulator walkthrough with screenshots | H1 design approval before work; decision before merge |
+
+Until this map is merged, the whole repository is L2 (`no_radius_map`).
+
+The coordinator runs the independent reviewer itself and gives it only the
+requirement text, the pinned base/head and the code. The coordinator verifies
+each finding and brings the owner the decisions above or a disagreement.
+
+## Slicing example: automatic change source
+
+Issue #69 left this follow-up: when a shelf book's source is gone, upstream
+changes source automatically. Upstream does it in `autoChangeSource`
+(`ui/src/commonMain/kotlin/io/legado/app/ui/book/changesource/ChangeBookSourceViewModelShared.kt`).
+It walks the search results of the same book type, loads each TOC, and takes the
+first that succeeds. The engine does not link `:ui`, but the native manual
+switch already exists (`ReaderEngine.prepareSourceSwitch`, `ReaderEngine.kt:130`;
+`NativeShelfDao.switchSource`, `NativeShelfDao.kt:214`).
+
+1. **Design gate (owner approves the H1).** Choose where the loop runs: in
+   `engine-ios` over the existing search and switch exports, or moved into
+   `data/`. Moving it edits upstream-owned code (Trunk, upstream conflict cost).
+   Reimplementing it in `engine-ios` is a parallel implementation of an
+   upstream capability, which AGENTS.md says needs Lei's explicit decision.
+   The H1 also states that no table or column is added.
+2. **Branch ticket, Structure untouched.** An additive `ReaderEngine` export
+   that runs the loop over the existing search and `prepareSourceSwitch`, plus
+   its engine test. Existing exports stay unchanged.
+3. **Leaf ticket.** In the reader, the "Source deleted" state offers "Change
+   source automatically". The red tint for the Sources Delete button can ride
+   here.
+4. **Stops.**
+   - Source ranking by score: upstream already keeps scores in `caches`
+     (`SourceConfig.kt:10`). A new score column instead touches the entity
+     directories, so Structure is unapproved unless the H1 names it.
+   - Changing the guards in `NativeShelfDao.switchSource` changes a shared
+     `Book` writer: Trunk.
+
+## Prerequisites before automatic merge
+
+As of 2026-11-08, automatic merge stays off. Reasons:
+
+- **AGENTS.md requires Lei's explicit approval for every merge.** The policy's
+  "no owner involvement" path cannot apply here until Lei changes `AGENTS.md`.
+  That is Lei's decision, not something this map settles.
+- **What GitHub already enforces.** The ruleset `Protect native-reader` requires
+  a PR (0 approvals; extra approval for unattributed changes), the status check
+  `C1 engine regression` with up-to-date branches, and blocks deletion and
+  force-push. Repository auto-merge is disabled.
+- **What is missing:**
+  - No CODEOWNERS and no code-owner review, so Structure and verifier paths are
+    followed by agents, not enforced by GitHub.
+  - A PR can change the check that judges it. `c1-engine.yml` runs on
+    `pull_request` from the PR's own revision, on the self-hosted runner. Until a
+    rule outside the PR guards verifier paths, a passing C1 does not prove the
+    verifier is unchanged.
+  - Agent identity. A GitHub App is installed for agent writes, but it has no
+    Workflows permission. Workflow changes still go through Lei's account.
+  - Runner reliability. The C1 runner shares this Mac with local work and with
+    another repository's runner. `scripts/ci/ci-machine-lock.sh` serializes heavy
+    CI jobs; local fixture work can still take the fixture ports and fail CI.
+  - `docs/agents/` is not on the docs-only allowlist, so changes to this map run
+    full C1.
