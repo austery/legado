@@ -24,12 +24,14 @@ compatibility, and will for a long time
 `huajideshutiao/legado`, the parent of this fork. On 2026-11-08 it looked like
 this:
 
-- One person writes almost all changes: 99 of the 100 commits since 2026-09-01.
+- One person writes almost all changes. Of the 660 upstream commits from
+  2026-09-01 to `83657e548`, 656 carry the maintainer's author names (`薯条`,
+  `huajideshutiao`).
 - There is no published roadmap: the repository has no milestones.
 - It changes daily: about three commits a day in late October 2026.
 - It publishes a release about twice a month (tags such as `3.26.110111` on
   2026-11-01 and `3.26.100113` on 2026-10-01).
-- One integration can be large. The merge in PR #68 (`7a23c081f`, upstream
+- One integration can be large. PR #68 (merge commit `c23dc76de`, upstream
   `83657e548`) changed 539 files and removed about 100,000 lines. It also changed
   two inherited workflows, `ios.yml` and `sync-quickjs-ng.yml`.
 - This repository integrated upstream about every one to two weeks
