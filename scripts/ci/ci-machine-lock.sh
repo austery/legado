@@ -13,17 +13,23 @@
 #   ci-machine-lock.sh release   # last step, with `if: always()`
 #
 # Protocol:
-# - The lock is the directory $CI_MACHINE_LOCK_DIR; `mkdir` is atomic.
-# - The holder is the job's Runner.Worker process, which lives for the whole
-#   job. A lock whose holder process is gone is stale and is removed, so a
-#   crashed or killed job cannot block the machine.
-# - acquire waits up to $CI_MACHINE_LOCK_WAIT_SECONDS, then fails the job.
+# - The lock is a symbolic link at $CI_MACHINE_LOCK_PATH whose target text is the
+#   owner record ("pid=...;repository=...;..."). `ln -s` creates the link and its
+#   owner record in one atomic step, so a lock never exists without an owner.
+# - The holder is the job's Runner.Worker process, which lives for the whole job.
+#   A lock is stale when its holder pid is gone or no longer runs a command that
+#   matches $CI_MACHINE_LOCK_HOLDER_PATTERN (guards against pid reuse).
+# - A stale lock is first renamed away with `mv`; only one waiter can win that
+#   rename, and it removes the link only if it still holds the stale record.
+# - acquire waits up to $CI_MACHINE_LOCK_WAIT_SECONDS, then fails the job. It is
+#   mutual exclusion, not a fair queue.
 # - release removes the lock only when this job's worker holds it.
 set -euo pipefail
 
-lock_dir="${CI_MACHINE_LOCK_DIR:-$HOME/GitHubRunners/.heavy-ci.lock}"
+lock_path="${CI_MACHINE_LOCK_PATH:-$HOME/GitHubRunners/.heavy-ci.link}"
 wait_seconds="${CI_MACHINE_LOCK_WAIT_SECONDS:-2700}"
 poll_seconds="${CI_MACHINE_LOCK_POLL_SECONDS:-15}"
+holder_pattern="${CI_MACHINE_LOCK_HOLDER_PATTERN:-Runner\.Worker}"
 
 # The job's Runner.Worker ancestor; CI_MACHINE_LOCK_OWNER_PID overrides it for tests.
 owner_pid() {
@@ -43,45 +49,65 @@ owner_pid() {
   exit 2
 }
 
-holder_pid() {
-  sed -n 's/^pid=//p' "$lock_dir/owner" 2>/dev/null || true
+record() { readlink "$lock_path" 2>/dev/null || true; }
+record_pid() { printf '%s\n' "$1" | sed -n 's/^pid=\([0-9]*\);.*/\1/p'; }
+
+holder_alive() {
+  [ -n "$1" ] && kill -0 "$1" 2>/dev/null &&
+    ps -o command= -p "$1" 2>/dev/null | grep -q -- "$holder_pattern"
+}
+
+remove_stale() {
+  local seen="$1" moved="$lock_path.stale.$$"
+  mv "$lock_path" "$moved" 2>/dev/null || return 0
+  if [ "$(readlink "$moved" 2>/dev/null || true)" = "$seen" ]; then
+    rm -f "$moved"
+    echo "ci-machine-lock: removed stale lock: $seen"
+  else
+    # Another job acquired between our read and the rename; give its lock back.
+    mv -n "$moved" "$lock_path" 2>/dev/null || rm -f "$moved"
+  fi
 }
 
 acquire() {
-  local me waited=0 holder
+  local me waited=0 current
   me=$(owner_pid)
-  mkdir -p "$(dirname "$lock_dir")"
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    holder=$(holder_pid)
-    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-      echo "ci-machine-lock: removing stale lock of exited pid $holder"
-      rm -rf "$lock_dir"
+  mkdir -p "$(dirname "$lock_path")"
+  # `ln -s` onto an existing directory would create the link inside it and "succeed".
+  if [ -d "$lock_path" ] && [ ! -L "$lock_path" ]; then
+    echo "ci-machine-lock: $lock_path is a directory, not a lock link; remove it by hand" >&2
+    exit 2
+  fi
+  local mine
+  mine="pid=$me;repository=${GITHUB_REPOSITORY:-local};run=${GITHUB_RUN_ID:-};job=${GITHUB_JOB:-};since=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  while ! ln -s "$mine" "$lock_path" 2>/dev/null; do
+    current=$(record)
+    if [ -n "$current" ] && ! holder_alive "$(record_pid "$current")"; then
+      remove_stale "$current"
       continue
     fi
     if [ "$waited" -ge "$wait_seconds" ]; then
-      echo "ci-machine-lock: gave up after ${waited}s; holder:" >&2
-      cat "$lock_dir/owner" >&2 2>/dev/null || true
+      echo "ci-machine-lock: gave up after ${waited}s; holder: ${current:-unknown}" >&2
       exit 1
     fi
-    [ "$waited" -eq 0 ] && { echo "ci-machine-lock: waiting; holder:"; cat "$lock_dir/owner" 2>/dev/null || echo "(owner not written yet)"; }
+    if [ "$waited" -eq 0 ]; then
+      echo "ci-machine-lock: waiting; holder: ${current:-unknown}"
+    fi
     sleep "$poll_seconds"
     waited=$((waited + poll_seconds))
   done
-  printf 'pid=%s\nrepository=%s\nrun=%s\njob=%s\nsince=%s\n' \
-    "$me" "${GITHUB_REPOSITORY:-local}" "${GITHUB_RUN_ID:-}" "${GITHUB_JOB:-}" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock_dir/owner"
-  echo "ci-machine-lock: acquired after ${waited}s (pid $me)"
+  echo "ci-machine-lock: acquired after ${waited}s: $mine"
 }
 
 release() {
-  local me holder
+  local me current
   me=$(owner_pid)
-  holder=$(holder_pid)
-  if [ "$holder" = "$me" ]; then
-    rm -rf "$lock_dir"
+  current=$(record)
+  if [ -n "$current" ] && [ "$(record_pid "$current")" = "$me" ]; then
+    rm -f "$lock_path"
     echo "ci-machine-lock: released (pid $me)"
   else
-    echo "ci-machine-lock: not held by this job (holder: ${holder:-none}); nothing to release"
+    echo "ci-machine-lock: not held by this job (holder: ${current:-none}); nothing to release"
   fi
 }
 
