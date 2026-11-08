@@ -41,9 +41,10 @@ Read the radius rows with these dependency edges in mind:
   is a project goal ([ADR-001](../architecture/decisions/ADR-001-native-experience-and-upstream-ownership.md#owner-confirmed-policy-round-1-2026-10-13)).
   Every edit to an upstream-owned file is a future merge conflict as well as a
   runtime change.
-- C1 executes the engine and the native product. It only compiles `:ui` for the
-  iOS simulator (`.github/workflows/c1-engine.yml:204`). No C1 lane runs the
-  Android, desktop, OHOS or Compose iOS clients.
+- C1 executes the engine and the native product. For `:ui` it only compiles the
+  iOS simulator target and runs `:ui:jvmTest`
+  (`.github/workflows/c1-engine.yml:204-205`). No C1 lane runs the Android,
+  desktop, OHOS or Compose iOS clients.
 
 ## Structure paths
 
@@ -59,8 +60,9 @@ The policy fallback paths miss this repository's persistent structure:
 - `**/*.sql` matches only test fixtures (`data/src/jvmTest/resources/schema*-fixture.sql`).
 - `**/*.prisma` does not apply.
 
-Under the fallback, a new Room table would read as Structure untouched. Use the
-list below instead.
+The policy treats a new persistent model outside the fallback paths as Unknown.
+Here that would make every Room change Unknown and every chapter-cache change
+invisible, so use the list below instead.
 
 ### Paths
 
@@ -71,9 +73,11 @@ Structure:
 
 - `data/src/commonMain/kotlin/io/legado/app/data/AppDatabase.kt`: `@Database`
   version (92), entity and view list, and `autoMigrations` (`:61-80`).
-- `data/src/*/kotlin/io/legado/app/data/DatabaseMigrations*.kt` (common
-  definitions plus the `ios`, `jvmAndAndroid` and `ohos` actuals) and
-  `data/src/commonMain/kotlin/io/legado/app/data/Migration84To85.kt`.
+- `data/src/*/kotlin/io/legado/app/data/DatabaseMigrations*.kt` and
+  `data/src/*/kotlin/io/legado/app/data/Migration84To85*.kt` (common
+  definitions plus the `ios`, `jvmAndAndroid` and `ohos` actuals).
+- `data/src/*/kotlin/io/legado/app/data/AppDatabaseDefaults*.kt`: seed data
+  passed to the database callback (`IosDatabaseDriver.kt:79`).
 - `data/schemas/io.legado.app.data.AppDatabase/`.
 - `data/src/commonMain/kotlin/io/legado/app/data/entities/` and
   `data/src/roomEntitiesMain/kotlin/io/legado/app/data/entities/`, including
@@ -82,7 +86,15 @@ Structure:
   class change alters persisted column content and the source import/export
   format without any migration.
 - `data/src/iosMain/kotlin/io/legado/app/data/IosDatabaseDriver.kt`: database
-  file name and location (`Documents/legado.db`).
+  file name and builder (it joins `filesDir` and `legado.db`, `:100-101`).
+
+**iOS app directories**
+
+- `data/src/iosMain/kotlin/io/legado/app/help/file/AppFilesDir.ios.kt`
+  (`:27-41`): resolves `filesDir` (the Documents folder), `cacheDir` and
+  `coversDir`. Every store below and the database live under these.
+- `data/src/nativeMain/kotlin/io/legado/app/help/storage/NativeDataStorage.native.kt`
+  (`:15-21`): the `book_cache`, `bg`, `font` and `backup` directories.
 
 **Persisted formats outside table definitions**
 
@@ -90,21 +102,42 @@ Structure:
   `KS_JSON` decodes community source files (`SourceManagement.kt:77-78`) and
   encodes exports (`:129`). Its leniency settings decide which community source
   files still import. This is compatibility goal A in ADR-001.
-- Key formats inside the generic `caches` table:
+- Key formats inside the generic `caches` Room table:
   `data/src/commonMain/kotlin/io/legado/app/help/config/SourceConfig.kt`
-  (`sourceScore_{origin}`) and the source variable keys removed by
-  `SourceHelp.deleteBookSourceParts`. See Unknown below.
+  (`sourceScore_{origin}`). See Unknown below.
+- The per-source file store on iOS:
+  `core/src/nativeMain/kotlin/io/legado/app/help/NativeSourceCacheProvider.native.kt`
+  writes `{filesDir}/cache_manager/<escapeKey(key)>`. It holds each source's
+  `loginHeader_`, `userInfo_` and `sourceVariable_` values and the JS `cache`
+  binding (`data/src/commonMain/kotlin/io/legado/app/data/entities/BaseSource.kt:199-271`).
+  On iOS these values are files, not `caches` rows: `SourceHelp.deleteBookSourceParts`
+  deletes only `caches` rows (`SourceHelp.kt:247`), and
+  `NativeSourceHelpAccessor.native.kt:66-68` clears only the in-memory cache.
+- `core/src/nativeMain/kotlin/io/legado/app/help/NativeFileCacheProvider.native.kt`
+  (`:53`, `:117`): persistent file-cache entries at `{filesDir}/<key.hashCode()>`.
 
 **Chapter cache files**
 
 - `data/src/commonMain/kotlin/io/legado/app/help/book/BookHelpShared.kt`
   (`cacheFolderName = "book_cache"`, `:49`) and
   `data/src/commonMain/kotlin/io/legado/app/help/book/BookStorage.kt`
-  (`getFolderName`, `saveText`). `Book.getFolderName()` and
-  `BookChapter.getFileName` are already covered by the entity directories.
-  Renaming any part orphans every cached chapter. After a source is deleted,
-  cached chapters are the only copy of that book's text, so this loss cannot be
-  repaired by downloading again.
+  (the `getFolderName` and `saveText` interface).
+- `core/src/nativeMain/kotlin/io/legado/app/help/book/NativeBookStorage.native.kt`:
+  the iOS chapter writer (root `{filesDir}/book_cache/`, atomic `saveText`).
+- `core/src/nativeMain/kotlin/io/legado/app/help/book/NativeBookImageStorage.native.kt`:
+  chapter images at `book_cache/{book}/images/{md5}.{suffix}`.
+- `data/src/commonMain/kotlin/io/legado/app/help/book/BookExtensionsShared.kt`
+  (`getFolderNameNoCache`, `:39-43`): the folder-name algorithm (strip
+  `AppPattern.fileNameRegex`, keep 9 characters, append `md5Encode16(bookUrl)`).
+  `Book.getFolderName()` only delegates to it. `BookChapter.getFileName`
+  (`roomEntitiesMain/.../BookChapter.kt:96-99`) is covered by the entity
+  directories.
+- `engine-ios/src/iosMain/kotlin/io/legado/engine/EngineBookHelpAccessor.kt`
+  (`:24`): cover files at `covers/<md5_16(bookUrl)>.jpg`.
+
+Renaming any part of the chapter layout orphans every cached chapter. After a
+source is deleted, cached chapters are the only copy of that book's text, so this
+loss cannot be repaired by downloading again.
 
 **Preference and grant stores**
 
@@ -115,13 +148,17 @@ Structure:
 - `native-ios-app/Sources/ReadingPreferences.swift` (keys `nativeReader.*.v1`
   and the Codable reading-style payload).
 
+These three stores share `NSUserDefaults.standard`. A new key in any of them
+that could collide with another store's key is Structure Unknown.
+
 ### Not covered by paths: treat as Unknown
 
 - Shared preference key names are defined across many upstream config files. A
   renamed key silently resets a setting. No path list covers them; flag any key
   rename as Structure Unknown.
-- `caches` key prefixes can be added by any upstream helper. A new prefix
-  outside `SourceConfig.kt` is Structure Unknown.
+- New key prefixes in the `caches` table or in `cache_manager/` can be added by
+  any upstream helper or by a source's JS. A new prefix outside `SourceConfig.kt`
+  and `BaseSource.kt` is Structure Unknown.
 - Cookies and web storage of the backstage `WKWebView`
   (`data/src/iosMain/kotlin/io/legado/app/help/http/IosBackstageWebView.kt`)
   live in the system data store. The repository cannot version or roll them back.
@@ -136,13 +173,15 @@ Structure:
   ([maintenance record, Room row](../MAINTENANCE.md#critical-dependency-and-acceptance-map)).
   So the PR attaches, instead of rollback output:
   - a new `data/src/jvmTest/resources/schema<N>-fixture.sql` for the old version
-    and a test that migrates it forward with data preserved;
+    and a test that migrates it forward with data preserved (a new fixture file
+    is new coverage, not an Always stop; editing an existing fixture is);
   - a synthetic snapshot-and-restore record that shows how the previous app
     build recovers. Never use the owner's device database for this.
 - A schema migration that writes data is **One-way** by default. Only the
   snapshot-and-restore evidence above can show Two-way.
-- Upstream integration merges that move the schema version are Structure
-  touched. Their approval is the upstream sync H1 (see Radius).
+- An upstream integration merge that moves the schema version is Structure
+  approved only when its upstream sync H1 names each changed entity, column and
+  migration. Otherwise it is unapproved.
 
 ## Radius in this repository
 
@@ -150,8 +189,8 @@ Radius answers only how far a failure spreads.
 
 | Radius | In this repository |
 | --- | --- |
-| **Trunk** | **Shared upstream production code** in `data/`, `core/` and `foundation/`, because every client above consumes it. Hubs to name in a PR: `AppDatabase.kt`; the shared `Book` writers (`BookDao` and `data/.../dao/NativeShelfDao.kt`, [ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost)); the native persistence DAOs `NativeResumeDao.kt` and `NativeBookmarkDao.kt` (guarded writes that hold reading-position invariants); `model/webBook/SearchModel.kt`; `help/source/SourceHelp.kt`; the QuickJS vendor tree under `modules/quickjs*` and its host bridge. **Engine contract and composition:** `engine-ios/.../ReaderEngine.kt` when an existing export, reply shape or error mapping changes; `engine-ios/.../EngineHost.kt` (process-wide provider registration and ordering, `:130-156`) and the providers it registers, such as `EngineBookHelpAccessor.kt`; `engine-ios/.../EngineOperation.kt` (the failure latch shared by `ReaderEngine`, `IncrementalSearch`, `NativeDiscovery`, `OfflineCache` and `EngineHost`). **Native app composition and durable state:** `native-ios-app/Sources/ReaderModel.swift`, `NativeReaderApp.swift` and `ReadingSaveCoordinator.swift`. **Build and toolchain:** `gradle/libs.versions.toml`, `settings.gradle.kts`, `build-logic/`, `build.gradle.kts`, `gradle.properties`, `data/build.gradle.kts`, `core/build.gradle.kts`, `foundation/build.gradle.kts`, `engine-ios/build.gradle.kts`. **Upstream integration:** any merge of KMP upstream into `native-reader`, whatever its diff size (ADR-002 and the [B/U0/U1/H record](../MAINTENANCE.md#where-maintenance-reaches-upstream)) |
-| **Branch** | One engine feature file behind an unchanged `ReaderEngine` contract: `IncrementalSearch.kt`, `NativeDiscovery.kt`, `OfflineCache.kt`, `CachedChapterSearch.kt` or `SourceManagement.kt` under `engine-ios/src/iosMain/kotlin/io/legado/engine/`. An **additive** `ReaderEngine` export that leaves existing exports, replies and errors unchanged, together with the Swift caller that uses it. One Swift feature view or model (`ShelfView.swift`, `DiscoveryModel.swift`, `DiscoveryView.swift`, `SourceManagementView.swift`, `BookmarkSheet.swift`, `ChapterFind.swift`, `CachedSearchSheet.swift`, `ReadingText.swift`, `ReadingSpreadView.swift`) that leaves `ReaderModel.swift` unchanged or adds only a new method to it. A Branch counts as controlled only with the policy's controlled-Branch evidence; for engine files this includes naming which upstream helpers the file calls |
+| **Trunk** | **Shared upstream production code** in `data/`, `core/` and `foundation/`, because every client above consumes it. Hubs to name in a PR: `AppDatabase.kt`; the shared `Book` writers (`BookDao` and `data/.../dao/NativeShelfDao.kt`, [ADR-002](../architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost)); the native persistence DAOs `NativeResumeDao.kt` and `NativeBookmarkDao.kt` (guarded writes that hold reading-position invariants); `model/webBook/SearchModel.kt`; `help/source/SourceHelp.kt`; the QuickJS vendor tree under `modules/quickjs*` and its host bridge. **Engine contract and composition:** `engine-ios/.../ReaderEngine.kt` when an existing export, reply shape or error mapping changes; `engine-ios/.../EngineHost.kt` (process-wide provider registration and ordering, `:114-141`) and the providers it registers, such as `EngineBookHelpAccessor.kt`; `engine-ios/.../EngineOperation.kt` (the failure latch shared by `ReaderEngine`, `IncrementalSearch`, `NativeDiscovery`, `OfflineCache` and `EngineHost`). **Native app composition and durable state:** `native-ios-app/Sources/ReaderModel.swift`, `NativeReaderApp.swift` and `ReadingSaveCoordinator.swift`. **Build and toolchain:** `gradle/libs.versions.toml`, `settings.gradle.kts`, `build-logic/`, `build.gradle.kts`, `gradle.properties`, `data/build.gradle.kts`, `core/build.gradle.kts`, `foundation/build.gradle.kts`, `engine-ios/build.gradle.kts`. **Upstream integration:** any merge of KMP upstream into `native-reader`, whatever its diff size (ADR-002 and the [B/U0/U1/H record](../MAINTENANCE.md#where-maintenance-reaches-upstream)) |
+| **Branch** | One engine feature file behind an unchanged `ReaderEngine` contract: `IncrementalSearch.kt`, `NativeDiscovery.kt`, `OfflineCache.kt`, `CachedChapterSearch.kt` or `SourceManagement.kt` under `engine-ios/src/iosMain/kotlin/io/legado/engine/`. An **additive** `ReaderEngine` export that leaves existing exports, replies and errors unchanged, together with the Swift caller that uses it. One Swift feature view or model (`ShelfView.swift`, `DiscoveryModel.swift`, `DiscoveryView.swift`, `SourceManagementView.swift`, `BookmarkSheet.swift`, `ChapterFind.swift`, `CachedSearchSheet.swift`, `ReadingText.swift`, `ReadingSpreadView.swift`) that leaves `ReaderModel.swift` unchanged or adds only a new method to it. A Branch counts as controlled only with the policy's controlled-Branch evidence; for engine files this includes naming which upstream helpers the file calls. **Exception:** a change to a path that writes, deletes or evicts shared persistent state is not Branch by file name. Examples: source import merge rules and deletion in `SourceManagement.kt` (`dao.importReviewed` at `:119`, `SourceHelp.deleteBookSourceParts` at `:59`) and chapter eviction in `OfflineCache.kt` (`storage.delContent` at `:111`). Classify it by the shared table or store it writes (Trunk) and treat its Door as One-way unless recovery is shown |
 | **Leaf** | Copy, layout or styling inside one Swift view, with no change to model calls or persisted keys. New tests that leave existing assertions, fixtures, baselines and declared counts unchanged (but see the declared-journey rule under Always stop). Documentation that states no rule: typo or link fixes outside the policy text listed under Always stop |
 
 ### Coupling that a folder name hides
@@ -173,7 +212,8 @@ Treat these as **Unknown**. The missing evidence is stated for each:
 
 - `ui/`, `app/`, `desktop/`, `desktop-core/`, `ohosApp/`, `iosApp/`,
   `headless/`, `benchmark/`, and `modules/` other than the QuickJS tree. C1 only
-  compiles `:ui` for the iOS simulator; it runs none of these clients. It is also
+  compiles `:ui` for the iOS simulator and runs `:ui:jvmTest`; it runs none of
+  these clients. It is also
   not recorded whether the owner ships or uses any of them. Missing: an executed
   lane for the affected client, or an owner statement that the client is
   unused.
@@ -212,6 +252,12 @@ Treat these as **Unknown**. The missing evidence is stated for each:
     with `insight-engine-personal`).
   - `engine-ios/fixtures/`, `engine-ios/harness/`, `native-ios-app/UITestHost/`,
     `native-ios-app/ui-tests.yml`, `data/src/jvmTest/resources/`.
+  - Existing files in the test source sets: `native-ios-app/Tests/`,
+    `native-ios-app/UITests/`, `engine-ios/src/iosSimulatorArm64Test/`, and
+    `data/src/*Test/`, `core/src/*Test/` (for example `jvmTest`, `nativeTest`,
+    `iosSimulatorArm64Test`), and the test targets in `native-ios-app/project.yml`.
+    Editing or deleting an existing test there is a stop; adding a new test file
+    is new coverage.
   - Existing test assertions, fixtures, timeouts, thresholds and expected counts.
   - The required check name `C1 engine regression` and the ruleset.
 
@@ -220,6 +266,8 @@ Treat these as **Unknown**. The missing evidence is stated for each:
   the same number. That edit adds coverage and is not a stop. Lowering a count,
   removing a declared test, or adding a skip is a stop.
 - **Policy text.** `AGENTS.md`, `GLOSSARY.md`, `docs/VALIDATION.md`,
+  the validation sections of `native-ios-app/README.md`, `engine-ios/README.md`
+  and `scripts/path-c/README.md` (VALIDATION.md points to them),
   `docs/MAINTENANCE.md`, `docs/agents/`, ADRs, accepted specs under
   `docs/architecture/`, and `.github/ISSUE_TEMPLATE/`.
 - **Security boundary.** ATS exceptions in `native-ios-app/project.yml`
@@ -237,7 +285,7 @@ CI routing fact, not a Leaf classification.
 | --- | --- | --- |
 | Leaf, Two-way, Structure untouched | One implementation; `reviewer` agent with separate Standards, Spec and Risk requests | Merge approval (AGENTS.md) |
 | Controlled Branch, Two-way, Structure untouched | The author records consumers and failure propagation per the policy; the `reviewer` Risk request verifies that evidence | Merge approval; a decision only when author and reviewer disagree |
-| Structure approved | L1 review plus the migration fixture and snapshot-and-restore evidence above | H1 design approval before work; merge approval |
+| Structure approved | The review of the strictest row that applies, plus the migration fixture and snapshot-and-restore evidence above. Almost every Structure path is in `data/`, `core/` or `foundation/` (Trunk), so in practice this is L2 | H1 design approval before work; merge approval |
 | Trunk, One-way, Unknown, Structure unapproved, or an Always stop item | L2: add the cross-vendor review (Codex `gpt-6-astra`, high, for Claude Code's work) and `deep-reviewer` for design questions. Runtime changes also need evidence from a real run: the relevant `native_product_ci.py` suites, a declared UI journey, or a simulator walkthrough with screenshots | H1 design approval before work; decision before merge |
 
 Until this map is merged, the whole repository is L2 (`no_radius_map`).
@@ -262,9 +310,14 @@ switch already exists (`ReaderEngine.prepareSourceSwitch`, `ReaderEngine.kt:130`
    Reimplementing it in `engine-ios` is a parallel implementation of an
    upstream capability, which AGENTS.md says needs Lei's explicit decision.
    The H1 also states that no table or column is added.
-2. **Branch ticket, Structure untouched.** An additive `ReaderEngine` export
-   that runs the loop over the existing search and `prepareSourceSwitch`, plus
-   its engine test. Existing exports stay unchanged.
+2. **Engine ticket: Radius Branch, Door One-way, Structure untouched.** An
+   additive `ReaderEngine` export that runs the loop over the existing search
+   and `prepareSourceSwitch`, plus its engine test. Existing exports stay
+   unchanged. Door is One-way because each switch commits through
+   `NativeShelfDao.switchSource`, which deletes the old `Book` row and its
+   catalog, then re-keys bookmarks and the resume record (`NativeShelfDao.kt:263-272`).
+   The old chapter folder stays orphaned on disk, and the automatic loop removes
+   the confirmation the manual switch has. So this ticket takes the L2 row.
 3. **Leaf ticket.** In the reader, the "Source deleted" state offers "Change
    source automatically". The red tint for the Sources Delete button can ride
    here.
