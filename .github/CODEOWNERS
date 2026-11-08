@@ -1,0 +1,75 @@
+# Source: docs/agents/impact-radius.md
+# A listed test directory covers both new and existing tests.
+
+# Verification and policy
+/.github/ @austery
+/AGENTS.md @austery
+/GLOSSARY.md @austery
+/docs/agents/ @austery
+/docs/architecture/ @austery
+/docs/VALIDATION.md @austery
+/docs/MAINTENANCE.md @austery
+/scripts/path-c/ @austery
+/scripts/ci/ @austery
+/scripts/build-ios-native.sh @austery
+/engine-ios/README.md @austery
+/engine-ios/fixtures/ @austery
+/engine-ios/harness/ @austery
+/engine-ios/src/iosSimulatorArm64Test/ @austery
+/native-ios-app/README.md @austery
+/native-ios-app/UITestHost/ @austery
+/native-ios-app/ui-tests.yml @austery
+/native-ios-app/Tests/ @austery
+/native-ios-app/UITests/ @austery
+/native-ios-app/project.yml @austery
+/data/src/*Test/ @austery
+/core/src/*Test/ @austery
+/modules/quickjs-test/ @austery
+
+# Database and persisted formats
+/data/src/commonMain/kotlin/io/legado/app/data/AppDatabase.kt @austery
+/data/src/*/kotlin/io/legado/app/data/DatabaseMigrations*.kt @austery
+/data/src/*/kotlin/io/legado/app/data/Migration84To85*.kt @austery
+/data/src/*/kotlin/io/legado/app/data/AppDatabaseDefaults*.kt @austery
+/data/schemas/io.legado.app.data.AppDatabase/ @austery
+/data/src/commonMain/kotlin/io/legado/app/data/entities/ @austery
+/data/src/roomEntitiesMain/kotlin/io/legado/app/data/entities/ @austery
+/data/src/iosMain/kotlin/io/legado/app/data/IosDatabaseDriver.kt @austery
+/data/src/iosMain/kotlin/io/legado/app/help/file/AppFilesDir.ios.kt @austery
+/data/src/nativeMain/kotlin/io/legado/app/help/storage/NativeDataStorage.native.kt @austery
+/foundation/src/commonMain/kotlin/io/legado/app/utils/KsJson.shared.kt @austery
+/core/src/nativeMain/kotlin/io/legado/app/help/NativeSourceCacheProvider.native.kt @austery
+/core/src/nativeMain/kotlin/io/legado/app/help/NativeFileCacheProvider.native.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/data/dao/NativeResumeDao.kt @austery
+/native-ios-app/Sources/ReadingText.swift @austery
+/data/src/commonMain/kotlin/io/legado/app/help/book/BookHelpShared.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/book/BookStorage.kt @austery
+/core/src/nativeMain/kotlin/io/legado/app/help/book/NativeBookStorage.native.kt @austery
+/core/src/nativeMain/kotlin/io/legado/app/help/book/NativeBookImageStorage.native.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/book/BookExtensionsShared.kt @austery
+/foundation/src/commonMain/kotlin/io/legado/app/constant/AppPattern.kt @austery
+/engine-ios/src/iosMain/kotlin/io/legado/engine/EngineBookHelpAccessor.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/config/ @austery
+/core/src/commonMain/kotlin/io/legado/app/help/config/ @austery
+/data/src/commonMain/kotlin/io/legado/app/help/PinnedExploreHelp.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/DirectLinkUploadShared.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/HomeTabHelpShared.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/storage/BackupShared.kt @austery
+/data/src/commonMain/kotlin/io/legado/app/help/storage/RestoreShared.kt @austery
+/core/src/iosMain/kotlin/io/legado/app/help/config/IosPreferenceProvider.kt @austery
+/foundation/src/iosMain/kotlin/io/legado/app/utils/IosSecurityScopedStorage.kt @austery
+/native-ios-app/Sources/ReadingPreferences.swift @austery
+
+# Upstream clients and their tooling named in the map
+/ui/ @austery
+/app/ @austery
+/desktop/ @austery
+/desktop-core/ @austery
+/ohosApp/ @austery
+/iosApp/ @austery
+/headless/ @austery
+/benchmark/ @austery
+/modules/treeview/ @austery
+/modules/web/ @austery
+/modules/quickjs-android-native/ @austery
+/modules/*-ohos/ @austery
