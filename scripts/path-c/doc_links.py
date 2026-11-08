@@ -9,7 +9,8 @@ Rules (global-skills agents/DOC-LIFECYCLE.md, "Link check"):
 
 Markdown is parsed with markdown-it-py (CommonMark), pinned with hashes in
 requirements-doc-links.txt. Run it locally without a system install:
-    uv run --no-project --with-requirements scripts/path-c/requirements-doc-links.txt \
+    uv run --no-project --python 3.13 \
+        --with-requirements scripts/path-c/requirements-doc-links.txt \
         python scripts/path-c/doc_links.py
 
 Upstream-owned Markdown is not checked. Fixing it would edit upstream files,

@@ -2,7 +2,8 @@
 
 Needs markdown-it-py, so the name avoids the test_*.py pattern that the engine
 job discovers with the system Python. Run it with:
-    uv run --no-project --with-requirements scripts/path-c/requirements-doc-links.txt \
+    uv run --no-project --python 3.13 \
+        --with-requirements scripts/path-c/requirements-doc-links.txt \
         python -m unittest discover -s scripts/path-c -p 'doc_links_test.py'
 """
 from pathlib import Path

@@ -17,7 +17,7 @@ require Lei's explicit approval for the PR; plan approval is not merge approval.
 
 Before publishing a PR that closes a task, follow the task closeout in
 `~/Documents/global-skills/agents/DOC-LIFECYCLE.md`. Archive: `docs/_archive/`. Link
-check: `uv run --no-project --with-requirements scripts/path-c/requirements-doc-links.txt python scripts/path-c/doc_links.py`. ADRs live in `docs/architecture/decisions/`, a Structure path.
+check: `uv run --no-project --python 3.13 --with-requirements scripts/path-c/requirements-doc-links.txt python scripts/path-c/doc_links.py`. ADRs live in `docs/architecture/decisions/`, a Structure path.
 
 ## Upstream-first features
 
