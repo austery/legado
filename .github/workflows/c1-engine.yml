@@ -41,6 +41,19 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Check routing and gate regressions
         run: python3 -m unittest discover -s scripts/path-c -p 'test_c1_*.py'
+      - name: Select Python for the Markdown link check
+        id: link-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          update-environment: false
+      - name: Check Markdown links in project documents
+        run: |
+          "${{ steps.link-python.outputs.python-path }}" -m venv "$RUNNER_TEMP/doc-links"
+          "$RUNNER_TEMP/doc-links/bin/pip" install --quiet --require-hashes --no-deps \
+            -r scripts/path-c/requirements-doc-links.txt
+          "$RUNNER_TEMP/doc-links/bin/python" -m unittest discover -s scripts/path-c -p 'doc_links_test.py'
+          "$RUNNER_TEMP/doc-links/bin/python" scripts/path-c/doc_links.py
       - name: Classify complete diff and check documentation
         id: scope
         run: python3 scripts/path-c/c1_scope.py plan
