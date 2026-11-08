@@ -761,19 +761,30 @@ As of 2026-11-08, automatic merge stays off. Reasons:
   standing authorization, which replaces the per-PR merge confirmation, cannot
   apply here until Lei changes `AGENTS.md`. That is Lei's decision, not
   something this map settles.
-- **What GitHub already enforces.** The ruleset `Protect native-reader` requires
-  a PR (0 approvals; extra approval for unattributed changes), the status check
-  `C1 engine regression` with up-to-date branches, and blocks deletion and
-  force-push. Repository auto-merge is disabled.
+- **What GitHub already enforces.** The ruleset `Protect native-reader` requires:
+  - a PR, with extra approval for unattributed changes;
+  - code-owner approval for paths in `.github/CODEOWNERS`, which a new push
+    dismisses (other paths need 0 approvals);
+  - the status check `C1 engine regression`, with up-to-date branches.
+
+  It also blocks deletion and force-push. `.github/CODEOWNERS` copies named paths
+  from this map, so change both together.
+- **What GitHub leaves open.** The repository admin role can bypass the ruleset,
+  and Lei's account holds that role. Agents do not use the bypass. The repository
+  setting allows auto-merge, so an agent turns it on for a PR only after Lei
+  approves that PR.
 - **What is missing:**
-  - No CODEOWNERS and no code-owner review, so Structure and verifier paths are
-    followed by agents, not enforced by GitHub.
+  - Conditions that depend on a diff's content. CODEOWNERS matches whole paths,
+    so agents and reviewers still apply the content conditions in this map;
+    GitHub does not enforce them.
   - A PR can change the check that judges it. `c1-engine.yml` runs on
-    `pull_request` from the PR's own revision, on the self-hosted runner. Until a
-    rule outside the PR guards verifier paths, a passing C1 does not prove the
-    verifier is unchanged.
+    `pull_request` from the PR's own revision, on the self-hosted runner. A
+    passing C1 alone does not prove the verifier is unchanged. For verifier paths
+    in CODEOWNERS, the guard is Lei's approval, not an automatic check.
   - Agent identity. A GitHub App is installed for agent writes, but it has no
-    Workflows permission. Workflow changes still go through Lei's account.
+    Workflows permission. Workflow pushes still go through Lei's account. Open
+    PRs with the App: GitHub does not count an author's own approval, so a PR
+    opened from Lei's account cannot get code-owner approval without the bypass.
   - Runner reliability. The C1 runner shares this Mac with local work and with
     another repository's runner. `scripts/ci/ci-machine-lock.sh` serializes heavy
     CI jobs; local fixture work can still take the fixture ports and fail CI.
