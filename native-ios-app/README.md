@@ -418,7 +418,9 @@ for source-bound evidence and the retained diagnostic limitation.
 An agent operates the product app on a simulator through the Claude Code
 `xcode-integration` plugin and inspects screenshots. The lane's scope and limits
 are in [the validation map](../docs/VALIDATION.md#choose-evidence-for-the-changed-contract).
-This recipe was verified on 2026-11-08 with Xcode 27.1.
+This recipe ran once on 2026-11-08 with Xcode 27.1, on the code of PR 86 (local TXT
+import). The tool names `XcodeListRunDestinations` and `DeviceInteractionEndSession`
+come from the plugin's tool list; the record of that run does not name them.
 
 1. In the task checkout, link the framework and generate the project. See
    [Build](#build). The generate command is
@@ -431,21 +433,24 @@ This recipe was verified on 2026-11-08 with Xcode 27.1.
    `DeviceInteractionInstallAndRun`. The default destination can be a physical
    iPad.
 6. Interact through a subagent that uses the `xcode-integration:device-interaction`
-   skill. Record the candidate SHA and keep the screenshots.
+   skill. Do not request live sites without Lei's approval. Keep the screenshots in
+   a task-private path, and record what
+   [the validation map](../docs/VALIDATION.md#evidence-and-review-boundary) requires.
 7. Run `DeviceInteractionEndSession`, then delete the simulator.
 
 Limits observed on 2026-11-08:
 
 - The plugin refused a physical iPad. Physical-device checks stay with Lei through
-  Device Hub.
+  Device Hub, the tool that operates the connected iPad.
 - `GetTestList` returned 0 tests for `NativeReader`. Run tests with the existing
   drivers.
 - `applicationState: Crashed` after a `simctl` relaunch only means that the session
   tracks the old pid.
-- Sample TXT text must avoid the upstream TOC rules in
-  `ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json`. A body
-  line that ends in " 正文…", or has "第1章" at its start or after a space, becomes a
-  chapter. It then looks like a chapter-splitting defect.
+- Local TXT import needs PR 86. On that code, sample TXT text must avoid the upstream
+  table-of-contents rules in
+  `ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json`. A body line
+  can become a chapter when "正文" or "第1章" is at its start or after a space, with
+  at most 30 characters after it. This looks like a chapter-splitting defect.
 
 ## Everyday native UI (PLAN-005)
 
