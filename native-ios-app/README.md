@@ -441,14 +441,14 @@ which come from the plugin's tool list.
 
 Limits observed on 2026-11-08:
 
-- The plugin refused a physical iPad. Physical-device checks stay with Lei through
-  Device Hub, the tool that operates the connected iPad.
+- The plugin refused a physical iPad. A physical-device run is final acceptance and
+  stays with Lei through Device Hub, the tool that operates the connected iPad.
 - `GetTestList` returned 0 tests for `NativeReader`. Run tests with the existing
   drivers.
 - `applicationState: Crashed` after a `simctl` relaunch meant that the session tracked
   the old pid. Confirm that the app process is alive before you dismiss this state.
-- Local TXT import needs PR 86. On that code, sample TXT text must avoid the upstream
-  table-of-contents rules in
+- Local TXT import reaches `native-reader` only when PR 86 merges. With that import,
+  sample TXT text must avoid the upstream table-of-contents rules in
   `ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json`. For example,
   a body line can become a chapter when it ends in "正文", or when "正文" or "第1章" is
   at its start or after a space, with at most 30 characters after it.

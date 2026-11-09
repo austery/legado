@@ -714,7 +714,8 @@ calls, irreversible publication and migrations.
   it for. Record a skip in the PR comment.
 - Runtime changes also need evidence from a real run: the relevant
   `native_product_ci.py` suites, a declared UI journey, or a simulator
-  walkthrough with screenshots.
+  walkthrough with screenshots. None of these replaces C1. A physical-device run
+  is final acceptance, not a per-PR step (Lei, 2026-11-09).
 - Lei: H1 approval before work; decision before merge.
 
 Until this map is merged, the whole repository is L2 (`no_radius_map`).
