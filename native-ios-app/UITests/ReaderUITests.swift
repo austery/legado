@@ -118,7 +118,7 @@ final class ReaderUITests: XCTestCase {
         wait(app) { app.staticTexts["shelf.checkAll.detail"].label == "0 with new chapters · 1 unchanged · 0 failed" }
         XCTAssertEqual(book.value as? String, "New chapters", "A check that finds nothing keeps the mark")
 
-        // The mark survives a relaunch and clears once the book is read.
+        // The mark survives a relaunch and clears once the book has been read and its position saved.
         app.terminate()
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"

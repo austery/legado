@@ -132,7 +132,7 @@ struct ShelfView: View {
             Spacer(minLength: 4)
             Button { model.checkAllNewChapters() } label: { Label("Check all", systemImage: "arrow.clockwise") }
                 .accessibilityLabel("Check all for new chapters").accessibilityIdentifier("shelf.checkAll")
-                .disabled(model.shelfCheckProgress != nil || model.shelfCheckTargets.isEmpty)
+                .disabled(model.shelfCheckActive || model.shelfCheckTargets.isEmpty)
             Button("Import TXT") { importingTxt = true }
                 .disabled(model.busy).accessibilityIdentifier("shelf.importTxt")
             Menu {
@@ -168,7 +168,7 @@ struct ShelfView: View {
                 Text("Checking for new chapters · \(progress.checked) of \(progress.total) done")
                     .font(.callout).accessibilityIdentifier("shelf.checkAll.progress")
                 Spacer()
-                Button("Cancel") { model.cancelShelfCheck() }.accessibilityIdentifier("shelf.checkAll.cancel")
+                Button("Cancel") { model.stopShelfCheck() }.accessibilityIdentifier("shelf.checkAll.cancel")
             }.padding(.horizontal, 20).padding(.vertical, 8).background(.thinMaterial)
         } else if let summary = model.shelfCheckSummary {
             VStack(alignment: .leading, spacing: 6) {

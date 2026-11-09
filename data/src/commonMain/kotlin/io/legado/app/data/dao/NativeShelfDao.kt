@@ -184,13 +184,6 @@ abstract class NativeShelfDao {
     protected abstract suspend fun patchCatalogSummary(bookUrl: String, count: Int, title: String,
         checkedAt: Long, added: Int)
 
-    /**
-     * Clears the shelf's new-chapter mark. Upstream resets the same column when it saves reading
-     * progress (ChapterProgressStore); the native resume writer never touches it.
-     */
-    @Query("UPDATE books SET lastCheckCount = 0 WHERE bookUrl = :bookUrl AND lastCheckCount != 0")
-    abstract suspend fun clearNewChapterMark(bookUrl: String)
-
     /** Append only after rechecking the source and the complete captured catalog. */
     @Transaction
     open suspend fun appendCatalog(sourceId: String, bookUrl: String, expectedSource: BookSource,
@@ -265,7 +258,7 @@ abstract class NativeShelfDao {
             type = candidate.type and BookType.notShelf.inv(),
             totalChapterNum = catalog.size, durChapterIndex = chapter.index,
             durChapterTitle = chapter.title, durChapterPos = 0, durChapterTime = now,
-            syncTime = 0L, lastCheckCount = 0
+            syncTime = 0L
         )
         // Acquire the write lock before publishing. Failure rolls back this deletion and its cascades.
         val bookmarks = ownedBookmarks(bookUrl)
@@ -358,9 +351,7 @@ abstract class NativeShelfDao {
             catalog.map { it.index }.distinct().size != catalog.size) {
             throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "A valid catalog for this exact book is required")
         }
-        // The first catalog load counts every chapter as new (BookChapterList.updateBook); a book
-        // that was just admitted has no update to announce.
-        val added = candidate.copy(type = candidate.type and BookType.notShelf.inv(), group = 0, lastCheckCount = 0)
+        val added = candidate.copy(type = candidate.type and BookType.notShelf.inv(), group = 0)
         insertBook(added)
         insertChapters(catalog)
         return NativeShelfEntry(added, chapters(added.bookUrl))
