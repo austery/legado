@@ -419,8 +419,9 @@ An agent operates the product app on a simulator through the Claude Code
 `xcode-integration` plugin and inspects screenshots. The lane's scope and limits
 are in [the validation map](../docs/VALIDATION.md#choose-evidence-for-the-changed-contract).
 This recipe ran once on 2026-11-08 with Xcode 27.1, on the code of PR 86 (local TXT
-import). The tool names `XcodeListRunDestinations` and `DeviceInteractionEndSession`
-come from the plugin's tool list; the record of that run does not name them.
+import). The record of that run does not name the project path in step 3, which comes
+from [Build](#build), or `XcodeListRunDestinations` and `DeviceInteractionEndSession`,
+which come from the plugin's tool list.
 
 1. In the task checkout, link the framework and generate the project. See
    [Build](#build). The generate command is
@@ -444,13 +445,13 @@ Limits observed on 2026-11-08:
   Device Hub, the tool that operates the connected iPad.
 - `GetTestList` returned 0 tests for `NativeReader`. Run tests with the existing
   drivers.
-- `applicationState: Crashed` after a `simctl` relaunch only means that the session
-  tracks the old pid.
+- `applicationState: Crashed` after a `simctl` relaunch meant that the session tracked
+  the old pid. Confirm that the app process is alive before you dismiss this state.
 - Local TXT import needs PR 86. On that code, sample TXT text must avoid the upstream
   table-of-contents rules in
-  `ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json`. A body line
-  can become a chapter when "正文" or "第1章" is at its start or after a space, with
-  at most 30 characters after it. This looks like a chapter-splitting defect.
+  `ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json`. For example,
+  a body line can become a chapter when it ends in "正文", or when "正文" or "第1章" is
+  at its start or after a space, with at most 30 characters after it.
 
 ## Everyday native UI (PLAN-005)
 
