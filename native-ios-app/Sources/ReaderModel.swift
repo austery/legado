@@ -6,6 +6,34 @@ import SwiftUI
 enum ReaderRoute { case shelf, search, sources, discovery, details, contents, reading, sourceSwitch }
 enum ReaderSearchScope: String, CaseIterable { case all, selected }
 
+struct ShelfCheckProgress: Equatable {
+    let checked: Int
+    let total: Int
+}
+
+struct ShelfCheckFailure: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let reason: String
+}
+
+/// Result of one "check all" run. A run that another action stopped has checked fewer books than its total.
+struct ShelfCheckSummary: Equatable {
+    let total: Int
+    var updated: [String] = []
+    var unchanged = 0
+    var failed: [ShelfCheckFailure] = []
+    var checked: Int { updated.count + unchanged + failed.count }
+    var stopped: Bool { checked < total }
+    var headline: String {
+        stopped ? "Stopped after \(checked) of \(Self.books(total))" : "Checked \(Self.books(total))"
+    }
+    var detail: String {
+        "\(updated.count) with new chapters · \(unchanged) unchanged · \(failed.count) failed"
+    }
+    private static func books(_ count: Int) -> String { count == 1 ? "1 book" : "\(count) books" }
+}
+
 @MainActor
 final class ReaderModel: ObservableObject {
     enum ReplyStage { case operation, detail, contents, sourceSwitch, cachedSearch }
@@ -545,6 +573,74 @@ final class ReaderModel: ObservableObject {
         }
     }
 
+    @Published private(set) var shelfCheckProgress: ShelfCheckProgress?
+    @Published var shelfCheckSummary: ShelfCheckSummary?
+    private var shelfCheckRun: UUID?
+    private var shelfCheckRequest: EngineRequest?
+    private var shelfCheckResult = ShelfCheckSummary(total: 0)
+
+    /// Books of the displayed list that have a source to ask. Home lists every book, grouped or not.
+    var shelfCheckTargets: [ShelfBookSnapshot] {
+        (shelfGroupID == nil ? shelf : visibleShelfBooks).filter { !$0.book.isLocal }
+    }
+
+    /// Checks the displayed books one at a time. It does not own `busy`: any other action goes
+    /// through `cancel()`, which stops the run before its next book.
+    func checkAllNewChapters() {
+        let targets = shelfCheckTargets
+        guard initialized, !busy, shelfCheckRun == nil, !targets.isEmpty else { return }
+        let run = UUID()
+        shelfCheckRun = run
+        shelfCheckSummary = nil
+        shelfCheckResult = ShelfCheckSummary(total: targets.count)
+        shelfCheckProgress = ShelfCheckProgress(checked: 0, total: targets.count)
+        checkNextShelfBook(run, targets[...])
+    }
+
+    private func checkNextShelfBook(_ run: UUID, _ remaining: ArraySlice<ShelfBookSnapshot>) {
+        guard shelfCheckRun == run else { return }
+        guard let entry = remaining.first else { endShelfCheck(); return }
+        shelfCheckRequest = engine.checkNewChapters(sourceId: entry.book.sourceId, bookId: entry.book.id) { [weak self] reply in
+            guard let self else { return }
+            self.deliverReply(.operation, reply) { [weak self] reply in
+                guard let self, self.shelfCheckRun == run else { return }
+                self.shelfCheckRequest = nil
+                if let result = reply as? ChapterUpdateReply {
+                    self.acceptShelfOrganization(result.shelf)
+                    if self.book?.id == entry.book.id && self.book?.sourceId == entry.book.sourceId {
+                        self.chapters = result.chapters
+                    }
+                    if result.added > 0 { self.shelfCheckResult.updated.append(entry.book.title) }
+                    else { self.shelfCheckResult.unchanged += 1 }
+                } else {
+                    let reason = (reply as? EngineFailure)?.message ?? "Unexpected reply"
+                    self.shelfCheckResult.failed.append(
+                        ShelfCheckFailure(id: entry.book.id, title: entry.book.title, reason: reason))
+                }
+                self.shelfCheckProgress = ShelfCheckProgress(checked: self.shelfCheckResult.checked,
+                                                             total: self.shelfCheckResult.total)
+                self.checkNextShelfBook(run, remaining.dropFirst())
+            }
+        }
+    }
+
+    /// Publishes what was checked so far. The book in flight is not counted: a cancelled check
+    /// reports CANCELLED even when its append had already committed.
+    private func endShelfCheck() {
+        guard shelfCheckRun != nil else { return }
+        shelfCheckRun = nil
+        shelfCheckRequest?.cancel(); shelfCheckRequest = nil
+        shelfCheckProgress = nil
+        shelfCheckSummary = shelfCheckResult
+    }
+
+    /// The Cancel control. Reloads the shelf because the interrupted check may have committed.
+    func cancelShelfCheck() {
+        guard shelfCheckRun != nil else { return }
+        endShelfCheck()
+        refreshShelf(preservingReading: true)
+    }
+
     func refreshShelf(preservingMessage: String? = nil, preservingReading: Bool = false) {
         perform(preservingReading: preservingReading, retry: { [weak self] in self?.refreshShelf(preservingMessage: preservingMessage, preservingReading: preservingReading) }, start: { self.engine.listShelf(completion: $0) }) { [weak self] reply in
             guard let self, let reply = reply as? ShelfReply else { return }
@@ -1078,6 +1174,7 @@ final class ReaderModel: ObservableObject {
     func retry() { retryAction?() }
     func cancel(preservingDiscovery: Bool = false) {
         guard !committingSwitch else { return }
+        endShelfCheck()
         if !preservingDiscovery { discovery.retire() }
         retireSearch()
         closeCachedSearch()

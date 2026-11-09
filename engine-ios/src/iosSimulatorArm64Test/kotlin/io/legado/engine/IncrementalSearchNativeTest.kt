@@ -315,6 +315,21 @@ class IncrementalSearchNativeTest {
         if (kind == "manual-book-url" || kind == "manual-disable") {
             assertEquals(EngineErrorCode.INVALID_INPUT, (checked as EngineFailure).code)
         }
+        // The shelf mark records only a committed append; it survives everything short of reading.
+        fun mark() = assertNotNull(awaitReply { fixture.engine.listShelf(it) } as? ShelfReply)
+            .books.single().newChapterCount
+        val appended = kind == "manual-append" || kind == "manual-commit-cancel"
+        assertEquals(if (appended) 1 else 0, mark(), "New-chapter mark after the check: $kind")
+        if (kind == "manual-append") {
+            val again = assertNotNull(awaitReply { fixture.engine.checkNewChapters(source, book.id, it) } as? ChapterUpdateReply)
+            assertEquals(0, again.added)
+            assertEquals(1, again.shelf.books.single().newChapterCount, "A check that finds nothing keeps the mark")
+            val uncached = awaitReply {
+                fixture.engine.loadChapter(source, book.id, chapter.id.substringBeforeLast('/') + "/new", true, it)
+            }
+            assertEquals(EngineErrorCode.CACHE_UNAVAILABLE, (uncached as EngineFailure).code)
+            assertEquals(1, mark(), "A failed open keeps the mark")
+        }
         val retainedToken = assertNotNull(awaitReply {
             fixture.engine.saveReadingPosition(token, 2L, offset, it)
         } as? ReadingSaved)
@@ -333,6 +348,8 @@ class IncrementalSearchNativeTest {
         val storedCatalog = assertNotNull(awaitReply { fixture.engine.openShelfBook(source, book.id, it) } as? ShelfEntryReply)
         assertEquals(if (kind == "manual-append" || kind == "manual-commit-cancel") 2 else 1, storedCatalog.chapters.size)
         assertEquals(chapter.id, storedCatalog.chapters.first().id)
+        // Opening details is not reading. The cancelled-commit case already read its new chapter above.
+        assertEquals(if (kind == "manual-append") 1 else 0, mark(), "Mark after opening details: $kind")
         val bookmarks = assertNotNull(awaitReply { fixture.engine.listBookmarks(source, book.id, it) } as? BookmarksReply)
         assertEquals(bookmark.bookmark.id, bookmarks.bookmarks.single().id)
         val openedBookmark = assertNotNull(awaitReply {
@@ -341,11 +358,18 @@ class IncrementalSearchNativeTest {
         assertEquals(body.text, openedBookmark.text)
         assertTrue(openedBookmark.fromCache)
         assertEquals(saved.paragraphUtf16Offset, assertNotNull(openedBookmark.reading).paragraphUtf16Offset)
+        assertEquals(0, mark(), "Reading a chapter clears the mark: $kind")
         val restored = assertNotNull(awaitReply { fixture.engine.openReading(source, book.id, true, it) } as? ContentReply)
         assertEquals(retainedToken.revision, assertNotNull(restored.reading).revision)
         assertEquals(saved.paragraphUtf16Offset, assertNotNull(restored.reading).paragraphUtf16Offset)
         assertEquals(body.text, restored.text)
         assertTrue(restored.fromCache)
+        // The session issued by the open that cleared the mark can still save its position.
+        val afterClear = assertNotNull(awaitReply {
+            fixture.engine.saveReadingPosition(assertNotNull(openedBookmark.reading).token, 1L, offset, it)
+        } as? ReadingSaved)
+        assertEquals(retainedToken.revision + 1L, afterClear.revision)
+        assertEquals(saved.paragraphUtf16Offset, afterClear.paragraphUtf16Offset)
     }
     }
 

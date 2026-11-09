@@ -51,7 +51,9 @@ class SourcesReply internal constructor(val sources: List<SourceSnapshot>) : Eng
 class BookSnapshot internal constructor(val sourceId: String, val id: String, val title: String,
     val author: String, val intro: String, val isLocal: Boolean = false)
 class ShelfBookSnapshot internal constructor(val book: BookSnapshot, val sourceName: String,
-    val lastChapter: String, val groupIds: List<String> = emptyList(), val coverUrl: String? = null)
+    val lastChapter: String, val groupIds: List<String> = emptyList(), val coverUrl: String? = null,
+    /** Chapters added by the last check that found any; zero once the book has been opened for reading. */
+    val newChapterCount: Int = 0)
 class ShelfGroupSnapshot internal constructor(val id: String, val name: String, val bookCount: Int,
     val sortMode: Int = 0, val inheritsSort: Boolean = true, val orderedBookIds: List<String> = emptyList())
 class ShelfBookTarget(val sourceId: String, val bookId: String)
@@ -445,7 +447,7 @@ class ReaderEngine {
     private suspend fun shelfSnapshot(book: Book, groups: List<BookGroup>) = ShelfBookSnapshot(snapshot(book),
         if (NativeLocalTxt.owns(book)) "Local TXT" else AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: "Source deleted",
         book.durChapterTitle.orEmpty(), groups.filter { it.groupId and book.group != 0L }.map { it.groupId.toString() },
-        book.getDisplayCover())
+        book.getDisplayCover(), book.lastCheckCount.coerceAtLeast(0))
 
     private suspend fun <T> shelfOperation(action: suspend () -> T): T = try { action() }
         catch (error: CancellationException) { throw error }
@@ -741,6 +743,13 @@ class ReaderEngine {
         val shelf = try { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
             catch (error: NativeShelfException) { if (error.failure == NativeShelfFailure.NOT_ON_SHELF) null else throw error }
         val reading = shelf?.let {
+            // Showing a chapter of a shelf book is what clears its new-chapter mark. The mark is
+            // not reading state, so a failed clear must not fail the open; the next open retries.
+            if (it.book.lastCheckCount != 0) {
+                try { AppDatabaseProviders.get().appDb.nativeShelfDao.clearNewChapterMark(bookId) }
+                catch (error: CancellationException) { throw error }
+                catch (error: Exception) { }
+            }
             var offset = searchHit?.let { hit -> NativeBodyCoordinates.paragraphStart(content, hit.utf16Offset) }
                 ?: bookmark?.paragraphUtf16Offset ?: 0
             var notice = ""

@@ -121,6 +121,59 @@ class NativeBookmarkNativeIntegrationTest {
     }
 
     @Test
+    fun newChapterMarkFollowsAppendsAndClearsWithoutTouchingReadingState() = runBlocking {
+        withDatabase { db ->
+            val source = BookSource(bookSourceUrl = "source", bookSourceName = "Source")
+            db.bookSourceDao.insert(source)
+            val chapters = listOf(BookChapter(bookUrl = "book", url = "chapter-book", title = "Chapter", index = 0))
+            db.nativeShelfDao.addToShelf(Book(bookUrl = "book", origin = "source", name = "Title", author = "Author"), chapters)
+            val otherChapters = listOf(BookChapter(bookUrl = "other", url = "chapter-other", title = "Chapter", index = 0))
+            db.nativeShelfDao.addToShelf(Book(bookUrl = "other", origin = "source", name = "Other", author = "Writer"), otherChapters)
+            val initial = assertNotNull(db.bookDao.getBook("book"))
+            assertEquals(0, initial.lastCheckCount)
+            val resume = db.nativeResumeDao.save("source", "book", "chapter-book", 0,
+                "first\nsecond", 7, 0, NativeChapterProjection.from(initial))
+            val reading = assertNotNull(db.bookDao.getBook("book"))
+            val token = db.nativeShelfDao.organization().token
+            val two = chapters + BookChapter(bookUrl = "book", url = "second", title = "Second", index = 1)
+            val four = two + BookChapter(bookUrl = "book", url = "third", title = "Third", index = 2) +
+                BookChapter(bookUrl = "book", url = "fourth", title = "Fourth", index = 3)
+
+            assertEquals(1, db.nativeShelfDao.appendCatalog("source", "book", source, chapters, reading, two))
+            assertEquals(1, assertNotNull(db.bookDao.getBook("book")).lastCheckCount)
+            // A check that finds nothing, and a rejected catalog, both keep the earlier mark.
+            assertEquals(0, db.nativeShelfDao.appendCatalog("source", "book", source, two, reading, two))
+            assertFailsWith<NativeShelfException> {
+                db.nativeShelfDao.appendCatalog("source", "book", source, two, reading,
+                    listOf(two.first().copy(title = "Renamed"), two.last()))
+            }
+            assertEquals(1, assertNotNull(db.bookDao.getBook("book")).lastCheckCount)
+            // The mark is the size of the last append that found chapters, as upstream stores it.
+            assertEquals(2, db.nativeShelfDao.appendCatalog("source", "book", source, two, reading, four))
+            val marked = assertNotNull(db.bookDao.getBook("book"))
+            assertEquals(2, marked.lastCheckCount)
+            assertEquals(1, db.nativeShelfDao.appendCatalog("source", "other", source, otherChapters,
+                assertNotNull(db.bookDao.getBook("other")),
+                otherChapters + BookChapter(bookUrl = "other", url = "other-second", title = "Second", index = 1)))
+            val otherMarked = assertNotNull(db.bookDao.getBook("other"))
+
+            db.nativeShelfDao.clearNewChapterMark("book")
+            assertEquals(marked.copy(lastCheckCount = 0), db.bookDao.getBook("book"))
+            assertEquals(otherMarked, db.bookDao.getBook("other"))
+            assertEquals(four, db.bookChapterDao.getChapterList("book"))
+            assertEquals(resume, db.nativeResumeDao.get("book"))
+            assertEquals(token, db.nativeShelfDao.organization().token)
+            db.nativeShelfDao.clearNewChapterMark("book")
+            db.nativeShelfDao.clearNewChapterMark("missing")
+            assertEquals(marked.copy(lastCheckCount = 0), db.bookDao.getBook("book"))
+            // A position save guarded by the projection captured before the clear still commits.
+            val saved = db.nativeResumeDao.save("source", "book", "chapter-book", 0,
+                "first\nsecond", 0, resume.revision, NativeChapterProjection.from(reading))
+            assertEquals(resume.revision + 1, saved.revision)
+        }
+    }
+
+    @Test
     fun appendCatalogPreservesNativeRecordsAndRejectsChangedPrefix() = runBlocking {
         withDatabase { db ->
             val source = BookSource(bookSourceUrl = "source", bookSourceName = "Source")

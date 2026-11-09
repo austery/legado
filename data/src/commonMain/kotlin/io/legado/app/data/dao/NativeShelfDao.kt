@@ -184,6 +184,13 @@ abstract class NativeShelfDao {
     protected abstract suspend fun patchCatalogSummary(bookUrl: String, count: Int, title: String,
         checkedAt: Long, added: Int)
 
+    /**
+     * Clears the shelf's new-chapter mark. Upstream resets the same column when it saves reading
+     * progress (ChapterProgressStore); the native resume writer never touches it.
+     */
+    @Query("UPDATE books SET lastCheckCount = 0 WHERE bookUrl = :bookUrl AND lastCheckCount != 0")
+    abstract suspend fun clearNewChapterMark(bookUrl: String)
+
     /** Append only after rechecking the source and the complete captured catalog. */
     @Transaction
     open suspend fun appendCatalog(sourceId: String, bookUrl: String, expectedSource: BookSource,

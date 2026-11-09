@@ -67,6 +67,73 @@ final class ReaderUITests: XCTestCase {
         capture("local-txt-offline-bookmark-restored")
     }
 
+    @MainActor func testCheckAllCancelSummaryAndMarkUntilRead() async throws {
+        let app = launchControlsReader(openSecondChapter: false)
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let sourcePart = try XCTUnwrap(readingIdentity(app).first { $0.hasPrefix("source=") })
+        let base = String(sourcePart.dropFirst("source=".count))
+        func control(_ path: String) async throws {
+            let (_, response) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/control/" + path)))
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        }
+        app.buttons["reader.shelf"].tap()
+        let checkAll = app.buttons["shelf.checkAll"]
+        XCTAssertTrue(checkAll.waitForExistence(timeout: 30))
+        let book = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 10))
+        wait(app) { checkAll.isEnabled }
+        XCTAssertEqual(book.value as? String, "")
+
+        // Cancel stops a check that is waiting on its source; nothing is marked.
+        try await control("catalog/append")
+        try await control("hold/toc")
+        checkAll.tap()
+        let progress = app.staticTexts["shelf.checkAll.progress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        XCTAssertEqual(progress.label, "Checking for new chapters · 0 of 1 done")
+        XCTAssertFalse(checkAll.isEnabled)
+        capture("check-all-progress")
+        app.buttons["shelf.checkAll.cancel"].tap()
+        let headline = app.staticTexts["shelf.checkAll.headline"]
+        XCTAssertTrue(headline.waitForExistence(timeout: 10))
+        XCTAssertEqual(headline.label, "Stopped after 0 of 1 book")
+        XCTAssertFalse(progress.exists)
+        try await control("release/toc")
+        wait(app) { checkAll.isEnabled }
+        XCTAssertEqual(book.value as? String, "")
+        app.buttons["shelf.checkAll.dismiss"].tap()
+        wait(app) { !headline.exists }
+
+        // A finished run reports the append and marks the book in both layouts.
+        checkAll.tap()
+        wait(app) { headline.exists && headline.label == "Checked 1 book" }
+        XCTAssertEqual(app.staticTexts["shelf.checkAll.detail"].label, "1 with new chapters · 0 unchanged · 0 failed")
+        XCTAssertEqual(book.value as? String, "New chapters")
+        capture("check-all-marked-grid")
+        app.buttons["shelf.layout.list"].tap()
+        wait(app) { (app.buttons["shelf.layout.list"].value as? String) == "Selected" }
+        XCTAssertEqual(book.value as? String, "New chapters")
+        capture("check-all-marked-list")
+        checkAll.tap()
+        wait(app) { app.staticTexts["shelf.checkAll.detail"].label == "0 with new chapters · 1 unchanged · 0 failed" }
+        XCTAssertEqual(book.value as? String, "New chapters", "A check that finds nothing keeps the mark")
+
+        // The mark survives a relaunch and clears once the book is read.
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 30))
+        XCTAssertEqual(book.value as? String, "New chapters")
+        XCTAssertFalse(headline.exists)
+        book.tap()
+        XCTAssertTrue(app.buttons["reader.next"].waitForExistence(timeout: 20))
+        app.buttons["reader.shelf"].tap()
+        XCTAssertTrue(checkAll.waitForExistence(timeout: 30))
+        wait(app) { (book.value as? String) == "" }
+        capture("check-all-mark-cleared")
+    }
+
     @MainActor func testManualChapterCheckKeepsSavedReadingPosition() async throws {
         let app = launchControlsReader()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

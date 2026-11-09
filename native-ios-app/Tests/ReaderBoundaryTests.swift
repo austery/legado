@@ -378,6 +378,149 @@ final class ReaderBoundaryTests: XCTestCase {
         }
     }
 
+    private struct CheckedBook {
+        let base: String
+        let entry: ShelfBookSnapshot
+        let catalog: [String]
+    }
+    private func shelfBook(_ model: ReaderModel) async throws -> CheckedBook {
+        let (base, candidate) = try await fixture(model)
+        model.select(candidate); try await settle(model)
+        let catalog = model.chapters.map(\.id)
+        model.addCurrentBook(); try await settle(model)
+        model.showShelf(); try await settle(model)
+        return CheckedBook(base: base, entry: try XCTUnwrap(model.shelf.first { $0.book.sourceId == base }), catalog: catalog)
+    }
+    private func changeCatalog(_ book: CheckedBook, _ action: String) async throws {
+        let (_, response) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: book.base + "/control/catalog/" + action)))
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+    private func makeGroup(_ model: ReaderModel, _ entries: [ShelfBookSnapshot]) async throws -> ShelfGroupSnapshot {
+        let name = "Check " + UUID().uuidString
+        model.createShelfGroup(name); try await settle(model)
+        let group = try XCTUnwrap(model.shelfGroups.first { $0.name == name })
+        model.changeShelfGroups(entries, add: [group.id], remove: []); try await settle(model)
+        return group
+    }
+    private func mark(_ model: ReaderModel, _ book: CheckedBook) -> Int32? {
+        model.shelf.first { $0.book.id == book.entry.book.id && $0.book.sourceId == book.base }?.newChapterCount
+    }
+
+    func testCheckAllReportsEachBookKeepsRejectedCatalogAndMarksOnlyAppends() async throws {
+        let model = ReaderModel(); defer { model.cancel() }
+        let appended = try await shelfBook(model)
+        let unchanged = try await shelfBook(model)
+        let renamed = try await shelfBook(model)
+        let title = "Local-" + UUID().uuidString
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(title + ".txt")
+        try Data(("第一章 开始\n" + title + "\nfirst paragraph\n").utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        model.importTxt(file); try await settle(model)
+        let local = try XCTUnwrap(model.shelf.first { $0.book.isLocal && $0.book.title == title })
+        let online = [appended, unchanged, renamed]
+        let ids = Set(online.map(\.entry.book.id))
+        let group = try await makeGroup(model, online.map(\.entry) + [local])
+
+        // Home asks every online book, including grouped ones; a group asks only its own. Local TXT is never asked.
+        XCTAssertNil(model.shelfGroupID)
+        XCTAssertTrue(ids.isSubset(of: Set(model.shelfCheckTargets.map(\.book.id))))
+        XCTAssertFalse(model.shelfCheckTargets.contains { $0.book.isLocal })
+        model.openShelfGroup(group.id)
+        XCTAssertTrue(model.visibleShelfBooks.contains { $0.book.id == local.book.id })
+        XCTAssertEqual(Set(model.shelfCheckTargets.map(\.book.id)), ids)
+
+        try await changeCatalog(appended, "append")
+        try await changeCatalog(renamed, "rename")
+        model.checkAllNewChapters()
+        XCTAssertEqual(model.shelfCheckProgress, ShelfCheckProgress(checked: 0, total: 3))
+        XCTAssertFalse(model.busy, "The batch must not lock the shelf")
+        try await wait { model.shelfCheckSummary != nil }
+        let summary = try XCTUnwrap(model.shelfCheckSummary)
+        XCTAssertNil(model.shelfCheckProgress)
+        XCTAssertFalse(summary.stopped)
+        XCTAssertEqual(summary.updated, [appended.entry.book.title])
+        XCTAssertEqual(summary.unchanged, 1)
+        XCTAssertEqual(summary.failed, [ShelfCheckFailure(id: renamed.entry.book.id, title: renamed.entry.book.title,
+                                                          reason: "Catalog changed; existing catalog kept")])
+        XCTAssertEqual(summary.headline, "Checked 3 books")
+        XCTAssertEqual(summary.detail, "1 with new chapters · 1 unchanged · 1 failed")
+        XCTAssertEqual(model.route, .shelf)
+        XCTAssertNil(model.message)
+        XCTAssertFalse(model.busy)
+        XCTAssertEqual(mark(model, appended), 1)
+        XCTAssertEqual(mark(model, unchanged), 0)
+        XCTAssertEqual(mark(model, renamed), 0)
+
+        // The mark is stored, and the rejected book keeps its catalog.
+        let reopened = ReaderModel(); defer { reopened.cancel() }
+        reopened.start(); try await settle(reopened)
+        XCTAssertEqual(mark(reopened, appended), 1)
+        XCTAssertEqual(mark(reopened, renamed), 0)
+        let other = ReaderEngine(); defer { other.close() }
+        let ready = await withCheckedContinuation { continuation in
+            _ = other.initialize { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(ready is EngineReady)
+        let stored = await withCheckedContinuation { continuation in
+            _ = other.openShelfBook(sourceId: renamed.base, bookId: renamed.entry.book.id) { continuation.resume(returning: $0) }
+        }
+        XCTAssertEqual((stored as? ShelfEntryReply)?.chapters.map(\.id), renamed.catalog)
+
+        // Reading the book clears its mark; reading another book does not.
+        model.openShelfBook(try XCTUnwrap(model.shelf.first { $0.book.id == unchanged.entry.book.id }))
+        try await settle(model)
+        XCTAssertEqual(model.route, .reading)
+        model.showShelf(); try await settle(model)
+        XCTAssertEqual(mark(model, appended), 1)
+        model.openShelfBook(try XCTUnwrap(model.shelf.first { $0.book.id == appended.entry.book.id }))
+        try await settle(model)
+        XCTAssertEqual(model.route, .reading)
+        XCTAssertEqual(model.chapters.count, appended.catalog.count + 1)
+        XCTAssertEqual(Array(model.chapters.map(\.id).prefix(appended.catalog.count)), appended.catalog)
+        model.showShelf(); try await settle(model)
+        XCTAssertEqual(mark(model, appended), 0)
+        XCTAssertEqual(model.shelfCheckSummary, summary, "The summary stays until it is dismissed")
+    }
+
+    func testCheckAllStopsOnCancelOrAnotherActionAndIgnoresTheLateReply() async throws {
+        for preempted in [false, true] {
+            let queue = ReplyQueue(stage: .operation)
+            let model = ReaderModel(deliverReply: queue.deliver)
+            defer { model.cancel() }
+            let first = try await shelfBook(model)
+            let second = try await shelfBook(model)
+            let group = try await makeGroup(model, [first.entry, second.entry])
+            model.openShelfGroup(group.id)
+            try await changeCatalog(first, "append")
+            try await changeCatalog(second, "append")
+            model.checkAllNewChapters()
+            try await wait { queue.pending != nil }
+            XCTAssertEqual((queue.pending?.reply as? ChapterUpdateReply)?.added, 1, "The first check committed before it was held")
+            XCTAssertEqual(model.shelfCheckProgress, ShelfCheckProgress(checked: 0, total: 2))
+            if preempted { model.setShelfSort(model.shelfSort) } else { model.cancelShelfCheck() }
+            XCTAssertNil(model.shelfCheckProgress)
+            let stopped = try XCTUnwrap(model.shelfCheckSummary)
+            XCTAssertTrue(stopped.stopped)
+            XCTAssertEqual(stopped.headline, "Stopped after 0 of 2 books")
+            XCTAssertEqual(stopped.detail, "0 with new chapters · 0 unchanged · 0 failed")
+            try await settle(model)
+            try queue.replay()
+            XCTAssertEqual(queue.replayCount, 1)
+            XCTAssertEqual(model.shelfCheckSummary, stopped, "A reply from a stopped run must not be counted")
+            XCTAssertNil(model.shelfCheckProgress)
+            XCTAssertFalse(model.busy)
+            // The reload shows the append that had committed; the second book was never asked.
+            XCTAssertEqual([mark(model, first), mark(model, second)].compactMap { $0 }.sorted(), [0, 1])
+            // A new run is allowed after a stop and finishes the remaining work.
+            model.checkAllNewChapters()
+            try await wait { model.shelfCheckSummary != stopped && model.shelfCheckSummary != nil }
+            let finished = try XCTUnwrap(model.shelfCheckSummary)
+            XCTAssertFalse(finished.stopped)
+            XCTAssertEqual(finished.detail, "1 with new chapters · 1 unchanged · 0 failed")
+            XCTAssertEqual([mark(model, first), mark(model, second)], [1, 1])
+        }
+    }
+
     func testLateCachedSearchCannotReplaceNewQuery() async throws { try await delayedCachedSearch(leaveReader: false) }
     func testLateCachedSearchCannotReopenSheetAfterLeavingReader() async throws { try await delayedCachedSearch(leaveReader: true) }
 
