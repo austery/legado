@@ -441,8 +441,8 @@ which come from the plugin's tool list.
 
 Limits observed on 2026-11-08:
 
-- The plugin refused a physical iPad. A physical-device run is final acceptance and
-  stays with Lei through Device Hub, the tool that operates the connected iPad.
+- The plugin refused a physical iPad. The validation map assigns physical-device runs
+  to Lei through Device Hub, the tool that operates the connected iPad.
 - `GetTestList` returned 0 tests for `NativeReader`. Run tests with the existing
   drivers.
 - `applicationState: Crashed` after a `simctl` relaunch meant that the session tracked
