@@ -413,6 +413,40 @@ they do not certify physical/hardware-keyboard input or repair UIKit's internal
 animation callback tracking. See [the E01 continuation](../docs/evidence/2026-10-26-chapter-find-software-keyboard.md)
 for source-bound evidence and the retained diagnostic limitation.
 
+### Agent-driven simulator walkthrough
+
+An agent operates the product app on a simulator through the Claude Code
+`xcode-integration` plugin and inspects screenshots. The lane's scope and limits
+are in [the validation map](../docs/VALIDATION.md#choose-evidence-for-the-changed-contract).
+This recipe was verified on 2026-11-08 with Xcode 27.1.
+
+1. In the task checkout, link the framework and generate the project. See
+   [Build](#build). The generate command is
+   `xcodegen generate --spec native-ios-app/project.yml`.
+2. Create and boot a throwaway iPad simulator with `xcrun simctl`. Keep its UDID.
+3. Run `XcodeOpenWorkspace` on `native-ios-app/NativeReader.xcodeproj`. Each new
+   folder needs Lei's approval in the Xcode MCP menu bar.
+4. Run `DeviceInteractionStartWorkspaceSession` with the simulator UDID.
+5. Confirm the active destination with `XcodeListRunDestinations` before
+   `DeviceInteractionInstallAndRun`. The default destination can be a physical
+   iPad.
+6. Interact through a subagent that uses the `xcode-integration:device-interaction`
+   skill. Record the candidate SHA and keep the screenshots.
+7. Run `DeviceInteractionEndSession`, then delete the simulator.
+
+Limits observed on 2026-11-08:
+
+- The plugin refused a physical iPad. Physical-device checks stay with Lei through
+  Device Hub.
+- `GetTestList` returned 0 tests for `NativeReader`. Run tests with the existing
+  drivers.
+- `applicationState: Crashed` after a `simctl` relaunch only means that the session
+  tracks the old pid.
+- Sample TXT text must avoid the upstream TOC rules in
+  `ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json`. A body
+  line that ends in " 正文…", or has "第1章" at its start or after a space, becomes a
+  chapter. It then looks like a chapter-splitting defect.
+
 ## Everyday native UI (PLAN-005)
 
 Library, Search and Sources have distinct top-level destinations. Source files are
