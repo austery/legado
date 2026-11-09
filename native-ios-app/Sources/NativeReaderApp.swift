@@ -69,7 +69,12 @@ struct ReaderScreen: View {
                 if model.route == .reading && chapterFind.isPresented { ChapterFindPanel(session: chapterFind) }
                 ZStack {
                     if let content = model.content {
-                        ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() }, find: chapterFind.presentation)
+                        // The body stays below the tallest header in every state, so showing
+                        // controls never covers its first line and never changes its viewport.
+                        VStack(spacing: 0) {
+                            readingHeaderSpace
+                            ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() }, find: chapterFind.presentation)
+                        }
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
                             .accessibilityHidden(model.route != .reading)
@@ -441,12 +446,9 @@ struct ReaderScreen: View {
             }
             Spacer(minLength: 0)
             if menu {
-                VStack(spacing: 4) {
-                    Text(model.book?.title ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text(model.content?.chapter.title ?? "").font(.headline).lineLimit(2)
-                }
-                .padding(.vertical, 8)
-                .accessibilityElement(children: .combine)
+                readingHeaderTitles(book: model.book?.title ?? "", chapter: model.content?.chapter.title ?? "")
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("reader.headerTitle")
             }
             Spacer(minLength: 0)
             Button { menu.toggle() } label: {
@@ -456,8 +458,27 @@ struct ReaderScreen: View {
             }
             .accessibilityIdentifier("reader.controls")
         }
-        .padding(.horizontal, 16).padding(.vertical, 4)
+        .padding(.horizontal, 16).padding(.vertical, readingHeaderVerticalPadding)
         .background { if menu { paper.opacity(0.97) } }
+    }
+
+    private let readingHeaderVerticalPadding: CGFloat = 4
+
+    private func readingHeaderTitles(book: String, chapter: String) -> some View {
+        VStack(spacing: 4) {
+            Text(book).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(chapter).font(.headline).lineLimit(2)
+        }
+        .padding(.vertical, 8)
+    }
+
+    /// Sized by the header's own text styles with its longest title, so it follows Dynamic Type.
+    private var readingHeaderSpace: some View {
+        readingHeaderTitles(book: " ", chapter: " \n ")
+            .frame(minHeight: 44)
+            .padding(.vertical, readingHeaderVerticalPadding)
+            .frame(maxWidth: .infinity)
+            .hidden()
     }
 
     private var readingControls: some View {
