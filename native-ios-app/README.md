@@ -413,6 +413,46 @@ they do not certify physical/hardware-keyboard input or repair UIKit's internal
 animation callback tracking. See [the E01 continuation](../docs/evidence/2026-10-26-chapter-find-software-keyboard.md)
 for source-bound evidence and the retained diagnostic limitation.
 
+### Agent-driven simulator walkthrough
+
+An agent operates the product app on a simulator through the Claude Code
+`xcode-integration` plugin and inspects screenshots. The lane's scope and limits
+are in [the validation map](../docs/VALIDATION.md#choose-evidence-for-the-changed-contract).
+This recipe ran once on 2026-11-08 with Xcode 27.1, on the code of PR 86 (local TXT
+import). The record of that run does not name the project path in step 3, which comes
+from [Build](#build), or `XcodeListRunDestinations` and `DeviceInteractionEndSession`,
+which come from the plugin's tool list.
+
+1. In the task checkout, link the framework and generate the project. See
+   [Build](#build). The generate command is
+   `xcodegen generate --spec native-ios-app/project.yml`.
+2. Create and boot a throwaway iPad simulator with `xcrun simctl`. Keep its UDID.
+3. Run `XcodeOpenWorkspace` on `native-ios-app/NativeReader.xcodeproj`. Each new
+   folder needs Lei's approval in the Xcode MCP menu bar.
+4. Run `DeviceInteractionStartWorkspaceSession` with the simulator UDID.
+5. Confirm the active destination with `XcodeListRunDestinations` before
+   `DeviceInteractionInstallAndRun`. The default destination can be a physical
+   iPad.
+6. Interact through a subagent that uses the `xcode-integration:device-interaction`
+   skill. Do not request live sites without Lei's approval. Keep the screenshots in
+   a task-private path, and record what
+   [the validation map](../docs/VALIDATION.md#evidence-and-review-boundary) requires.
+7. Run `DeviceInteractionEndSession`, then delete the simulator.
+
+Limits observed on 2026-11-08:
+
+- The plugin refused a physical iPad. The validation map assigns physical-device runs
+  to Lei through Device Hub, the tool that operates the connected iPad.
+- `GetTestList` returned 0 tests for `NativeReader`. Run tests with the existing
+  drivers.
+- `applicationState: Crashed` after a `simctl` relaunch meant that the session tracked
+  the old pid. Confirm that the app process is alive before you dismiss this state.
+- Local TXT import reaches `native-reader` only when PR 86 merges. With that import,
+  sample TXT text must avoid the upstream table-of-contents rules in
+  `ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json`. For example,
+  a body line can become a chapter when it ends in "正文", or when "正文" or "第1章" is
+  at its start or after a space, with at most 30 characters after it.
+
 ## Everyday native UI (PLAN-005)
 
 Library, Search and Sources have distinct top-level destinations. Source files are
@@ -485,17 +525,20 @@ Rule editing, source login/browser verification and discovery browsing remain la
 ## Reading controls (Issue 48)
 
 Reading starts with controls visible. The heading, shelf action and bottom controls
-are overlays; hiding them leaves the text viewport and pagination unchanged. The
-explicit Show/Hide controls button stays at the top right. A central-body tap toggles
+are overlays; hiding them leaves the text viewport and pagination unchanged. The text
+view always starts below the space of the tallest heading, so the heading never covers
+body text. That space stays empty when controls are hidden. The bottom controls still
+overlap the body. The explicit Show/Hide controls button stays at the top right. A central-body tap toggles
 controls; edge taps do not turn pages. Previous/Next chapter labels distinguish chapter
 navigation from horizontal page turns. Returning from another route shows controls.
 Loading/cancel, error/retry and save-rejection actions remain outside these overlays
 and visible even when ordinary controls are hidden. Such notices may resize the
 viewport and retain the established paragraph-recovery behavior.
 
-The two focused UI journeys check actual taps, drags and native selection, stable
-viewport/offset/rendered glyph ranges in portrait/spread/narrow modes, and hidden-control
-save rejection, cancellation and network retry. Earlier assertions that controls sit
+The three focused UI journeys check actual taps, drags and native selection, stable
+viewport/offset/rendered glyph ranges in portrait/spread/narrow modes, hidden-control
+save rejection, cancellation and network retry, and that the heading stays outside the
+body in scroll and spread layouts. Earlier assertions that controls sit
 below the text are replaced by the intentional overlay contract, with independent
 rendered-geometry comparisons added. No engine contract, stored format or dependency
 changes. Physical comfort and owner H2 are separate from these automated checks.

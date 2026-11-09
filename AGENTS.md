@@ -19,6 +19,20 @@ Before publishing a PR that closes a task, follow the task closeout in
 `~/Documents/global-skills/agents/DOC-LIFECYCLE.md`. Archive: `docs/_archive/`. Link
 check: `uv run --no-project --python 3.13 --with-requirements scripts/path-c/requirements-doc-links.txt python scripts/path-c/doc_links.py`. ADRs live in `docs/architecture/decisions/`, a Structure path.
 
+## Base branch
+
+Base every task branch on `native-reader`, the product branch. `master` only mirrors
+upstream. In a checkout based on the wrong branch, `native-ios-app/` is missing; stop
+and create the task branch from `origin/native-reader`.
+
+Use `master` for one purpose in feature work: before you design a feature, find
+upstream changes that overlap it. `master` has no `native-ios-app/` or `engine-ios/`,
+so pass the upstream paths from the trace below, such as paths under `ui/`, `data/` or
+`core/`. No output means no unintegrated upstream commit touches those paths:
+`git fetch origin master native-reader && git log origin/native-reader..origin/master -- <paths>`.
+Release dry-runs and when to integrate upstream are in
+[ADR-005](docs/architecture/decisions/ADR-005-upstream-integration-cadence.md).
+
 ## Upstream-first features
 
 Before designing a feature, storage change or engine export, trace how the
