@@ -126,7 +126,9 @@ class NativeBookmarkNativeIntegrationTest {
             val source = BookSource(bookSourceUrl = "source", bookSourceName = "Source")
             db.bookSourceDao.insert(source)
             val chapters = listOf(BookChapter(bookUrl = "book", url = "chapter-book", title = "Chapter", index = 0))
-            db.nativeShelfDao.addToShelf(Book(bookUrl = "book", origin = "source", name = "Title", author = "Author"), chapters)
+            // A freshly loaded catalog arrives with every chapter counted as new; admission resets that.
+            db.nativeShelfDao.addToShelf(Book(bookUrl = "book", origin = "source", name = "Title", author = "Author",
+                lastCheckCount = 1), chapters)
             val otherChapters = listOf(BookChapter(bookUrl = "other", url = "chapter-other", title = "Chapter", index = 0))
             db.nativeShelfDao.addToShelf(Book(bookUrl = "other", origin = "source", name = "Other", author = "Writer"), otherChapters)
             val initial = assertNotNull(db.bookDao.getBook("book"))
@@ -170,6 +172,15 @@ class NativeBookmarkNativeIntegrationTest {
             val saved = db.nativeResumeDao.save("source", "book", "chapter-book", 0,
                 "first\nsecond", 0, resume.revision, NativeChapterProjection.from(reading))
             assertEquals(resume.revision + 1, saved.revision)
+            // A replacement source starts without a mark, whatever its first catalog load counted.
+            val replacementChapters = listOf(
+                BookChapter(bookUrl = "replacement", url = "replacement-chapter", title = "Chapter", index = 0))
+            val switched = db.nativeShelfDao.switchSource("source", "book", saved.revision,
+                NativeChapterProjection.from(assertNotNull(db.bookDao.getBook("book"))),
+                Book(bookUrl = "replacement", origin = "source", name = "Title", author = "Author", lastCheckCount = 1),
+                replacementChapters, "replacement-chapter", "New text", source)
+            assertEquals(0, switched.book.lastCheckCount)
+            assertEquals(0, assertNotNull(db.bookDao.getBook("replacement")).lastCheckCount)
         }
     }
 

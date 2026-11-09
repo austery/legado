@@ -265,7 +265,7 @@ abstract class NativeShelfDao {
             type = candidate.type and BookType.notShelf.inv(),
             totalChapterNum = catalog.size, durChapterIndex = chapter.index,
             durChapterTitle = chapter.title, durChapterPos = 0, durChapterTime = now,
-            syncTime = 0L
+            syncTime = 0L, lastCheckCount = 0
         )
         // Acquire the write lock before publishing. Failure rolls back this deletion and its cascades.
         val bookmarks = ownedBookmarks(bookUrl)
@@ -358,7 +358,9 @@ abstract class NativeShelfDao {
             catalog.map { it.index }.distinct().size != catalog.size) {
             throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "A valid catalog for this exact book is required")
         }
-        val added = candidate.copy(type = candidate.type and BookType.notShelf.inv(), group = 0)
+        // The first catalog load counts every chapter as new (BookChapterList.updateBook); a book
+        // that was just admitted has no update to announce.
+        val added = candidate.copy(type = candidate.type and BookType.notShelf.inv(), group = 0, lastCheckCount = 0)
         insertBook(added)
         insertChapters(catalog)
         return NativeShelfEntry(added, chapters(added.bookUrl))
