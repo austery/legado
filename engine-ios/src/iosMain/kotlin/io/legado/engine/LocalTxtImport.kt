@@ -84,7 +84,10 @@ internal object LocalTxtImport {
                 charset = "UTF-8", latestChapterTime = File(target.toString()).lastModified())
             TextFile.clear()
             // Upstream parsing reads the owned copy and the TOC rule table; its failures here are local storage.
-            val catalog = database { TextFile.getChapterList(candidate) }
+            // Upstream keeps the parent of a split long chapter as an empty, non-volume entry.
+            // The native reader opens every listed entry, so the catalog admits only the split parts.
+            val catalog = database { TextFile.getChapterList(candidate) }.filter { it.start != it.end }
+            catalog.forEachIndexed { index, chapter -> chapter.index = index }
             require(catalog.isNotEmpty()) { "The TXT file has no chapters" }
             // Upstream counts its three-byte BOM probe as body, so a shorter file would read past its end.
             catalog.last().let { last -> if ((last.end ?: 0L) > count) last.end = count }
