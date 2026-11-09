@@ -50,6 +50,8 @@ struct FixtureReaderApp: App {
                     HStack {
                         Text("SYNTHETIC UI HOST").font(.caption2)
                         Text("Fixture position").accessibilityIdentifier("fixture.position").accessibilityValue(positionStatus)
+                        Text("Shelf completion").accessibilityIdentifier("fixture.shelfCompletion")
+                            .accessibilityValue("\(model.txtImportRevision)|\(model.busy)|\(model.message ?? "")")
                         Text("Stored record").accessibilityIdentifier("fixture.stored").accessibilityValue(storedStatus)
                         Text("Switch committed").accessibilityIdentifier("fixture.switchCommit").accessibilityValue(switchCommitted ? "true" : "false")
                         if scenario == "sources" {
@@ -255,6 +257,17 @@ struct FixtureReaderApp: App {
             }
         }
         model.start(); try await settle()
+        if scenario == "local-txt" {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let files = ["Local Journey.txt", "Local Journey Again.txt"]
+            if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
+                let body = "第一章 开始\n" + (0..<120).map { "Paragraph \($0) — local TXT reading position and bookmark recovery. 中文原文。" }.joined(separator: "\n") + "\n第二章 继续\nFinal local chapter."
+                for filename in files { try Data(body.utf8).write(to: documents.appendingPathComponent(filename)) }
+            } else {
+                for filename in files { try? FileManager.default.removeItem(at: documents.appendingPathComponent(filename)) }
+            }
+            model.showShelf(); try await settle(); return
+        }
         if scenario.hasPrefix("shelf-"), ProcessInfo.processInfo.environment["READER_UI_RESET"] != "1" { model.showShelf(); try await settle(); return }
         if scenario == "shelf", !model.shelf.isEmpty { model.showShelf(); try await settle(); return }
         if scenario == "sources", ProcessInfo.processInfo.environment["READER_UI_RESET"] != "1" {

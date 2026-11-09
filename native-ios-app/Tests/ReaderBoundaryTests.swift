@@ -275,6 +275,72 @@ final class ReaderBoundaryTests: XCTestCase {
         }
     }
 
+    func testLocalTxtDuplicateKeepsBookmarkAndRestoresWithoutOriginal() async throws {
+        let title = "Local-" + UUID().uuidString
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent(title + ".txt")
+        let text = "第一章 开始\n" + title + "\nfirst paragraph\nsecond paragraph 🌿\n第三段\n第二章 继续\nlast paragraph\n"
+        try Data(text.utf8).write(to: source)
+        let model = ReaderModel(); defer { model.cancel() }
+        model.start(); try await settle(model)
+        let firstPeer = ReaderModel(); defer { firstPeer.cancel() }
+        firstPeer.start(); try await settle(firstPeer)
+        let peerDirectory = directory.appendingPathComponent("peer")
+        try FileManager.default.createDirectory(at: peerDirectory, withIntermediateDirectories: true)
+        let sameBytes = peerDirectory.appendingPathComponent(title + ".txt")
+        try Data(text.utf8).write(to: sameBytes)
+        model.importTxt(source)
+        firstPeer.importTxt(sameBytes)
+        try await settle(model); try await settle(firstPeer)
+        XCTAssertNil(model.message)
+        XCTAssertNil(firstPeer.message)
+        let entry = try XCTUnwrap(model.shelf.first { $0.book.isLocal && $0.book.title == title })
+        XCTAssertEqual(firstPeer.shelf.filter { $0.book.id == entry.book.id }.count, 1)
+        XCTAssertEqual(model.txtImportRevision, 1)
+        XCTAssertEqual(firstPeer.txtImportRevision, 1)
+        try FileManager.default.removeItem(at: sameBytes)
+        XCTAssertTrue(entry.book.isLocal)
+        model.openShelfBook(entry); try await settle(model)
+        let content = try XCTUnwrap(model.content)
+        let reading = try XCTUnwrap(content.reading)
+        let offset = try XCTUnwrap(content.text.range(of: "second paragraph")).lowerBound.utf16Offset(in: content.text)
+        XCTAssertGreaterThan(offset, 0)
+        model.readingDisplayed(reading.token, offset)
+        model.readingScrolled(reading.token, offset)
+        model.flushReadingPosition()
+        try await wait { model.canSaveBookmark }
+        model.saveCurrentBookmark()
+        try await wait { !model.bookmarkBusy && model.bookmarkNotice == "Bookmark saved." }
+        model.showShelf(); try await settle(model)
+        let renamed = directory.appendingPathComponent("renamed.txt")
+        try Data(text.utf8).write(to: renamed)
+        let concurrent = ReaderModel(); defer { concurrent.cancel() }
+        concurrent.start(); try await settle(concurrent)
+        model.importTxt(renamed)
+        concurrent.importTxt(renamed)
+        try await settle(model); try await settle(concurrent)
+        XCTAssertNil(model.message)
+        XCTAssertNil(concurrent.message)
+        XCTAssertEqual(concurrent.shelf.filter { $0.book.id == entry.book.id }.count, 1)
+        XCTAssertEqual(model.shelf.filter { $0.book.id == entry.book.id }.count, 1)
+        XCTAssertEqual(model.shelf.first { $0.book.id == entry.book.id }?.book.title, title)
+        try FileManager.default.removeItem(at: source)
+        try FileManager.default.removeItem(at: renamed)
+        let reopened = ReaderModel(); defer { reopened.cancel() }
+        reopened.start(); try await settle(reopened)
+        reopened.openShelfBook(try XCTUnwrap(reopened.shelf.first { $0.book.id == entry.book.id }))
+        try await settle(reopened)
+        XCTAssertEqual(reopened.content?.text, content.text)
+        XCTAssertEqual(reopened.content?.reading?.paragraphUtf16Offset, Int32(offset))
+        reopened.showBookmarks()
+        try await wait { !reopened.bookmarkBusy }
+        XCTAssertEqual(reopened.bookmarks.count, 1)
+        reopened.openBookmark(try XCTUnwrap(reopened.bookmarks.first)); try await settle(reopened)
+        XCTAssertEqual(reopened.content?.reading?.paragraphUtf16Offset, Int32(offset))
+    }
+
     func testManualChapterReplyPreservesLiveReadingAndIgnoresStaleDelivery() async throws {
         for leaveReader in [false, true] {
             let queue = ReplyQueue(stage: .operation)

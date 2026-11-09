@@ -312,7 +312,7 @@ struct ReaderScreen: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(book.title).font(.largeTitle.weight(.semibold))
                         Text(ReaderModel.authorLabel(book.author)).font(.title3).foregroundStyle(.secondary)
-                        Label(model.sources.first { $0.id == book.sourceId }?.name ?? book.sourceId,
+                        Label(book.isLocal ? "Local TXT" : model.sources.first { $0.id == book.sourceId }?.name ?? book.sourceId,
                               systemImage: "square.stack.3d.up").font(.subheadline).foregroundStyle(.secondary)
                         Text("\(model.chapters.count) chapters").font(.caption).foregroundStyle(.secondary)
                     }.padding(.vertical, 12)
@@ -329,7 +329,7 @@ struct ReaderScreen: View {
                     Button { model.addCurrentBook() } label: { Label("Add to shelf", systemImage: "plus.circle") }
                         .disabled(model.busy || model.chapters.isEmpty).accessibilityIdentifier("details.add")
                     if model.canChangeSource {
-                        Button("Change source") { model.beginSourceSwitch() }
+                        Button("Change source") { model.beginSourceSwitch() }.disabled(model.book?.isLocal == true)
                             .disabled(model.busy).accessibilityIdentifier("details.changeSource")
                     }
                     if let notice = model.shelfNotice { Text(notice).foregroundStyle(.secondary) }
@@ -345,6 +345,9 @@ struct ReaderScreen: View {
 
     private var offlineControls: some View {
         Section("Offline reading") {
+            if model.book?.isLocal == true {
+                Text("This TXT is stored on this device.")
+            } else {
             if let status = model.offlineStatus {
                 Text("\(status.chapters.filter { $0.availability == .available }.count) of \(status.chapters.count) chapters available offline")
                     .accessibilityIdentifier("offline.count")
@@ -361,10 +364,11 @@ struct ReaderScreen: View {
             }
             Button(model.cacheProgress?.failedChapterIds.isEmpty == false ? "Retry missing or failed chapters" : "Cache next 20 chapters") {
                 model.cacheNextChapters()
-            }.disabled(model.busy || model.cacheProgress?.running == true).accessibilityIdentifier("offline.cache")
+            }.disabled(model.busy || model.book?.isLocal == true || model.cacheProgress?.running == true).accessibilityIdentifier("offline.cache")
             Button("Clear optional cached chapters", role: .destructive) { model.prepareCacheClear() }
                 .disabled(model.busy).accessibilityIdentifier("offline.clear")
             if let notice = model.cacheNotice { Text(notice).font(.caption).accessibilityIdentifier("offline.notice") }
+            }
         }
     }
 
@@ -507,7 +511,7 @@ struct ReaderScreen: View {
                     }
                 }
                 if model.canChangeSource {
-                    Button("Change source") { model.beginSourceSwitch() }
+                    Button("Change source") { model.beginSourceSwitch() }.disabled(model.book?.isLocal == true)
                         .disabled(model.busy).accessibilityIdentifier("reader.changeSource")
                 }
                 HStack {

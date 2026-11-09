@@ -276,8 +276,27 @@ abstract class NativeShelfDao {
     @Query("UPDATE books SET type = type & ${BookType.notShelf.inv()}, `group` = 0 WHERE bookUrl = :bookUrl")
     protected abstract suspend fun restoreShelfFlag(bookUrl: String)
 
-    @Query("SELECT * FROM books WHERE type & ${BookType.text} != 0 AND type & ${BookType.local} = 0 AND type & ${BookType.notShelf} = 0 AND origin != '${BookType.localTag}' AND origin NOT LIKE '${BookType.webDavTag}%' ORDER BY durChapterTime DESC, bookUrl ASC")
-    abstract suspend fun listBooks(): List<Book>
+    @Query("SELECT * FROM books WHERE type & ${BookType.text} != 0 AND type & ${BookType.notShelf} = 0 AND origin != '${BookType.localTag}' AND origin NOT LIKE '${BookType.webDavTag}%' ORDER BY durChapterTime DESC, bookUrl ASC")
+    protected abstract suspend fun storedBooks(): List<Book>
+
+    open suspend fun listBooks(): List<Book> = storedBooks().filter {
+        it.type and BookType.local == 0 || NativeLocalTxt.owns(it)
+    }
+
+    @Transaction
+    open suspend fun admitLocalTxt(candidate: Book, catalog: List<BookChapter>): NativeShelfEntry {
+        require(NativeLocalTxt.owns(candidate)) { "Only an app-owned TXT copy can be admitted" }
+        findBook(candidate.bookUrl)?.let {
+            require(NativeLocalTxt.owns(it)) { "Local identity conflicts with an existing book" }
+            return reuse(it)
+        }
+        require(catalog.isNotEmpty() && catalog.withIndex().all { (index, chapter) ->
+            chapter.bookUrl == candidate.bookUrl && chapter.index == index && chapter.url.isNotBlank()
+        } && catalog.map { it.url }.distinct().size == catalog.size) { "Invalid local catalog" }
+        insertBook(candidate)
+        insertChapters(catalog)
+        return NativeShelfEntry(candidate, chapters(candidate.bookUrl))
+    }
 
     @Query("UPDATE books SET type = type | ${BookType.notShelf}, `group` = 0 WHERE bookUrl = :bookUrl")
     protected abstract suspend fun markRemoved(bookUrl: String)
@@ -347,9 +366,9 @@ abstract class NativeShelfDao {
     }
 
     private fun requireTextBook(book: Book) {
-        if (book.type and BookType.text == 0 || book.type and BookType.local != 0 ||
+        if (book.type and BookType.text == 0 || (book.type and BookType.local != 0 && !NativeLocalTxt.owns(book)) ||
             book.origin == BookType.localTag || book.origin.startsWith(BookType.webDavTag)) {
-            throw NativeShelfException(NativeShelfFailure.UNSUPPORTED_BOOK, "Only source-backed text books belong to this shelf")
+            throw NativeShelfException(NativeShelfFailure.UNSUPPORTED_BOOK, "Only source-backed text books and app-owned TXT copies belong to this shelf")
         }
     }
 }

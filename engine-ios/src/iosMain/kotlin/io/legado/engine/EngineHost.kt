@@ -136,6 +136,19 @@ internal object EngineHost {
         registerNativeSourceProviders()
         registerNativeJsEngines(IosImageOps)
         registerNativeWebBookProviders()
+        io.legado.app.help.book.LocalBookLocators.register(LocalTxtLocator(io.legado.app.help.book.IosLocalBookLocator()))
+        io.legado.app.model.fileBook.registerNativeFileBookAccessor()
+        if (runCatching { io.legado.app.help.DefaultDataResourceProviders.get() }.isFailure) {
+            io.legado.app.help.DefaultDataResourceProviders.register(object : io.legado.app.help.DefaultDataResourceProvider {
+                // Upstream contract: throw when a resource cannot be read. The app bundles only
+                // upstream txtTocRule.json; other names fail as they did with no provider.
+                override fun readResource(name: String): String {
+                    val path = platform.Foundation.NSBundle.mainBundle.pathForResource(name.substringBeforeLast('.'), "json")
+                        ?: error("Bundled default data is not available: $name")
+                    return io.legado.app.utils.File(path).readText()
+                }
+            })
+        }
         RuleRegexes.register(IosRuleRegex)
         registerRuleRegexForJsonPath()
         registerInteractionProviders()

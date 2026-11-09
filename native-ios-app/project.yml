@@ -35,7 +35,7 @@ targets:
     templates: [ReaderOrientations]
     type: application
     platform: iOS
-    sources: [Sources]
+    sources: [Sources, ../ui/src/commonMain/composeResources/files/defaultData/txtTocRule.json]
     info:
       path: Info.plist
       properties:

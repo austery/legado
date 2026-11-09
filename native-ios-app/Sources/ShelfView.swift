@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import ReaderEngine
 
 private struct ShelfGroupFormDraft: Identifiable {
@@ -29,6 +30,7 @@ struct ShelfView: View {
     @ObservedObject var model: ReaderModel
     @ObservedObject var preferences: ReadingPreferences
     @State private var selecting = false
+    @State private var importingTxt = false
     @State private var selected: Set<String> = []
     @State private var groupForm: ShelfGroupFormDraft?
     @State private var memberships: ShelfMembershipDraft?
@@ -72,6 +74,12 @@ struct ShelfView: View {
                     }
                 }.padding(20)
             }.refreshable { model.refreshShelf() }
+        }
+        .fileImporter(isPresented: $importingTxt, allowedContentTypes: [.plainText], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls): if let url = urls.first { model.importTxt(url) }
+            case .failure(let error): model.message = error.localizedDescription
+            }
         }
         .sheet(item: $groupForm) { draft in ShelfGroupForm(model: model, draft: draft) }
         .sheet(item: $memberships) { draft in
@@ -121,6 +129,8 @@ struct ShelfView: View {
             Text(bookCount(model.shelfGroupID == nil ? model.shelf.count : model.visibleShelfBooks.count))
                 .font(.subheadline).foregroundStyle(.secondary)
             Spacer(minLength: 4)
+            Button("Import TXT") { importingTxt = true }
+                .disabled(model.busy).accessibilityIdentifier("shelf.importTxt")
             Menu {
                 Section("Global shelf order") {
                     ForEach(ShelfSort.allCases, id: \.rawValue) { mode in
@@ -281,8 +291,10 @@ struct ShelfView: View {
     }
 
     @ViewBuilder private func bookActions(_ entry: ShelfBookSnapshot) -> some View {
-        Button("Check for new chapters") { model.checkNewChapters(entry) }
-            .accessibilityIdentifier("shelf.checkChapters." + entry.book.id)
+        if !entry.book.isLocal {
+            Button("Check for new chapters") { model.checkNewChapters(entry) }
+                .accessibilityIdentifier("shelf.checkChapters." + entry.book.id)
+        }
         Button("Set groups") { showMemberships([entry]) }
         if let id = model.shelfGroupID {
             Button("Remove from this group") { removeFromGroup([entry], id: id) }

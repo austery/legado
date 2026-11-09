@@ -52,6 +52,113 @@ final class ResumeEngineTests: XCTestCase {
         return try JSONDecoder().decode([String].self, from: data)
     }
 
+    private func importLocalTxt(_ engine: ReaderEngine) async throws -> (BookSnapshot, ContentReply) {
+        let ready = await call { engine.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try Data(("第一章 开始\n" + UUID().uuidString + "\nsecond paragraph\n").utf8).write(to: source)
+        let imported = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        let book = try XCTUnwrap((imported as? ShelfEntryReply)?.entry.book)
+        let opened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        return (book, try XCTUnwrap(opened as? ContentReply))
+    }
+
+    func testLocalTxtReadsTheOwnedFileWhenTheChapterCacheWasAltered() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, content) = try await importLocalTxt(engine)
+        let cache = cacheURL(book: book, chapter: content.chapter)
+        try Data("altered but readable text".utf8).write(to: cache)
+        let reopened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertEqual((reopened as? ContentReply)?.text, content.text)
+        XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), content.text)
+    }
+
+    func testLocalTxtCacheWriteFailureKeepsReadingAndIsNotNetwork() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let (book, content) = try await importLocalTxt(engine)
+        let cache = cacheURL(book: book, chapter: content.chapter)
+        try FileManager.default.removeItem(at: cache)
+        // A non-empty directory at the cache path makes the atomic chapter write fail.
+        try FileManager.default.createDirectory(at: cache.appendingPathComponent("blocker"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let reopened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        XCTAssertNil((reopened as? EngineFailure)?.code)
+        XCTAssertEqual((reopened as? ContentReply)?.text, content.text)
+    }
+
+    func testLocalTxtReplyDatabaseFailureIsStorageAndTheBookStaysAdmitted() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let ready = await call { engine.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try Data(("第一章 开始\n" + UUID().uuidString + "\n").utf8).write(to: source)
+        func groups(_ statement: String) throws {
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("legado.db")
+            var database: OpaquePointer?
+            XCTAssertEqual(sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+            defer { sqlite3_close(database) }
+            XCTAssertEqual(sqlite3_exec(database, statement, nil, nil, nil), SQLITE_OK)
+        }
+        // The shelf organization read that builds the reply fails after admission commits.
+        try groups("ALTER TABLE book_groups RENAME TO book_groups_hidden")
+        var restored = false
+        defer { if !restored { try? groups("ALTER TABLE book_groups_hidden RENAME TO book_groups") } }
+        let failed = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        XCTAssertEqual((failed as? EngineFailure)?.code, .storage)
+        try groups("ALTER TABLE book_groups_hidden RENAME TO book_groups"); restored = true
+        let retried = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        let book = try XCTUnwrap((retried as? ShelfEntryReply)?.entry.book)
+        XCTAssertEqual(try searchStoredRows(book.id).isEmpty, false)
+    }
+
+    func testLocalTxtTamperAndMissingFileCannotOverwriteWarmCacheAnchors() async throws {
+        let engine = ReaderEngine(); defer { engine.close() }
+        let ready = await call { engine.initialize(completion: $0) }
+        XCTAssertTrue(ready is EngineReady)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: source) }
+        let bytes = Data(("第一章 开始\n" + UUID().uuidString + "\nsecond paragraph\n第二章 继续\nlast paragraph\n").utf8)
+        try bytes.write(to: source)
+        let imported = await call { engine.importTxt(path: source.path, filename: source.lastPathComponent, completion: $0) }
+        let book = try XCTUnwrap((imported as? ShelfEntryReply)?.entry.book)
+        let opened = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        let content = try XCTUnwrap(opened as? ContentReply)
+        let token = try XCTUnwrap(content.reading?.token)
+        let offset = (content.text as NSString).range(of: "second paragraph").location
+        XCTAssertNotEqual(offset, NSNotFound); XCTAssertGreaterThan(offset, 0)
+        let saved = await write { engine.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: Int32(offset), completion: $0) }
+        XCTAssertTrue(saved is ReadingSaved)
+        let marked = await write { engine.saveBookmark(token: token, utf16Offset: Int32(offset), completion: $0) }
+        XCTAssertTrue(marked is BookmarkSaved)
+        let before = try searchStoredRows(book.id)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        XCTAssertTrue(book.id.hasPrefix("native-txt://"))
+        let owned = documents.appendingPathComponent("books/native-txt").appendingPathComponent(String(book.id.dropFirst("native-txt://".count)))
+        defer { try? bytes.write(to: owned) }
+        for sequence in 2...3 {
+            if sequence == 2 { try Data("tampered".utf8).write(to: owned) }
+            else { try FileManager.default.removeItem(at: owned) }
+            let save = await write { engine.saveReadingPosition(token: token, eventSequence: Int64(sequence), utf16Offset: 0, completion: $0) }
+            // A changed or missing owned copy is unavailable local content, never NETWORK or a generic failure.
+            XCTAssertEqual((save as? EngineFailure)?.code, .cacheUnavailable, "save \(sequence)")
+            let bookmark = await write { engine.saveBookmark(token: token, utf16Offset: 0, completion: $0) }
+            XCTAssertEqual((bookmark as? EngineFailure)?.code, .cacheUnavailable, "bookmark \(sequence)")
+            let reopen = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+            XCTAssertEqual((reopen as? EngineFailure)?.code, .cacheUnavailable, "reopen \(sequence)")
+            XCTAssertEqual(try searchStoredRows(book.id), before)
+        }
+        // Restore only this test's bytes, then force a local cache miss through the real engine.
+        try bytes.write(to: owned)
+        try FileManager.default.removeItem(at: cacheURL(book: book, chapter: content.chapter))
+        let restored = await call { engine.openReading(sourceId: book.sourceId, bookId: book.id, cacheOnly: true, completion: $0) }
+        let reply = try XCTUnwrap(restored as? ContentReply)
+        XCTAssertEqual(reply.text, content.text)
+        XCTAssertEqual(reply.reading?.paragraphUtf16Offset, Int32(offset))
+        XCTAssertEqual(try searchStoredRows(book.id), before)
+    }
+
     func testCachedSearchOriginalCoordinatesCoverageNoNetworkOrPersistenceAndVerifiedOpen() async throws {
         let engine = ReaderEngine(); defer { engine.close() }
         let (base, _, book, content) = try await fixture(engine)
