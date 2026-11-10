@@ -15,6 +15,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Mutex
 import platform.Foundation.NSUUID
 
+/** Read-ahead window after the displayed chapter; the upstream `preDownloadNum` default. */
+private const val READ_AHEAD_CHAPTERS = 10
+
 enum class OfflineAvailability { AVAILABLE, MISSING, UNAVAILABLE }
 class OfflineChapter internal constructor(val chapterId: String, val availability: OfflineAvailability)
 class OfflineStatus internal constructor(val chapters: List<OfflineChapter>, val optionalCount: Int) : EngineReply()
@@ -114,9 +117,6 @@ internal class OfflineCache(private val scope: CoroutineScope,
         }
         return CacheCleared(deleted, failed)
     }
-
-    /** Read-ahead window after the displayed chapter; the upstream `preDownloadNum` default. */
-    private val READ_AHEAD_CHAPTERS = 10
 
     fun start(sourceId: String, bookId: String, afterChapterId: String?, prefetch: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest {

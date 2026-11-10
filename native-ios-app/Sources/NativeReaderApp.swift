@@ -634,7 +634,7 @@ struct ReaderScreen: View {
                 Section("Offline reading") {
                     Toggle("Read ahead: cache next 10 chapters", isOn: $preferences.prefetchNextTwo)
                         .accessibilityIdentifier("offline.prefetch")
-                    Text("While reading in the foreground. Applies to every shelved book; off by default.")
+                    Text("While reading in the foreground. Applies to every shelved book; on by default.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {

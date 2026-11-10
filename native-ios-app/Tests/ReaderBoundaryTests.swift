@@ -814,24 +814,46 @@ final class ReaderBoundaryTests: XCTestCase {
         XCTAssertEqual(model.content?.chapter.id, chapters[20].id); XCTAssertNil(model.message)
     }
 
-    func testReadAheadWaitsForAManualRunAndFollowsItWithoutRestartingIt() async throws {
+    func testReadAheadLeavesAManualRunAndItsResultAlone() async throws {
         let model = ReaderModel(); defer { model.cancel() }
         let (base, _) = try await readAheadBook(model)
+        _ = try await offline(base, "fail/15")
         try await control(base, "hold", "chapter")
         model.cacheNextChapters()
         try await control(base, "entered", "chapter")
         XCTAssertTrue(model.manualCacheRunning)
-        // The app takes this path when it appears and after every displayed chapter.
-        model.setPrefetchEnabled(true); model.cacheNextChapters(prefetch: true)
+        // The app takes these paths when the view appears, when the toggle changes and after a displayed chapter.
+        model.setPrefetchEnabled(false); model.setPrefetchEnabled(true); model.cacheNextChapters(prefetch: true)
         XCTAssertTrue(model.manualCacheRunning)
         XCTAssertEqual(model.cacheProgress?.target, 20)
         try await control(base, "release", "chapter")
-        try await wait { !model.manualCacheRunning && model.cacheProgress?.target == 10 && model.cacheProgress?.running == false }
-        XCTAssertEqual(model.cacheProgress?.completed, 10)
-        try await wait { self.availableOffline(model) == 21 }
+        try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+        try await Task.sleep(nanoseconds: 600_000_000)
+        // The reader's own result stays on screen: 19 of 20 ready, chapter 15 failed.
+        XCTAssertEqual(model.cacheProgress?.target, 20); XCTAssertEqual(model.cacheProgress?.completed, 19)
+        XCTAssertEqual(model.cacheProgress?.failedChapterIds.count, 1); XCTAssertEqual(model.cacheProgress?.cancelled, false)
+        try await wait { self.availableOffline(model) == 20 }
         let requested = try await offline(base, "count")
-        XCTAssertEqual(requested.sorted(), Array(1...21), "The manual run was restarted or read-ahead fetched again")
+        XCTAssertEqual(requested.sorted(), Array(1...21), "The manual run was restarted or read-ahead ran after it")
         XCTAssertNil(model.message)
+    }
+
+    func testTurningReadAheadOffStopsItAndTheNextChapterStartsNothing() async throws {
+        let model = ReaderModel(); defer { model.cancel() }
+        let (base, chapters) = try await readAheadBook(model)
+        try await control(base, "hold", "chapter")
+        model.setPrefetchEnabled(true)
+        try await control(base, "entered", "chapter")
+        model.setPrefetchEnabled(false)
+        try await wait { model.cacheProgress?.running == false }
+        XCTAssertEqual(model.cacheProgress?.cancelled, true)
+        try await control(base, "release", "chapter")
+        model.read(chapters[1]); try await settle(model)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        try await wait { self.availableOffline(model) == 2 }
+        let requested = try await offline(base, "count")
+        XCTAssertTrue(requested.allSatisfy { $0 <= 2 }, "Read-ahead ran while off: \(requested)")
+        XCTAssertEqual(model.content?.chapter.id, chapters[1].id); XCTAssertNil(model.message)
     }
 
     func testAManualRunReplacesReadAheadAndAStoppedRunStaysStopped() async throws {
