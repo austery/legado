@@ -350,6 +350,52 @@ class IncrementalSearchNativeTest {
     }
 
     @Test
+    fun newChapterMarkFollowsACommittedAppendUntilAPositionIsSaved() {
+        for (kind in listOf("manual-append", "manual-rename")) withFixture(kind) { fixture ->
+            val source = fixture.base + "/" + kind
+            fun mark() = assertNotNull(awaitReply { fixture.engine.listShelf(it) } as? ShelfReply)
+                .books.single().newChapterCount
+            val book = assertNotNull(awaitReply { fixture.engine.search(source, "work", 1, it) } as? SearchReply).books.single()
+            assertTrue(awaitReply { fixture.engine.loadBook(source, book.id, it) } is BookReply)
+            val chapter = assertNotNull(awaitReply { fixture.engine.loadToc(source, book.id, it) } as? TocReply).chapters.single()
+            val admitted = assertNotNull(awaitReply { fixture.engine.addToShelf(source, book.id, it) } as? ShelfEntryReply)
+            // The first catalog load counts every chapter as new; that is not an update.
+            assertEquals(0, admitted.entry.newChapterCount)
+            assertEquals(0, mark())
+            val body = assertNotNull(awaitReply { fixture.engine.loadChapter(source, book.id, chapter.id, false, it) } as? ContentReply)
+            val token = assertNotNull(body.reading).token
+            assertNotNull(awaitReply { fixture.engine.saveReadingPosition(token, 1L, 0, it) } as? ReadingSaved)
+            val checked = awaitReply { fixture.engine.checkNewChapters(source, book.id, it) }
+            if (kind == "manual-rename") {
+                assertTrue(checked is EngineFailure)
+                assertEquals(0, mark(), "A rejected catalog sets no mark")
+                return@withFixture
+            }
+            val update = assertNotNull(checked as? ChapterUpdateReply)
+            assertEquals(1, update.added)
+            assertEquals(1, update.shelf.books.single().newChapterCount)
+            assertEquals(1, mark())
+            val again = assertNotNull(awaitReply { fixture.engine.checkNewChapters(source, book.id, it) } as? ChapterUpdateReply)
+            assertEquals(0, again.added)
+            assertEquals(1, again.shelf.books.single().newChapterCount, "A check that finds nothing keeps the mark")
+            // Details, a failed open and a successful open do not clear it; only a saved position does.
+            assertEquals(1, assertNotNull(awaitReply { fixture.engine.openShelfBook(source, book.id, it) } as? ShelfEntryReply)
+                .entry.newChapterCount)
+            val uncached = awaitReply {
+                fixture.engine.loadChapter(source, book.id, chapter.id.substringBeforeLast('/') + "/new", true, it)
+            }
+            assertEquals(EngineErrorCode.CACHE_UNAVAILABLE, (uncached as EngineFailure).code)
+            assertEquals(1, mark())
+            val reopened = assertNotNull(awaitReply { fixture.engine.openReading(source, book.id, true, it) } as? ContentReply)
+            assertEquals(1, mark())
+            assertNotNull(awaitReply {
+                fixture.engine.saveReadingPosition(assertNotNull(reopened.reading).token, 1L, 0, it)
+            } as? ReadingSaved)
+            assertEquals(0, mark(), "A position saved after the check clears the mark")
+        }
+    }
+
+    @Test
     fun controlledTitleAuthorAndCombinedQueriesReachTheSourceWithoutRewritingInput() = withFixture("fast") { fixture ->
         for (query in listOf("Shared work", "Fixture author", "Shared work Fixture author")) {
             val done = fixture.start(query = query).awaitUpdate { it.phase == SearchPhase.IDLE }

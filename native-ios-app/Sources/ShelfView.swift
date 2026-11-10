@@ -51,6 +51,7 @@ struct ShelfView: View {
                     .accessibilityIdentifier("shelf.groupSort")
             }
             if selecting { selectionBar }
+            shelfCheckBanner
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let notice = model.shelfNotice {
@@ -129,6 +130,9 @@ struct ShelfView: View {
             Text(bookCount(model.shelfGroupID == nil ? model.shelf.count : model.visibleShelfBooks.count))
                 .font(.subheadline).foregroundStyle(.secondary)
             Spacer(minLength: 4)
+            Button { model.checkAllNewChapters() } label: { Label("Check all", systemImage: "arrow.clockwise") }
+                .accessibilityLabel("Check all for new chapters").accessibilityIdentifier("shelf.checkAll")
+                .disabled(model.shelfCheckActive || model.shelfCheckTargets.isEmpty)
             Button("Import TXT") { importingTxt = true }
                 .disabled(model.busy).accessibilityIdentifier("shelf.importTxt")
             Menu {
@@ -155,6 +159,34 @@ struct ShelfView: View {
             }.accessibilityIdentifier("shelf.select")
         }.buttonStyle(.borderless).padding(.horizontal, 20).padding(.vertical, 10)
             .disabled(model.busy || model.shelfToken.isEmpty)
+    }
+
+    @ViewBuilder private var shelfCheckBanner: some View {
+        if let progress = model.shelfCheckProgress {
+            HStack(spacing: 12) {
+                ProgressView(value: Double(progress.checked), total: Double(max(1, progress.total))).frame(maxWidth: 220)
+                Text("Checking for new chapters · \(progress.checked) of \(progress.total) done")
+                    .font(.callout).accessibilityIdentifier("shelf.checkAll.progress")
+                Spacer()
+                Button("Cancel") { model.stopShelfCheck() }.accessibilityIdentifier("shelf.checkAll.cancel")
+            }.padding(.horizontal, 20).padding(.vertical, 8).background(.thinMaterial)
+        } else if let summary = model.shelfCheckSummary {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(summary.headline).font(.callout.weight(.semibold))
+                        .accessibilityIdentifier("shelf.checkAll.headline")
+                    Spacer()
+                    Button("Dismiss") { model.shelfCheckSummary = nil }
+                        .accessibilityIdentifier("shelf.checkAll.dismiss")
+                }
+                Text(summary.detail).font(.callout).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("shelf.checkAll.detail")
+                ForEach(summary.failed) { failure in
+                    Text(failure.title + ": " + failure.reason).font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("shelf.checkAll.failed." + failure.id)
+                }
+            }.padding(.horizontal, 20).padding(.vertical, 8).background(.thinMaterial)
+        }
     }
 
     private func layoutButton(_ mode: ShelfLayout, title: String, icon: String) -> some View {
@@ -250,7 +282,8 @@ struct ShelfView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }
             }.buttonStyle(.plain).accessibilityIdentifier("shelf.book." + entry.book.id)
-                .accessibilityValue(selecting ? (selected.contains(entry.book.id) ? "Selected" : "Not selected") : "")
+                .accessibilityValue(selecting ? (selected.contains(entry.book.id) ? "Selected" : "Not selected")
+                                    : (entry.newChapterCount > 0 ? "New chapters" : ""))
             if !grid && !selecting { bookMenu(entry) }
         }
         .padding(grid ? 10 : 14)
@@ -267,8 +300,13 @@ struct ShelfView: View {
 
     private func bookText(_ entry: ShelfBookSnapshot, compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(entry.book.title).font(compact ? .subheadline.weight(.semibold) : .headline)
-                .foregroundStyle(.primary).lineLimit(compact ? 2 : 3)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if entry.newChapterCount > 0 {
+                    Circle().fill(Color.accentColor).frame(width: 9, height: 9).accessibilityHidden(true)
+                }
+                Text(entry.book.title).font(compact ? .subheadline.weight(.semibold) : .headline)
+                    .foregroundStyle(.primary).lineLimit(compact ? 2 : 3)
+            }
             Text(ReaderModel.authorLabel(entry.book.author)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             if !compact {
                 if !entry.lastChapter.isEmpty {

@@ -51,7 +51,9 @@ class SourcesReply internal constructor(val sources: List<SourceSnapshot>) : Eng
 class BookSnapshot internal constructor(val sourceId: String, val id: String, val title: String,
     val author: String, val intro: String, val isLocal: Boolean = false)
 class ShelfBookSnapshot internal constructor(val book: BookSnapshot, val sourceName: String,
-    val lastChapter: String, val groupIds: List<String> = emptyList(), val coverUrl: String? = null)
+    val lastChapter: String, val groupIds: List<String> = emptyList(), val coverUrl: String? = null,
+    /** Chapters the last check appended; zero once a reading position has been saved after that check. */
+    val newChapterCount: Int = 0)
 class ShelfGroupSnapshot internal constructor(val id: String, val name: String, val bookCount: Int,
     val sortMode: Int = 0, val inheritsSort: Boolean = true, val orderedBookIds: List<String> = emptyList())
 class ShelfBookTarget(val sourceId: String, val bookId: String)
@@ -445,7 +447,16 @@ class ReaderEngine {
     private suspend fun shelfSnapshot(book: Book, groups: List<BookGroup>) = ShelfBookSnapshot(snapshot(book),
         if (NativeLocalTxt.owns(book)) "Local TXT" else AppDbProviders.get().bookSourceDao.getBookSource(book.origin)?.bookSourceName ?: "Source deleted",
         book.durChapterTitle.orEmpty(), groups.filter { it.groupId and book.group != 0L }.map { it.groupId.toString() },
-        book.getDisplayCover())
+        book.getDisplayCover(), newChapterCount(book))
+
+    /**
+     * Computed from columns that existing writers maintain, so the mark needs no write of its own.
+     * The first catalog load counts the whole catalog (BookChapterList.updateBook); that is not an
+     * update. An append stamps latestChapterTime and every saved position stamps durChapterTime.
+     */
+    private fun newChapterCount(book: Book): Int =
+        if (book.lastCheckCount in 1 until book.totalChapterNum && book.latestChapterTime > book.durChapterTime)
+            book.lastCheckCount else 0
 
     private suspend fun <T> shelfOperation(action: suspend () -> T): T = try { action() }
         catch (error: CancellationException) { throw error }
