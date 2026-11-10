@@ -18,7 +18,7 @@ approval.
 
 On 2026-11-10 Lei approved the merge and upgrade principles below ("批准并写入").
 That approval covers the principles only. It does not start an integration or
-authorize the patch ledger's implementation.
+authorize building the fork-patch ledger (principle 6).
 
 ## Context
 
@@ -52,7 +52,9 @@ The rules for *how* to integrate already exist:
   integration merge is Trunk and an Always stop, and its `.github/` changes are
   reviewed on their own.
 
-What was missing is *when* to integrate. Without a rule, two failures are
+What was missing is *when* to integrate. The 2026-11-10 test merge also showed
+gaps in how to resolve conflicts with our own patches; the merge and upgrade
+principles below cover them. Without a rule, two failures are
 likely: long gaps that make each merge huge, or merges that only chase the
 newest commit.
 
@@ -92,17 +94,16 @@ merge approval.
 
 Approved on 2026-11-10, after the mirror moved from `83657e548` to
 `52519722d` (31 commits). A test merge of that range into `native-reader`
-showed six conflicts. Each principle below names the case that showed the need.
+showed six conflicts. Principles 2 to 5 name the case that showed the need.
 
-These principles add to the existing rules; they do not restate them. The
-existing rules stay in their sources: the North Star non-goal, ADR-002
-(isolated validation, last validated revision, no private patch of core
-parsing), the impact radius map (every integration is Trunk and an Always
-stop), and the upstream-first rule in `AGENTS.md`.
+These principles add to the existing rules listed in Context and to the
+upstream-first rule in `AGENTS.md`.
 
 1. **The mirror moves by fast-forward only.** Update `master` only when
    `origin/master` is an ancestor of the upstream head. If it is not, stop and
    report. Do not merge, rebase or force-push the mirror.
+   `scripts/ci/sync-upstream-mirror.sh` already enforces this check; this
+   principle also covers a manual update.
 2. **Upstream is the base for upstream-owned files that we patched.** In a
    conflict, start from the upstream version and re-apply our change as a
    narrow export. First check whether upstream now provides the capability; if
@@ -117,14 +118,15 @@ stop), and the upstream-first rule in `AGENTS.md`.
    and tests to the new location, and update `.github/CODEOWNERS` and
    `scripts/path-c/doc_links.py` paths. Never drop them silently. Case: upstream
    merged `desktop-core` into `desktop`; `DesktopPreferenceMigrationTest.kt`
-   would stay in a module that no longer builds, so it would stop running
-   without a failure.
+   would stay in a directory the build no longer includes, so a local Gradle
+   test run would skip it without a failure.
 5. **A clean text merge is not verification.** A file that both sides changed
-   needs the `engine-ios` compile and C1, even when Git merged it without a
-   conflict. Case: eight overlapping files merged cleanly in the same test
+   needs the `engine-ios` compile (the Kotlin/Native engine module that the
+   native app links) and C1, even when Git merged it without a conflict. Case: eight overlapping files merged cleanly in the same test
    merge.
-6. **Keep a ledger of fork patches (proposed, not built).** About 165 files in
-   upstream-owned paths differ from upstream. A ledger that separates
+6. **Keep a fork-patch ledger (proposed, not built).** On 2026-11-10, about 165
+   files outside our own directories (`native-ios-app/`, `engine-ios/`,
+   `docs/`, `scripts/`) differed from upstream `83657e548`. A ledger that separates
    intentional fork patches from noise, such as whitespace cleanup, keeps
    upgrades mechanical. Building it needs its own task.
 

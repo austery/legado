@@ -30,7 +30,7 @@ upstream changes that overlap it. `master` has no `native-ios-app/` or `engine-i
 so pass the upstream paths from the trace below, such as paths under `ui/`, `data/` or
 `core/`. No output means no unintegrated upstream commit touches those paths:
 `git fetch origin master native-reader && git log origin/native-reader..origin/master -- <paths>`.
-Release dry-runs and when to integrate upstream are in
+Release dry-runs, when to integrate upstream, and merge and upgrade principles are in
 [ADR-005](docs/architecture/decisions/ADR-005-upstream-integration-cadence.md).
 
 ## Upstream-first features
