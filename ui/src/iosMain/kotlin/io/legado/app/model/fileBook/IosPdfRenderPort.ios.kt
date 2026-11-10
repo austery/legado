@@ -13,6 +13,7 @@ import io.legado.app.utils.File
 import io.legado.app.utils.IosSecurityScopeLease
 import io.legado.app.utils.IosSecurityScopedStorage
 import io.legado.app.utils.InputStream
+import io.legado.app.utils.inputStream
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.cinterop.readBytes
@@ -20,7 +21,6 @@ import kotlinx.cinterop.useContents
 import platform.CoreGraphics.CGRectMake
 import platform.CoreGraphics.CGSizeMake
 import platform.Foundation.NSURL
-import platform.Foundation.fileURLWithPath
 import platform.PDFKit.PDFDocument
 import platform.PDFKit.kPDFDisplayBoxCropBox
 import platform.UIKit.UIColor
