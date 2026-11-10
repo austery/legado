@@ -4,7 +4,7 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.model.webBook.SearchModel
-import io.legado.app.model.webBook.SourcePageOutcome
+import io.legado.app.model.webBook.SourcePageReport
 import io.legado.app.model.webBook.SourceSearchGroup
 import io.legado.app.model.webBook.WebBookResponsePolicy
 import io.legado.app.ui.book.search.SearchScope
@@ -39,7 +39,7 @@ internal enum class SearchCommand { LOAD_MORE, RETRY, RESTART, CANCEL }
 private sealed interface SearchEvent {
     data class Sources(val sources: List<BookSource>) : SearchEvent
     data class Started(val id: String, val generation: Int, val page: Int) : SearchEvent
-    data class Finished(val id: String, val generation: Int, val page: Int, val outcome: SourcePageOutcome) : SearchEvent
+    data class Finished(val id: String, val generation: Int, val page: Int, val outcome: SourcePageReport) : SearchEvent
     data class Groups(val groups: List<CandidateGroup>) : SearchEvent
     data object RoundFinished : SearchEvent
     data class Aborted(val error: Throwable?) : SearchEvent
@@ -73,7 +73,7 @@ internal class NativeSearchSession(
         override fun onSourcePageStarted(sourceId: String, generation: Int, page: Int) {
             enqueue(SearchEvent.Started(sourceId, generation, page))
         }
-        override fun onSourcePageFinished(sourceId: String, generation: Int, page: Int, outcome: SourcePageOutcome) {
+        override fun onSourcePageFinished(sourceId: String, generation: Int, page: Int, outcome: SourcePageReport) {
             enqueue(SearchEvent.Finished(sourceId, generation, page, outcome))
         }
         override fun onSearchGroupsChanged(groups: List<SourceSearchGroup>) {
@@ -194,17 +194,17 @@ internal class NativeSearchSession(
                 if (state.generation != event.generation) return
                 state.page = event.page
                 when (val outcome = event.outcome) {
-                    is SourcePageOutcome.Success -> {
+                    is SourcePageReport.Success -> {
                         state.hasNextPage = outcome.hasNextPage
                         state.status = if (outcome.isEmpty && candidates[state.id].isNullOrEmpty()) SearchSourceStatus.EMPTY else SearchSourceStatus.SUCCESS
                         state.failure = null
                     }
-                    is SourcePageOutcome.Failure -> {
+                    is SourcePageReport.Failure -> {
                         state.status = SearchSourceStatus.FAILED
                         state.hasNextPage = false
                         state.failure = failure(outcome.error)
                     }
-                    SourcePageOutcome.Cancelled -> state.status = SearchSourceStatus.CANCELLED
+                    SourcePageReport.Cancelled -> state.status = SearchSourceStatus.CANCELLED
                 }
                 phase = if (states.values.any { it.status == SearchSourceStatus.RUNNING || it.status == SearchSourceStatus.PENDING })
                     SearchPhase.SEARCHING else SearchPhase.IDLE

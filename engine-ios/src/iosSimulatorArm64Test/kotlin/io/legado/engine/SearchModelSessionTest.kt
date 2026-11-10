@@ -7,7 +7,7 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.NativeAppConfigAccessor
 import io.legado.app.help.config.PreferenceProvider
-import io.legado.app.model.webBook.SourcePageOutcome
+import io.legado.app.model.webBook.SourcePageReport
 import io.legado.app.model.webBook.SourceSearchGroup
 import io.legado.app.model.webBook.SearchModel
 import io.legado.app.ui.book.search.SearchScope
@@ -136,9 +136,9 @@ class SearchModelSessionTest {
         }) { model, callback ->
             model.search(1L, "Fixture")
             val events = List(3) { callback.pages.receive() }.associateBy { it.sourceId }
-            assertEquals(SourcePageOutcome.Success(false, false), events.getValue(found.bookSourceUrl).outcome)
-            assertEquals(SourcePageOutcome.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
-            val failure = events.getValue(failed.bookSourceUrl).outcome as SourcePageOutcome.Failure
+            assertEquals(SourcePageReport.Success(false, false), events.getValue(found.bookSourceUrl).outcome)
+            assertEquals(SourcePageReport.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
+            val failure = events.getValue(failed.bookSourceUrl).outcome as SourcePageReport.Failure
             assertEquals("Controlled source failure", failure.error.message)
             assertEquals("finished:false", callback.rounds.receive())
             callback.titlesUntil(listOf("Retained title"))
@@ -155,9 +155,9 @@ class SearchModelSessionTest {
         }) { model, callback ->
             model.search(1L, "Fixture")
             val events = List(2) { callback.pages.receive() }.associateBy { it.sourceId }
-            val outcome = events.getValue(timed.bookSourceUrl).outcome as SourcePageOutcome.Failure
+            val outcome = events.getValue(timed.bookSourceUrl).outcome as SourcePageReport.Failure
             assertTrue(outcome.error is TimeoutCancellationException)
-            assertEquals(SourcePageOutcome.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
+            assertEquals(SourcePageReport.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
             assertEquals("finished:false", callback.rounds.receive())
         }
     }
@@ -173,7 +173,7 @@ class SearchModelSessionTest {
             model.search(1L, "Fixture"); assertEquals("finished:true", callback.rounds.receive())
             model.search(1L, "Fixture"); assertEquals("failed", callback.rounds.receive())
             model.retrySource(source.bookSourceUrl)
-            assertEquals(SourcePageOutcome.Success(false, false), callback.pageUntil(source.bookSourceUrl, 1, 2).outcome)
+            assertEquals(SourcePageReport.Success(false, false), callback.pageUntil(source.bookSourceUrl, 1, 2).outcome)
             val snapshot = callback.titlesUntil(listOf("Page 1", "Page 2"))
             assertEquals(listOf(1, 2, 2), requests)
             assertEquals(1, snapshot.single().generation)
@@ -193,7 +193,7 @@ class SearchModelSessionTest {
             model.loadMore(); assertEquals("finished:false", callback.rounds.receive())
             assertEquals(1, attempts.value)
             model.retrySource(failed.bookSourceUrl)
-            assertEquals(SourcePageOutcome.Success(false, false), callback.pageUntil(failed.bookSourceUrl, 1, 1).outcome)
+            assertEquals(SourcePageReport.Success(false, false), callback.pageUntil(failed.bookSourceUrl, 1, 1).outcome)
             callback.titlesUntil(listOf("Recovered title"))
             assertEquals(2, attempts.value)
         }
@@ -230,7 +230,7 @@ class SearchModelSessionTest {
                     val event = callback.pages.tryReceive().getOrNull() ?: break
                     events.add(event)
                 }
-                assertFalse(events.any { it.page == 2 && it.outcome is SourcePageOutcome.Success })
+                assertFalse(events.any { it.page == 2 && it.outcome is SourcePageReport.Success })
             } finally { releaseOld.complete(Unit) }
         }
     }
@@ -491,7 +491,7 @@ class SearchModelSessionTest {
         }
     }
 
-    private data class PageEvent(val sourceId: String, val generation: Int, val page: Int, val outcome: SourcePageOutcome)
+    private data class PageEvent(val sourceId: String, val generation: Int, val page: Int, val outcome: SourcePageReport)
 
     private class RecordingCallback : SearchModel.CallBack {
         val resolved = Channel<List<BookSource>>(Channel.UNLIMITED)
@@ -505,7 +505,7 @@ class SearchModelSessionTest {
         override fun onSearchGroupsChanged(groups: List<SourceSearchGroup>) {
             this.groups.trySend(groups.map { it.copy(books = it.books.map { book -> book.copy() }) })
         }
-        override fun onSourcePageFinished(sourceId: String, generation: Int, page: Int, outcome: SourcePageOutcome) {
+        override fun onSourcePageFinished(sourceId: String, generation: Int, page: Int, outcome: SourcePageReport) {
             pages.trySend(PageEvent(sourceId, generation, page, outcome))
         }
         override fun onSearchFinish(isEmpty: Boolean, hasMore: Boolean) { rounds.trySend("finished:$hasMore") }

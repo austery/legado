@@ -37,8 +37,8 @@ ARCHIVE_INDEX = f'{ARCHIVE}README.md'
 # Markdown that upstream (huajideshutiao/legado) owns; see docs/agents/impact-radius.md.
 UPSTREAM_FILES = frozenset({'README.md', 'English.md', 'api.md'})
 UPSTREAM_DIRS = (
-    'app/', 'benchmark/', 'core/', 'data/', 'desktop/', 'desktop-core/', 'foundation/',
-    'headless/', 'iosApp/', 'modules/', 'ohosApp/', 'ui/',
+    'app/', 'benchmark/', 'core/', 'data/', 'desktop/', 'foundation/',
+    'iosApp/', 'modules/', 'ohosApp/', 'ui/',
 )
 WINDOWS_PATH = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')
 HTML_ID = re.compile(r'\b(?:id|name)=["\']([^"\']+)')

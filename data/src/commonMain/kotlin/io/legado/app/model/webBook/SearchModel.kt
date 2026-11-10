@@ -45,6 +45,8 @@ import kotlin.math.min
 data class SourceSearchGroup(
     val source: BookSource,
     val books: List<SearchBook>,
+    /** Native engine: generation of the last accepted page in this group. */
+    val generation: Int = 0,
 )
 
 /** 单源单页结果: 带发出请求时的结果世代, 供丢弃重搜前发出的过期响应。 */
@@ -83,6 +85,7 @@ private sealed interface SourcePageOutcome {
         val searchId: Long,
         val generation: Int,
         val job: Job? = null,
+        val page: Int = 0,
     ) : SourcePageOutcome
     data class Failed(
         val sourceUrl: String,
@@ -90,6 +93,7 @@ private sealed interface SourcePageOutcome {
         val generation: Int,
         val error: Throwable,
         val job: Job? = null,
+        val page: Int = 0,
     ) : SourcePageOutcome
 }
 
@@ -103,8 +107,28 @@ const val SEARCH_LAYOUT_SOURCE_GROUP = 0x20
  * 网络在每源 [Mutex] 外，提交只在短临界区。单源重搜、暂停恢复与主链复用
  * [fetchSourcePage]/[applyOutcome]，不存在第二份 HTTP/错误分支。
  */
-class SearchModel(private val scope: CoroutineScope, private val callBack: CallBack) {
+class SearchModel(
+    private val scope: CoroutineScope,
+    private val callBack: CallBack,
+    /** Native engine: resolve the source list without the shared SearchScope. */
+    private val sourceResolver: suspend () -> List<BookSource> = { callBack.getSearchScope().getBookSources() },
+    /** Native engine: wrap one page request (host request scope, response policy). */
+    private val pageExecutor: suspend (BookSource, Int, suspend () -> BookListPage) -> BookListPage =
+        { _, _, action -> action() },
+) {
     val threadCount = AppConfigProviders.get().threadCount
+
+    /** Native engine: [closeAndJoin] retires the model; later commands are ignored. */
+    private var retired = false
+
+    /** Native engine: counts closes so a search resolving its sources cannot resume after one. */
+    private var closeCount = 0L
+
+    /** Native engine: generation of the last accepted page per source group. */
+    private val searchGroupGenerations = HashMap<String, Int>()
+
+    /** Native engine: main and source-command jobs that [closeAndJoin] must await. */
+    private val liveJobs = HashSet<Job>()
     private var searchPool: kotlinx.coroutines.CoroutineDispatcher? = null
 
     private val stateLock = SynchronizedObject()
@@ -184,16 +208,19 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
             startSearch(searchId)
             return
         }
-        val sources = callBack.getSearchScope().getBookSources()
+        val closesBefore = synchronized(stateLock) { closeCount }
+        val sources = sourceResolver().distinctBy { it.bookSourceUrl }
         var initialized = false
         var emptySources = false
         synchronized(stateLock) {
+            if (retired || closeCount != closesBefore) return
             if (searchId < mSearchId) return
             if (searchId != mSearchId) {
                 closeLocked()
                 searchKey = key
                 searchBooks = arrayListOf()
                 searchGroupBooks.clear()
+                searchGroupGenerations.clear()
                 searchGroupSources.clear()
                 sourceOrder.clear()
                 bookSources = sources
@@ -272,6 +299,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
                 }
             }
             searchJob = job
+            job?.let(::trackLocked)
         }
         job?.start()
     }
@@ -304,8 +332,9 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
                 }
                 var invalidated = false
                 var freshInvalidated = false
+                callBack.onSourcePageStarted(url, request.generation, request.page)
                 val page = withTimeout(timeLimit) {
-                    WebBook.getBookListAwait(
+                    pageExecutor(request.source, request.page) { WebBook.getBookListAwait(
                         request.source, request.searchKey, request.page,
                         nextPageUrl = request.nextPageUrl,
                         allowFreshInvalidatedOptions = request.allowFreshInvalidated,
@@ -335,13 +364,13 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
                         },
                         optionSelections = request.selections,
                         pluginFilters = filters,
-                    )
+                    ) }
                 }
                 if (!synchronized(stateLock) { isCurrentLocked(request) }) {
                     clearSourceTask(request, self)
                     SourcePageOutcome.Skipped
                 } else if (invalidated && !freshInvalidated) {
-                    SourcePageOutcome.Invalidated(url, request.searchId, request.generation, self)
+                    SourcePageOutcome.Invalidated(url, request.searchId, request.generation, self, request.page)
                 } else {
                     SourcePageOutcome.Loaded(
                         SourcePageResult(
@@ -357,23 +386,26 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
                 }
             } catch (e: ExploreOptionSelectionInvalidatedException) {
                 if (synchronized(stateLock) { isCurrentLocked(request) }) {
-                    SourcePageOutcome.Invalidated(url, request.searchId, request.generation, self)
+                    SourcePageOutcome.Invalidated(url, request.searchId, request.generation, self, request.page)
                 } else {
                     clearSourceTask(request, self)
                     SourcePageOutcome.Skipped
                 }
             } catch (e: TimeoutCancellationException) {
                 if (synchronized(stateLock) { isCurrentLocked(request) }) {
-                    SourcePageOutcome.Failed(url, request.searchId, request.generation, e, self)
+                    SourcePageOutcome.Failed(url, request.searchId, request.generation, e, self, request.page)
                 } else {
                     clearSourceTask(request, self)
                     SourcePageOutcome.Skipped
                 }
             } catch (e: CancellationException) {
+                if (synchronized(stateLock) { isCurrentLocked(request) }) {
+                    callBack.onSourcePageFinished(url, request.generation, request.page, SourcePageReport.Cancelled)
+                }
                 throw e
             } catch (e: Throwable) {
                 if (synchronized(stateLock) { isCurrentLocked(request) }) {
-                    SourcePageOutcome.Failed(url, request.searchId, request.generation, e, self)
+                    SourcePageOutcome.Failed(url, request.searchId, request.generation, e, self, request.page)
                 } else {
                     clearSourceTask(request, self)
                     SourcePageOutcome.Skipped
@@ -386,8 +418,18 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
         try {
             when (outcome) {
                 is SourcePageOutcome.Loaded -> handlePageResult(outcome.result)
-                is SourcePageOutcome.Invalidated ->
+                is SourcePageOutcome.Invalidated -> {
                     handleInvalidated(outcome.sourceUrl, outcome.searchId, outcome.generation)
+                    if (synchronized(stateLock) {
+                            isCurrentSourceLocked(outcome.sourceUrl, outcome.searchId, outcome.generation)
+                        }
+                    ) {
+                        callBack.onSourcePageFinished(
+                            outcome.sourceUrl, outcome.generation, outcome.page,
+                            SourcePageReport.Failure(ExploreOptionSelectionInvalidatedException()),
+                        )
+                    }
+                }
 
                 is SourcePageOutcome.Failed -> {
                     synchronized(stateLock) {
@@ -404,6 +446,10 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
                         AppLog.put("书源搜索出错: " + outcome.error.message, outcome.error)
                         callBack.onSearchSourceError(outcome.sourceUrl, outcome.error)
                         callBack.onSearchHasMoreChanged(hasMore)
+                        callBack.onSourcePageFinished(
+                            outcome.sourceUrl, outcome.generation, outcome.page,
+                            SourcePageReport.Failure(outcome.error),
+                        )
                     }
                 }
 
@@ -447,6 +493,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
         synchronized(stateLock) {
             if (!isCurrentSourceLocked(sourceUrl, searchId, generation)) return
             searchGroupBooks.remove(sourceUrl)
+            searchGroupGenerations.remove(sourceUrl)
             exhaustedSources.add(sourceUrl)
             failedSources.remove(sourceUrl)
             rebuildAggregate(precision)
@@ -500,12 +547,17 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
                     nextPageUrls[sourceUrl] = nextPageUrl
                 }
                 mergeGroup(source, items)
+                if (searchGroupBooks.containsKey(sourceUrl)) searchGroupGenerations[sourceUrl] = result.generation
                 rebuildAggregate(precision)
                 recomputeHasMoreLocked()
                 currentCoroutineContext().ensureActive()
                 callBack.onSearchSuccess(searchBooks)
                 callBack.onSearchGroupsChanged(groupSnapshot())
                 callBack.onSearchHasMoreChanged(hasMore)
+                callBack.onSourcePageFinished(
+                    sourceUrl, result.generation, result.requestPage,
+                    SourcePageReport.Success(result.page.hasNextPage, items.isEmpty()),
+                )
                 if (result.freshInvalidated) {
                     callBack.onSearchOptionsRefreshed(sourceUrl)
                 }
@@ -528,7 +580,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
     fun restartSource(sourceUrl: String) {
         var job: Job? = null
         synchronized(stateLock) {
-            if (searchKey.isEmpty()) return
+            if (retired || searchKey.isEmpty()) return
             val source = bookSources.firstOrNull { it.bookSourceUrl == sourceUrl } ?: return
             val generation = invalidateSourceLocked(sourceUrl)
             pausedSources.remove(sourceUrl)
@@ -538,6 +590,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
             nextPages[sourceUrl] = 1
             nextPageUrls.remove(sourceUrl)
             searchGroupBooks.remove(sourceUrl)
+            searchGroupGenerations.remove(sourceUrl)
             rebuildAggregate(precision)
             recomputeHasMoreLocked()
             callBack.onSearchSuccess(searchBooks)
@@ -561,8 +614,69 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
             }
             job = launched
             sourceCommandJobs[sourceUrl] = launched
+            trackLocked(launched)
         }
         job?.start()
+    }
+
+    /** Native engine: retry the failed page and keep every accepted earlier page. */
+    fun retrySource(sourceUrl: String) {
+        var job: Job? = null
+        synchronized(stateLock) {
+            if (retired || searchKey.isEmpty()) return
+            val source = bookSources.firstOrNull { it.bookSourceUrl == sourceUrl } ?: return
+            val generation = invalidateSourceLocked(sourceUrl)
+            pausedSources.remove(sourceUrl)
+            exhaustedSources.remove(sourceUrl)
+            failedSources.remove(sourceUrl)
+            recomputeHasMoreLocked()
+            callBack.onSearchHasMoreChanged(hasMore)
+            val nextUrl = nextPageUrls[sourceUrl]
+            val page = nextPages[sourceUrl] ?: 1
+            val request = SourcePageRequest(
+                source = source,
+                searchId = mSearchId,
+                generation = generation,
+                page = page,
+                nextPageUrl = nextUrl,
+                searchKey = searchKey,
+                precision = precision,
+                selections = sourceSelectedOptions(sourceUrl),
+                replaceAllOptions = nextUrl == null,
+                allowFreshInvalidated = page == 1 && nextUrl == null,
+            )
+            val pool = searchPool ?: initSearchPool().also { searchPool = it }
+            val launched = scope.launch(pool, start = CoroutineStart.LAZY) {
+                runSourceCommand(request)
+            }
+            job = launched
+            sourceCommandJobs[sourceUrl] = launched
+            trackLocked(launched)
+        }
+        job?.start()
+    }
+
+    /** Native engine: continue every source that has another page; failed sources need [retrySource]. */
+    suspend fun loadMore() {
+        val (running, id) = synchronized(stateLock) { searchJob to mSearchId }
+        running?.join()
+        startSearch(id)
+    }
+
+    /** Native engine: permanently retire the model and await all main and source-command work. */
+    suspend fun closeAndJoin() {
+        val jobs = synchronized(stateLock) {
+            retired = true
+            closeLocked()
+            liveJobs.toList()
+        }
+        jobs.forEach { it.join() }
+    }
+
+    /** Caller holds [stateLock]. */
+    private fun trackLocked(job: Job) {
+        liveJobs.add(job)
+        job.invokeOnCompletion { synchronized(stateLock) { liveJobs.remove(job) } }
     }
 
     /** 单源命令统一收尾: 取数结果仍经同一个 handle 提交, 主链不在飞才发 finish。 */
@@ -728,6 +842,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
             SourceSearchGroup(
                 searchGroupSources.getValue(url),
                 books.toList(),
+                generation = searchGroupGenerations[url] ?: 0,
             )
         }
 
@@ -793,6 +908,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
             }
             job = launched
             sourceCommandJobs[sourceUrl] = launched
+            trackLocked(launched)
         }
         job?.start()
     }
@@ -805,6 +921,7 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
 
     /** 调用方持锁: 结束当前轮并取消所有源任务。 */
     private fun closeLocked() {
+        closeCount++
         searchJob?.cancel()
         searchJob = null
         sourceJobs.values.forEach { it.cancel() }
@@ -819,6 +936,13 @@ class SearchModel(private val scope: CoroutineScope, private val callBack: CallB
 
     interface CallBack {
         fun getSearchScope(): SearchScope
+
+        /** Native engine: one source page is about to be requested. */
+        fun onSourcePageStarted(sourceId: String, generation: Int, page: Int) {}
+
+        /** Native engine: the accepted outcome of one source page. */
+        fun onSourcePageFinished(sourceId: String, generation: Int, page: Int, outcome: SourcePageReport) {}
+
         fun onSearchStart()
         fun onSearchSuccess(searchBooks: List<SearchBook>)
 
