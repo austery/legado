@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,41 +84,86 @@ internal fun SharedCoverContent(
     nameAuthorOverlay: Boolean,
 ) {
     val loader = remember { BookImageLoaders.getOrNull() }
+    // 页面级比例布局状态 (无持有者时为 null): AUTO 档已确定的比例从它恢复, 条目被 Lazy
+    // 销毁重建或位图缓存淘汰后不重测; 身份与位图分区查询同源
+    val ratioState = LocalCoverRatioLayout.current
+    val coverResource = CoverResourceKey(source.coverUrl, source.origin, source.persistentCover)
     // useDefaultCover 时跳过网络加载, 直接走默认封面链 (对照原 View 版封面组件 load 行为);
     // 每次组合读 prefs (不 remember): 宿主重组触发 LaunchedEffect 重启时读到的是最新配置
     val useDefaultCover = AppConfigProviders.get().useDefaultCover
     // 首帧即出真图: 同一张封面已在别处 (书架格子/列表/上一次详情) 解码过时, 组合期同步取回,
     // 不再让首帧摆默认封面——共享元素飞的是"可见那一端"的内容, 详情页首帧占位会被放大到整个
-    // 飞行尺寸, 观感即"闪一下默认封面"。小表同 url 只留面积最大的一档
-    // (见 [DecodedBitmapCache.recordCover]), 取回的是迄今解过的最大那份;
+    // 飞行尺寸, 观感即"闪一下默认封面"。按真实来源与分区查询, 取回当前可复用的最大那份;
     // 若它仍比当前显示尺寸小, 会先糊一帧, 下面按自己尺寸解完替换。
-    val cachedCover = remember(source.coverUrl, source.cacheKey, useDefaultCover) {
-        if (!source.shareDecodedCover || useDefaultCover || source.coverUrl.isNullOrBlank()) null
-        else DecodedBitmapCache.peekCover(source.coverUrl)
+    // 位图与"是否默认封面"合成一个 state: 一次加载只引发一次重组。
+    // 首帧查询在 state 创建时做一次, 结果直接作为同一显示 state 的初值 (不再另存一份初始位图);
+    // 资源身份按真实 URL / 来源 / 分区 / 是否参与封面用途换代, 同 URL 换分区也会重新取。
+    var coverState by remember(
+        source.coverUrl,
+        source.cacheKey,
+        source.origin,
+        source.persistentCover,
+        source.shareDecodedCover,
+    ) {
+        val fromCache = if (!source.shareDecodedCover || useDefaultCover || source.coverUrl.isNullOrBlank()) {
+            null
+        } else {
+            DecodedBitmapCache.peekCover(source.coverUrl, source.origin, source.persistentCover)
+        }
+        mutableStateOf(fromCache?.let { CoverBitmap(it, false) } ?: NoCoverBitmap)
     }
-    // 位图与"是否默认封面"合成一个 state: 一次加载只引发一次重组
-    var coverState by remember(source.coverUrl, source.cacheKey) {
-        mutableStateOf(cachedCover?.let { CoverBitmap(it, false) } ?: NoCoverBitmap)
-    }
-    // 比例决议: 固定档恒定; 自适应档按位图横竖特征动态决议 (width > height 为视频 16:9,
-    // 反之为小说 3:4)。缓存命中时首帧直接决议真实比例, 避免闪烁; 未命中时以 16:9 起步
-    // (对照原视频槽起步语义), 位图就绪时当帧切换
-    var resolvedIsVideoCover by remember(source.coverUrl, source.cacheKey, coverRatio) {
+    // 比例决议: 固定档恒为对应枚举; 自适应档按位图横竖特征动态决议 (width > height 为
+    // VIDEO, 反之为 NOVEL)。缓存命中时首帧直接决议真实比例, 避免闪烁; 未命中时以 VIDEO
+    // 起步 (对照原视频槽起步语义), 位图就绪时当帧切换
+    var resolvedCoverRatio by remember(
+        source.coverUrl,
+        source.cacheKey,
+        source.origin,
+        source.persistentCover,
+        source.shareDecodedCover,
+        coverRatio,
+        ratioState,
+    ) {
         mutableStateOf(
             when (coverRatio) {
-                CoverSlotRatio.NOVEL -> false
-                CoverSlotRatio.VIDEO -> true
-                CoverSlotRatio.AUTO -> cachedCover?.let { it.width > it.height } ?: true
+                CoverSlotRatio.NOVEL -> CoverRatio.NOVEL
+                CoverSlotRatio.VIDEO -> CoverRatio.VIDEO
+                // 页面级已确定的比例优先 (对结果集仍保留的资源始终成立); 其次按当前显示位
+                // 已有的真实封面图横竖决议, 默认封面不作依据 (按 VIDEO 起步)
+                CoverSlotRatio.AUTO -> ratioState?.resolvedRatio(coverResource)
+                    ?: coverState.takeUnless { it.isDefault }?.bitmap
+                        ?.let { if (it.width > it.height) CoverRatio.VIDEO else CoverRatio.NOVEL }
+                    ?: CoverRatio.VIDEO
             }
         )
+    }
+    // AUTO 档初始已有真图时在成功组合提交时补种当前已决议的空记录 (不覆盖已有,
+    // 不用固定/派生裁剪图的宽高冒充新自然比例); 默认封面与失败不提交
+    if (ratioState != null && coverRatio == CoverSlotRatio.AUTO) {
+        SideEffect {
+            val shown = coverState
+            if (!shown.isDefault && shown.bitmap != null) {
+                ratioState.seedResolvedRatioIfAbsent(coverResource, resolvedCoverRatio)
+            }
+        }
     }
     // 尺寸只用于首次按显示大小降采样；后续窗口 resize 不应重新发起封面请求。
     // 否则每跨过一个量化尺寸档都会再次进入图片 Interceptor，重复执行书源 JS header 规则。
     val displaySize = remember { MutableStateFlow(IntSize.Zero) }
-    LaunchedEffect(source.coverUrl, source.cacheKey, loader, useDefaultCover, coverRatio, reloadTick) {
+    LaunchedEffect(
+        source.coverUrl,
+        source.cacheKey,
+        source.origin,
+        source.persistentCover,
+        source.shareDecodedCover,
+        loader,
+        useDefaultCover,
+        coverRatio,
+        reloadTick,
+    ) {
         if (loader == null) return@LaunchedEffect
         val decodeSize = firstValidCoverDecodeSize(displaySize)
-        val ratio = if (resolvedIsVideoCover) CoverRatio.VIDEO else CoverRatio.NOVEL
+        val ratio = resolvedCoverRatio
 
         // 默认封面链要读 prefs + 解 JSON (解析已按 raw 串记忆化), 挪到协程内真用得上时再算。
         // 解码结果进 [DecodedBitmapCache] 跨条目共享: 旧实现每条封面都完整跑一遍图片管线解
@@ -163,22 +209,22 @@ internal fun SharedCoverContent(
             // 失败保持当前图不变 (对照原版 BookCover.load 的 .error(newDefaultDrawable))
             if (bmp != null) {
                 if (source.shareDecodedCover) {
-                    // 记进封面小表 (预算与解码主缓存分开, 同 url 只留面积最大的一档, 见
-                    // [DecodedBitmapCache.recordCover])。不能改从 Coil 内存缓存按 url 现取:
-                    // 它的 key 就是 url、不带尺寸, 书架格子/详情大图/歌词栏小图会互相覆写;
-                    // 有效性判定与超预算弱引用淘汰都在库内部, 外部手取只能拿到上采样糊图或空;
-                    // 安卓端 data 还被换成烘焙 webp 路径、鸿蒙端不注册 BookImageLoaders,
-                    // 动图更是永不进内存缓存。这张小表是书架↔详情↔列表间复用已解位图的唯一通道
-                    DecodedBitmapCache.recordCover(coverUrl, bmp)
+                    // 按真实来源与分区把这张已解出的封面登记到本端现有有界缓存, 供
+                    // 书架↔详情↔列表同步取回; 是否留得住由库自身预算与策略决定
+                    DecodedBitmapCache.recordCover(coverUrl, source.origin, source.persistentCover, bmp)
                 }
                 if (coverRatio == CoverSlotRatio.AUTO) {
-                    resolvedIsVideoCover = bmp.width > bmp.height
+                    // 登记的是 AUTO 已实际决议的布局比例; 固定档裁剪产物无 AUTO 决议,
+                    // 不登记不覆盖 (固定档显示仍恒常量比例), 默认封面与失败不写
+                    val resolved = if (bmp.width > bmp.height) CoverRatio.VIDEO else CoverRatio.NOVEL
+                    resolvedCoverRatio = resolved
+                    ratioState?.recordResolvedRatio(coverResource, resolved)
                 }
                 coverState = CoverBitmap(bmp, false)
             }
         }
     }
-    val outerModifier = modifier.coverSizeModifier(resolvedIsVideoCover)
+    val outerModifier = modifier.coverSizeModifier(resolvedCoverRatio)
         .clip(DesignTokens.shapeSm)
         .onSizeChanged { displaySize.value = it }
     val bmp = coverState.bitmap
@@ -245,9 +291,9 @@ internal fun SharedCoverContent(
  * 一致。两种顺序只在宽高两维都有界且两个候选都满足约束时才不同, 此时先取高度符合调用方
  * "给多少高度就填满多少高度"的意图; 网格/视频档 maxHeight 无界, 两种顺序结果相同。
  */
-private fun Modifier.coverSizeModifier(isVideoCover: Boolean): Modifier =
+private fun Modifier.coverSizeModifier(ratio: CoverRatio): Modifier =
     aspectRatio(
-        ratio = if (isVideoCover) VIDEO_COVER_RATIO else NOVEL_COVER_RATIO,
+        ratio = ratio.widthRatio.toFloat() / ratio.heightRatio,
         matchHeightConstraintsFirst = true,
     )
 
@@ -309,9 +355,6 @@ internal suspend fun firstValidCoverDecodeSize(sizes: Flow<IntSize>): IntSize =
 
 /** 封面宽高比 (宽/高); 对照 BookCoverShared.CoverRatio: NOVEL=3:4 → 0.75 */
 internal const val NOVEL_COVER_RATIO = 3f / 4f
-
-/** 封面宽高比 (宽/高); 对照 BookCoverShared.CoverRatio: VIDEO=16:9 → 1.78 */
-internal const val VIDEO_COVER_RATIO = 16f / 9f
 
 /**
  * 用户自定义默认封面集选出的 entry (对照 app 端 `BookCover.newDefaultDrawable` 的选图段)。

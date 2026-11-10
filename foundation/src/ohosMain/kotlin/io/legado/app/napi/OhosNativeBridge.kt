@@ -393,13 +393,14 @@ object OhosNativeBridge {
     // 调用链 (以 decode 为例):
     // KMP OhosImageOps.decode(bytes)
     //   → invokeImageSync("decode", json, bytes)
-    //   → 生成 requestId, 存入 imagePendingRequests (CompletableDeferred<OhosBinaryBridgeResponse>)
+    //   → 生成 requestId, 存入 imagePendingRequests (请求状态持有 CompletableDeferred<OhosBinaryBridgeResponse>)
     //   → imageTsfn(requestJson, bytes)  (fire-and-forget, dispatch 到 ArkTS 主线程)
     //   → runBlocking { deferred.await() }  (阻塞 JS 引擎线程等待结果)
     //   → [ArkTS 主线程] image callback 收到 (requestJson, bytesArrayBuffer)
-    //   → image.createImageSource(bytes).createPixelMap() → 存入 pixelMaps Map<id, PixelMap>
+    //   → image.createImageSource(bytes).createPixelMap() → 存入 pixelMaps Map<id, PixelMapEntry>
     //   → legado.imageCallback(requestId, resultJson, packed?)  (napi → @CName legado_image_callback)
-    //   → onImageResult(requestId, resultJson, bodyBytes) → deferred.complete(OhosBinaryBridgeResponse)
+    //   → onImageResult(requestId, resultJson, bodyBytes) → 记录响应并唤醒等待方;
+    //      等待方超时/异常未取走时, 由桥对响应里的新 PixelMap 发起非阻塞释放
     //   → runBlocking 返回, OhosImageOps.decode 返回 ImageRef(pixelMapId)
     //
     // 线程安全: JS 引擎线程阻塞等待, ArkTS 主线程回调 complete, 不同线程无死锁。
@@ -408,12 +409,24 @@ object OhosNativeBridge {
     @Volatile
     private var imageTsfn: OhosBinaryTsfnCallback? = null
 
-    /** 待响应的图片同步请求 Map<requestId, CompletableDeferred<OhosBinaryBridgeResponse>>。 */
-    private val imagePendingRequests =
-        mutableMapOf<Long, CompletableDeferred<OhosBinaryBridgeResponse>>()
+    /**
+     * 单个图片同步请求的待响应状态。
+     *
+     * [result] 记录 [onImageResult] 收到的响应: 等待方超时/异常获胜时结果未被取走,
+     * 由 [invokeImageSync] 的 finally 按此判定并释放响应里新建的 PixelMap。
+     */
+    private class ImagePendingRequest(val deferred: CompletableDeferred<OhosBinaryBridgeResponse>) {
+        var result: OhosBinaryBridgeResponse? = null
+    }
+
+    /** 待响应的图片同步请求 Map<requestId, 状态>。 */
+    private val imagePendingRequests = mutableMapOf<Long, ImagePendingRequest>()
 
     /** 图片请求自增 ID (原子性由 [lock] 保护)。 */
     private var imageRequestCounter = 0L
+
+    /** 图片桥日志标签 (释放失败/迟到结果按具体 ID 记录)。 */
+    private const val IMAGE_LOG_TAG = "OhosImageBridge"
 
     /** 注入 image tsfn (由 legado_napi.cpp registerImageCallback 调用)。 */
     fun registerImageFn(tsfn: OhosBinaryTsfnCallback) {
@@ -433,20 +446,143 @@ object OhosNativeBridge {
      * @param bodyBytes 数据面裸字节 (encode 时非空; 其余操作/失败时为 null)
      */
     fun onImageResult(requestId: Long, resultJson: String, bodyBytes: ByteArray? = null) {
-        val deferred = synchronized(lock) { imagePendingRequests.remove(requestId) }
-        deferred?.complete(OhosBinaryBridgeResponse(resultJson, bodyBytes))
+        val response = OhosBinaryBridgeResponse(resultJson, bodyBytes)
+        val deferred = synchronized(lock) {
+            val state = imagePendingRequests[requestId]
+            if (state == null) null else {
+                state.result = response
+                state.deferred
+            }
+        }
+        if (deferred != null) {
+            deferred.complete(response)
+            return
+        }
+        // 资源释放请求的回执: 按回执自带的 release 标识与 ID 记录真实结果, 不递归当成图片结果
+        if (handleImageReleaseResult(requestId, resultJson)) return
+        // 等待方已超时/异常放弃 (pending 已移除) 后到达的迟到结果: 新建的 PixelMap 无人持有,
+        // 必须在 ArkTS 主线程以非阻塞 threadsafe 消息发起释放 (不能回调阻塞的 invokeImageSync)
+        releaseImageResultResources(resultJson, "迟到图片结果 requestId=$requestId")
+    }
+
+    /**
+     * 发起 PixelMap 资源释放 (fire-and-forget, 不阻塞调用线程)。
+     *
+     * Cleaner 回调线程不固定且不能阻塞, 等待方未取走的迟到结果也可能在 ArkTS 主线程;
+     * 两者都只能向同一条 image tsfn 投递 release 请求, 回执由 [onImageResult] 独立识别。
+     * 发送失败或 SDK 释放失败按具体 pixelMapId 与真实错误记录, 不宣称已释放。
+     */
+    fun releaseImageResource(pixelMapId: Long) {
+        val tsfn = synchronized(lock) { imageTsfn }
+        if (tsfn == null) {
+            AppLog.put(
+                "图片资源释放失败 pixelMapId=$pixelMapId: 图片桥未注册",
+                null, false, IMAGE_LOG_TAG
+            )
+            return
+        }
+        val requestId = synchronized(lock) { ++imageRequestCounter }
+        val requestJson = KS_JSON.encodeToString(
+            ImageBridgeRequest(
+                requestId = requestId,
+                action = "release",
+                payload = KS_JSON.encodeToString(ImageReleasePayload(pixelMapId = pixelMapId)),
+            )
+        )
+        runCatching { tsfn(requestJson, null) }.onFailure {
+            AppLog.put(
+                "图片资源释放请求发送失败 pixelMapId=$pixelMapId",
+                it, false, IMAGE_LOG_TAG
+            )
+        }
+    }
+
+    /** 解析回执/迟到响应里的 pixelMap 资源 ID, 逐个发起释放; 无效字段明确记录。 */
+    private fun releaseImageResultResources(resultJson: String, reason: String) {
+        val json = runCatching { KS_JSON.parseToJsonElement(resultJson).jsonObject }.getOrNull()
+        if (json == null) {
+            AppLog.put("$reason: 回执解析失败, 未释放图片资源", null, false, IMAGE_LOG_TAG)
+            return
+        }
+        val ids = mutableListOf<Long>()
+        json["pixelMapId"]?.let { element ->
+            val id = runCatching { element.jsonPrimitive.contentOrNull?.toLongOrNull() }.getOrNull()
+            if (id == null || id <= 0L) {
+                AppLog.put("$reason: 无效 pixelMapId=$element", null, false, IMAGE_LOG_TAG)
+            } else {
+                ids.add(id)
+            }
+        }
+        json["pixelMapIds"]?.let { element ->
+            val array = runCatching { element.jsonArray }.getOrNull()
+            if (array == null) {
+                AppLog.put("$reason: pixelMapIds 不是数组", null, false, IMAGE_LOG_TAG)
+            } else {
+                array.forEachIndexed { index, item ->
+                    val id = runCatching {
+                        item.jsonPrimitive.contentOrNull?.toLongOrNull()
+                    }.getOrNull()
+                    if (id == null || id <= 0L) {
+                        AppLog.put(
+                            "$reason: pixelMapIds[$index] 无效=$item",
+                            null, false, IMAGE_LOG_TAG
+                        )
+                    } else {
+                        ids.add(id)
+                    }
+                }
+            }
+        }
+        ids.forEach { releaseImageResource(it) }
+    }
+
+    /**
+     * 识别并记录 release 请求的真实回执 (回执带 release=true 与 pixelMapId)。
+     * 返回 true 表示本回执属于资源释放, 不再按图片结果处理。
+     */
+    private fun handleImageReleaseResult(requestId: Long, resultJson: String): Boolean {
+        val json = runCatching { KS_JSON.parseToJsonElement(resultJson).jsonObject }.getOrNull()
+            ?: return false
+        val isRelease = runCatching {
+            json["release"]?.jsonPrimitive?.booleanOrNull
+        }.getOrNull() == true
+        if (!isRelease) return false
+        val id = runCatching {
+            json["pixelMapId"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+        }.getOrNull()
+        if (id == null || id <= 0L) {
+            AppLog.put(
+                "图片资源释放回执缺少有效 pixelMapId requestId=$requestId: $resultJson",
+                null, false, IMAGE_LOG_TAG
+            )
+            return true
+        }
+        val ok = runCatching { json["ok"]?.jsonPrimitive?.booleanOrNull }.getOrNull() == true
+        if (ok) {
+            AppLog.putDebug("图片资源已释放 pixelMapId=$id", tag = IMAGE_LOG_TAG)
+        } else {
+            val error = runCatching {
+                json["error"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull() ?: "回执不可解析"
+            AppLog.put(
+                "图片资源释放失败 pixelMapId=$id: $error",
+                null, false, IMAGE_LOG_TAG
+            )
+        }
+        return true
     }
 
     /**
      * 同步调用图片操作 (阻塞等待 ArkTS 返回结果, 混合协议)。
      *
-     * @param action 操作类型: "decode" / "encode" / "size" / "crop" / "split" / "stitch" / "release"
+     * @param action 操作类型: "decode" / "encode" / "size" / "crop" / "split" / "stitch" / "rotate" / "flip"
+     *   (资源释放走不阻塞的 [releaseImageResource], 不经本同步入口)
      * @param payloadJson 操作参数 JSON (由调用方序列化, 控制面小字段; decode 的图片字节
      *   改走 [bytes] 裸参数, 不再 base64 进 JSON)
      * @param bytes 数据面裸字节 (仅 decode 传图片字节; 其余操作传 null)
      * @param timeoutMs 超时毫秒 (默认 15s, 防止 ArkTS 无响应永久阻塞)
      * @return ArkTS 返回的 [OhosBinaryBridgeResponse] (控制面 JSON + 数据面裸字节);
-     *         tsfn 未注册或超时返回 null (调用方降级处理)
+     *         tsfn 未注册或超时返回 null (调用方降级处理; 超时后到达的结果由桥释放其资源)
      */
     fun invokeImageSync(
         action: String,
@@ -454,29 +590,38 @@ object OhosNativeBridge {
         bytes: ByteArray? = null,
         timeoutMs: Long = 15000L,
     ): OhosBinaryBridgeResponse? {
-        val requestId = synchronized(lock) { ++imageRequestCounter }
-        val deferred = CompletableDeferred<OhosBinaryBridgeResponse>()
-        synchronized(lock) { imagePendingRequests[requestId] = deferred }
+        val state = ImagePendingRequest(CompletableDeferred())
+        val requestId = synchronized(lock) {
+            val id = ++imageRequestCounter
+            imagePendingRequests[id] = state
+            id
+        }
 
         val requestJson = KS_JSON.encodeToString(
             ImageBridgeRequest(requestId = requestId, action = action, payload = payloadJson)
         )
-        val tsfn = synchronized(lock) { imageTsfn }
-        if (tsfn == null) {
-            // 降级: tsfn 未注册 (napi 未接入阶段), 移除 pending 请求返回 null
-            synchronized(lock) { imagePendingRequests.remove(requestId) }
-            return null
+        // 登记/发送/等待都在同一个终态回收内: 发送异常与等待异常都按“未交付”释放已到达的资源
+        var delivered: OhosBinaryBridgeResponse? = null
+        try {
+            val tsfn = synchronized(lock) { imageTsfn } ?: return null
+            runCatching { tsfn(requestJson, bytes) }.onFailure {
+                AppLog.put(
+                    "图片请求发送失败 requestId=$requestId action=$action",
+                    it, false, IMAGE_LOG_TAG
+                )
+                return null
+            }
+            delivered = runBlocking { withTimeoutOrNull(timeoutMs) { state.deferred.await() } }
+            return delivered
+        } finally {
+            val abandoned = synchronized(lock) {
+                imagePendingRequests.remove(requestId)
+                if (delivered == null) state.result else null
+            }
+            if (abandoned != null) {
+                releaseImageResultResources(abandoned.json, "未交付图片结果 requestId=$requestId")
+            }
         }
-        runCatching { tsfn(requestJson, bytes) }.onFailure {
-            // tsfn 调用失败 (module 卸载 / 线程异常), 移除 pending 请求返回 null
-            synchronized(lock) { imagePendingRequests.remove(requestId) }
-            return null
-        }
-
-        // 阻塞等待 ArkTS 回调 (JS 引擎线程阻塞, ArkTS 主线程回调 complete, 不同线程无死锁)
-        val result = runBlocking { withTimeoutOrNull(timeoutMs) { deferred.await() } }
-        synchronized(lock) { imagePendingRequests.remove(requestId) }
-        return result
     }
 
     /**
@@ -484,6 +629,139 @@ object OhosNativeBridge {
      * OhosImageOps 据此判断走真实 PixelMap 实现还是降级占位。
      */
     fun isImageBridgeReady(): Boolean = synchronized(lock) { imageTsfn != null }
+
+    // ===== PDF 同步桥 (源代次通道, 与 Window/FilePicker 同型; 纯 JSON 请求面) =====
+    // 契约 (PdfRenderPort 单实例语义由 K 侧 [io.legado.app.model.fileBook.OhosPdfRenderPort]
+    // 保证, ArkTS 侧文档单例与其一一对应):
+    //   - openDocument {path} → { ok, pageCount } / { ok:false, error, parseResult }
+    //     (path 为沙盒内 POSIX 路径; 打开失败时 ArkTS 侧不保留半开文档)
+    //   - renderPage {index, width} → { ok, width, height } + JPEG 字节 (index 越界/未打开 → ok:false)
+    //   - closeDocument → { ok }
+    // dispatch/代次未注入时 invokePdfSync 返回 null (调用方按打开失败降级, 不伪造页图)。
+
+    /** PDF 通道级回执时给在途请求的真实失败结果 (ArkTS 正常回执不会带 channelClosed)。 */
+    private const val PDF_CHANNEL_CLOSED_RESULT =
+        "{\"ok\":false,\"channelClosed\":true,\"error\":\"PDF 桥通道已重注册, 在途请求按失败结束\"}"
+
+    /** PDF gen 版 dispatch (Kotlin → ArkTS 发请求; 三参 json+来源代次+请求 id, 请求面纯 JSON)。 */
+    private var pdfDispatchGen: OhosTsfnCallbackGen? = null
+
+    /** 待响应的 PDF 同步请求 Map<requestId, CompletableDeferred<OhosBinaryBridgeResponse>>。 */
+    private val pdfPendingRequests =
+        mutableMapOf<Long, CompletableDeferred<OhosBinaryBridgeResponse>>()
+
+    /** 每个在途 PDF 请求的来源代次 (通道结算按 gen 筛, 不误杀新代次请求)。 */
+    private val pdfRequestEpochs = mutableMapOf<Long, Long>()
+
+    /** PDF 通道当前代次 (C++ PublishChannelEpoch 经 legado_set_pdf_epoch 注入)。 */
+    @Volatile
+    private var pdfChannelEpoch = 0L
+
+    /** PDF 请求自增 ID (原子性由 [lock] 保护)。 */
+    private var pdfRequestCounter = 0L
+
+    /** 注入 PDF gen 版 dispatch (由 legado_napi.cpp RegisterPdfCallback 经 RegisterTsfnWithGen 调用)。 */
+    fun registerPdfDispatchGen(dispatch: OhosTsfnCallbackGen) {
+        synchronized(lock) { pdfDispatchGen = dispatch }
+    }
+
+    /** 注入 PDF 通道本次注册的代次 (C++ PublishChannelEpoch → legado_set_pdf_epoch)。 */
+    fun setPdfChannelEpoch(epoch: Long) {
+        synchronized(lock) { if (epoch > pdfChannelEpoch) pdfChannelEpoch = epoch }
+    }
+
+    /**
+     * PDF 操作结果回调 (由 ArkTS 侧调 @CName legado_pdf_callback 触发, 混合协议)。
+     *
+     * requestId<=0 是通道级回执 (C++ NotifyPdfChannelClosed 广播, 经 legado_pdf_callback):
+     * 旧代次在途请求按真实失败结束 (gen 筛, 与 filePicker 同款语义), 新代次请求不受影响。
+     *
+     * @param requestId 对应 [invokePdfSync] 生成的请求 ID (0 = 通道级事件)
+     * @param resultJson 控制面结果 JSON ({ok,pageCount}/{ok,width,height}/{ok:false,error}, 不含字节)
+     * @param bodyBytes 数据面裸字节 (仅 renderPage 回传 JPEG; 其余操作/失败为 null)
+     */
+    fun onPdfResult(requestId: Long, resultJson: String, bodyBytes: ByteArray? = null) {
+        if (requestId <= 0L) {
+            channelGenFrom(resultJson).takeIf { it > 0L }?.let { gen ->
+                synchronized(lock) { if (gen > pdfChannelEpoch) pdfChannelEpoch = gen }
+            }
+            val (ids, rebind, gen) = channelCloseInfoFrom(resultJson)
+            val waiting = synchronized(lock) {
+                val targets = if (rebind && ids.isNullOrEmpty() && gen > 0L) {
+                    pdfRequestEpochs.filterValues { it <= gen }.keys.toList()
+                } else {
+                    ids.orEmpty()
+                }
+                targets.mapNotNull { id ->
+                    pdfRequestEpochs.remove(id)
+                    pdfPendingRequests.remove(id)
+                }
+            }
+            waiting.forEach { it.complete(OhosBinaryBridgeResponse(PDF_CHANNEL_CLOSED_RESULT, null)) }
+            return
+        }
+        val deferred = synchronized(lock) {
+            pdfRequestEpochs.remove(requestId)
+            pdfPendingRequests.remove(requestId)
+        }
+        deferred?.complete(OhosBinaryBridgeResponse(resultJson, bodyBytes))
+    }
+
+    /**
+     * 同步调用 PDF 操作 (阻塞等待 ArkTS 返回结果, 纯 JSON 请求面)。
+     *
+     * 请求登记与来源代次/ dispatch 取用在同一锁段完成 (分配 id → 登记代次 → 取 dispatch),
+     * 重注册结算不会插在中间把已登记请求漏成"已失败但仍向新通道投递"。
+     *
+     * @param action 操作类型: "openDocument" / "renderPage" / "closeDocument"
+     * @param payloadJson 操作参数 JSON (控制面小字段)
+     * @param timeoutMs 超时毫秒 (默认 15s, 防 ArkTS 无响应永久阻塞)
+     * @return ArkTS 返回的 [OhosBinaryBridgeResponse] (控制面 JSON + renderPage 的 JPEG 字节);
+     *         dispatch 未注册、通道已重注册或超时返回 null (调用方按打开/渲染失败降级, 不伪造页图)
+     */
+    fun invokePdfSync(
+        action: String,
+        payloadJson: String,
+        timeoutMs: Long = 15000L,
+    ): OhosBinaryBridgeResponse? {
+        val deferred = CompletableDeferred<OhosBinaryBridgeResponse>()
+        var requestId = 0L
+        var epoch = 0L
+        val dispatch = synchronized(lock) {
+            requestId = ++pdfRequestCounter
+            epoch = pdfChannelEpoch
+            pdfPendingRequests[requestId] = deferred
+            pdfRequestEpochs[requestId] = epoch
+            pdfDispatchGen
+        }
+        val requestJson = KS_JSON.encodeToString(
+            PdfBridgeRequest(requestId = requestId, action = action, payload = payloadJson)
+        )
+        if (dispatch == null) {
+            // 降级: dispatch 未注册 (napi 未接入阶段), 移除 pending 请求返回 null
+            synchronized(lock) { pdfRequestEpochs.remove(requestId); pdfPendingRequests.remove(requestId) }
+            return null
+        }
+        runCatching { dispatch(requestJson, epoch, requestId) }.onFailure {
+            // dispatch 调用失败 (module 卸载 / 线程异常), 移除 pending 请求返回 null
+            synchronized(lock) { pdfRequestEpochs.remove(requestId); pdfPendingRequests.remove(requestId) }
+            return null
+        }
+
+        // 阻塞等待 ArkTS 回调 (JS 引擎线程阻塞, ArkTS 主线程回调 complete, 不同线程无死锁)。
+        // 超时只是结束等待 (pending 移除, 迟到回执按未知 id 丢弃), 不是 SDK 操作的终态
+        val result = runBlocking { withTimeoutOrNull(timeoutMs) { deferred.await() } }
+        synchronized(lock) { pdfRequestEpochs.remove(requestId); pdfPendingRequests.remove(requestId) }
+        return result
+    }
+
+    /** PDF 请求信封 (与 ArkTS PdfBridgeHandler.ets 的 BridgeRequest 对齐)。 */
+    @Serializable
+    private data class PdfBridgeRequest(
+        val requestId: Long,
+        val action: String,
+        val payload: String,
+    )
 
     // ===== Media 事件桥 (tsfn fire-and-forget + @CName event callback, KP8+) =====
     // HttpTtsPlayer / OhosAudioPlayCommander 的 play/pause/stop/seekTo 是 fire-and-forget 命令
@@ -2140,6 +2418,10 @@ object OhosNativeBridge {
         val action: String,
         val payload: String,
     )
+
+    /** image 资源释放请求 payload (pixelMapId 来自本应用 Map 产生的已验证资源)。 */
+    @Serializable
+    private data class ImageReleasePayload(val pixelMapId: Long)
 
     /** crypto 桥请求 payload (Kotlin → ArkTS, 同 ImageBridgeRequest 结构, action=encrypt/decrypt/sign/verify)。 */
     @Serializable
