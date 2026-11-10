@@ -115,6 +115,9 @@ internal class OfflineCache(private val scope: CoroutineScope,
         return CacheCleared(deleted, failed)
     }
 
+    /** Read-ahead window after the displayed chapter; the upstream `preDownloadNum` default. */
+    private val READ_AHEAD_CHAPTERS = 10
+
     fun start(sourceId: String, bookId: String, afterChapterId: String?, prefetch: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest {
         val terminal = atomic(false)
@@ -138,7 +141,8 @@ internal class OfflineCache(private val scope: CoroutineScope,
                             initial.chapters.firstOrNull { it.index == initial.book.durChapterIndex }?.url
                         val start = initial.chapters.indexOfFirst { it.url == anchor }
                         check(start >= 0) { "Open a chapter before caching" }
-                        initial.chapters.drop(start + 1).filterNot { it.isVolume }.take(if (prefetch) 2 else 20)
+                        initial.chapters.drop(start + 1).filterNot { it.isVolume }
+                            .take(if (prefetch) READ_AHEAD_CHAPTERS else 20)
                     }
                     target = selected.size
                     report(true)

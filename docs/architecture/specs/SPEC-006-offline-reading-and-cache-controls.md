@@ -39,6 +39,7 @@ These are reuse candidates, not evidence that the native app already has a downl
 2. Show per-chapter availability in the catalog: checking, available offline, missing, or unavailable after validation. Empty/unreadable files are not available; the saved chapter must also match its recorded body coordinates.
 3. Offer Cache next 20 chapters after the current readable chapter, or all remaining chapters when fewer remain. Use the active source only, skip volume headings, and skip already verified bodies. Display completed/target counts, failures, cancel, and retry missing/failed chapters.
 4. Offer a global Prefetch next 2 chapters toggle, initially off. Enabling it starts bounded foreground work after the current chapter is ready; ordinary reading has priority. Limit background cache work to one in-flight chapter and deduplicate it with manual cache requests.
+   - Amended 2026-11-10 by [Issue #96](https://github.com/austery/legado/issues/96): the toggle is on when no choice is stored, and read-ahead covers the next 10 readable chapters. A run the reader started is not replaced by read-ahead; read-ahead starts when that run ends. One in-flight chapter and foreground priority are unchanged.
 5. Offer Clear optional cached chapters with a confirmation showing the concrete chapter count. Preserve the durable saved chapter and every currently displayed chapter backed by an active reading session. Do not clear other books, old-source folders, shelf metadata, catalog or resume. Report verified deletion results and partial failures.
 
 ### Lifecycle and persistence contract
@@ -82,6 +83,7 @@ The owner approved this scope on 2026-10-20 and requested continuous implementat
 | 2026-10-20 | Draft | Proposed after PR #31 merge; based on the live native engine and storage interfaces. |
 | 2026-10-20 | Ready for Implementation | Owner approved the scope and simulator acceptance. |
 | 2026-10-20 | Implemented | Local simulator acceptance and independent review complete; PR publication requires exact-head C1 before merge. |
+| 2026-11-10 | Amended | Item 4 changed by Issue #96 (read-ahead on by default, next 10). The acceptance line "next two readable chapters" below records the 2026-10-20 delivery, not the current count. |
 
 ## 7. Acceptance evidence
 

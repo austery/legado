@@ -1208,7 +1208,7 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor func testGlobalPrefetchToggleCachesTwoAndSurvivesRelaunch() async throws {
+    @MainActor func testReadAheadIsOnByDefaultCachesTenAndTurningItOffSurvivesRelaunch() async throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
         app.launchEnvironment["READER_UI_SCENARIO"] = "offline"
@@ -1217,17 +1217,11 @@ final class ReaderUITests: XCTestCase {
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
-        app.buttons["reader.typography"].tap()
-        let toggle = app.switches["offline.prefetch"]
-        for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
-        XCTAssertEqual(toggle.value as? String, "0")
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        wait(app) { toggle.value as? String == "1" }
-        capture("offline-global-prefetch-enabled")
-        app.buttons["Done"].tap()
-        wait(app) { self.state(app).contains("cached=2;cacheRunning=false;") }
+        // No setting is touched: a fresh install reads ahead by itself.
+        wait(app) { self.state(app).contains("cached=10;cacheRunning=false;") }
         app.buttons["reader.contents"].tap(); app.buttons["contents.details"].tap()
-        wait(app) { app.staticTexts["offline.count"].label == "3 of 26 chapters available offline" }
+        wait(app) { app.staticTexts["offline.count"].label == "11 of 26 chapters available offline" }
+        capture("offline-read-ahead-default-on")
         app.terminate()
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
@@ -1235,10 +1229,19 @@ final class ReaderUITests: XCTestCase {
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
         app.buttons["reader.typography"].tap()
+        let toggle = app.switches["offline.prefetch"]
         for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
         XCTAssertEqual(toggle.value as? String, "1")
         toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         wait(app) { toggle.value as? String == "0" }
+        capture("offline-read-ahead-turned-off")
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
+        app.buttons["reader.typography"].tap()
+        for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
+        XCTAssertEqual(toggle.value as? String, "0")
         app.terminate()
     }
 

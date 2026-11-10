@@ -501,7 +501,11 @@ final class ReadingJourneyTests: XCTestCase {
         let chapterID = try XCTUnwrap(model.content?.chapter.id)
         let oldToken = try XCTUnwrap(model.content?.reading?.token)
         XCTAssertTrue(model.content?.reading?.canSave == true)
-        let host = UIHostingController(rootView: ReaderScreen(model: model))
+        // This journey needs the next chapter to fail; read-ahead would use up the fixture's one failure.
+        let suite = "reading-journey." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: ReadingPreferences.prefetchKey)
+        let host = UIHostingController(rootView: ReaderScreen(model: model, preferences: ReadingPreferences(defaults: defaults)))
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 768, height: 1024))
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true }

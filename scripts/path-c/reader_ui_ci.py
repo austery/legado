@@ -60,7 +60,7 @@ def main() -> None:
                    'ReaderUITests/testOtherEngineSourceChangeEndsVisibleSearch',
                    'ReaderUITests/testSourceImportGroupsDisableAndRelaunch',
                    'ReaderUITests/testSourceDeleteConfirmationRemovesOnlySelectedAndRelaunch',
-                   'ReaderUITests/testGlobalPrefetchToggleCachesTwoAndSurvivesRelaunch',
+                   'ReaderUITests/testReadAheadIsOnByDefaultCachesTenAndTurningItOffSurvivesRelaunch',
                    'ReaderUITests/testOfflineCacheControlsAndProtectedRelaunch',
                    'ReaderUITests/testSourceSwitchProcessLossBeforeCommitAndAfterCommitBeforeAcknowledgment',
                    'ReaderUITests/testExplicitSourceSwitchAndRelaunch',
