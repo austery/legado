@@ -51,8 +51,9 @@ class SearchModelSessionTest {
             })
         try {
             model.search(1L, "Fixture")
-            assertEquals("failed", withTimeout(5000) { callback.rounds.receive() })
-            model.search(1L, "Fixture")
+            // Upstream b3f36f905: a source failure finishes the round; only an explicit retry re-requests it.
+            assertEquals("finished:false", withTimeout(5000) { callback.rounds.receive() })
+            model.retrySource(source.bookSourceUrl)
             assertEquals("finished:false", withTimeout(5000) { callback.rounds.receive() })
             assertEquals(listOf(1, 1), requestedPages)
         } finally {
@@ -171,7 +172,8 @@ class SearchModelSessionTest {
             page(current, "Page $number", more = number == 1)
         }) { model, callback ->
             model.search(1L, "Fixture"); assertEquals("finished:true", callback.rounds.receive())
-            model.search(1L, "Fixture"); assertEquals("failed", callback.rounds.receive())
+            // Upstream b3f36f905: a source failure finishes the round instead of cancelling it.
+            model.search(1L, "Fixture"); assertEquals("finished:false", callback.rounds.receive())
             model.retrySource(source.bookSourceUrl)
             assertEquals(SourcePageReport.Success(false, false), callback.pageUntil(source.bookSourceUrl, 1, 2).outcome)
             val snapshot = callback.titlesUntil(listOf("Page 1", "Page 2"))
@@ -322,7 +324,7 @@ class SearchModelSessionTest {
     }
 
     @Test
-    fun queuedMainPagesKeepTheirOriginalGenerationAndShareRestartConcurrencyLimit() = runBlocking {
+    fun queuedMainPagesKeepTheirOriginalGenerationWhileARestartRunsOutsideTheCap() = runBlocking {
         val first = source("first")
         val second = source("second")
         val queued = source("queued")
@@ -358,18 +360,19 @@ class SearchModelSessionTest {
                 assertEquals(setOf("first", "second"), setOf(entered.receive(), entered.receive()))
                 model.restartSource(restarted.bookSourceUrl)
                 callback.titlesUntil(emptyList())
-                assertTrue(entered.tryReceive().isFailure, "A restart shares the existing page concurrency budget")
-                releaseFirst.complete(Unit)
+                // Upstream b3f36f905: a source restart runs outside the main chain's concurrency cap.
                 assertEquals("restarted", entered.receive())
-                releaseSecond.complete(Unit)
+                assertTrue(entered.tryReceive().isFailure, "Queued main work still waits for a main-chain slot")
+                releaseFirst.complete(Unit)
                 assertEquals("queued", entered.receive())
+                releaseSecond.complete(Unit)
                 callback.pageUntil(queued.bookSourceUrl, 0, 1)
                 releaseRestart.complete(Unit)
                 callback.pageUntil(restarted.bookSourceUrl, 1, 1)
                 model.loadMore()
                 model.closeAndJoin()
                 assertEquals(1, restartedRequests.value, "Queued pre-restart work must not fetch a second page")
-                assertEquals(2, peak.value)
+                assertEquals(3, peak.value)
             } finally {
                 releaseFirst.complete(Unit)
                 releaseSecond.complete(Unit)
