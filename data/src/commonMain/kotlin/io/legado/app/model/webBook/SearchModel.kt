@@ -24,6 +24,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -403,7 +404,10 @@ class SearchModel(
                 }
             } catch (e: CancellationException) {
                 if (synchronized(stateLock) { isCurrentLocked(request) }) {
-                    callBack.onSourcePageFinished(url, request.generation, request.page, SourcePageReport.Cancelled)
+                    // A cancellation thrown while this job is still active is a page failure the user can retry.
+                    val report = if (currentCoroutineContext().isActive) SourcePageReport.Failure(e)
+                    else SourcePageReport.Cancelled
+                    callBack.onSourcePageFinished(url, request.generation, request.page, report)
                 }
                 throw e
             } catch (e: Throwable) {

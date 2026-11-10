@@ -32,8 +32,6 @@ import com.script.jsdispatch.generated.NativeGeneratedDispatch
 import io.legado.app.napi.quickjs.JSContext
 import io.legado.app.napi.quickjs.JSValue
 import io.legado.app.napi.quickjs.qjs_EvalTypeGlobal
-import io.legado.app.napi.quickjs.JS_TAG_INT
-import io.legado.app.napi.quickjs.qjs_ValueGetTag
 import io.legado.app.napi.quickjs.JS_TAG_NULL
 import io.legado.app.napi.quickjs.JS_TAG_UNDEFINED
 import io.legado.app.napi.quickjs.qjs_FreeCString
