@@ -466,6 +466,41 @@ class SearchModelSessionTest {
         }
     }
 
+    @Test
+    fun aNewerSearchStillStartsWhenAnOlderSearchFinishesResolvingFirst() = runBlocking {
+        val prior = runCatching { AppConfigProviders.get() }.getOrNull()
+        AppConfigProviders.register(NativeAppConfigAccessor(FixturePreferences()))
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val callback = RecordingCallback()
+        val older = source("older"); val newer = source("newer")
+        val gates = Channel<CompletableDeferred<List<BookSource>>>(Channel.UNLIMITED)
+        val model = SearchModel(owner, callback, sourceResolver = {
+            val gate = CompletableDeferred<List<BookSource>>()
+            gates.send(gate)
+            gate.await()
+        }, pageExecutor = { current, _, _ -> page(current, current.bookSourceName) })
+        try {
+            withTimeout(10_000) {
+                coroutineScope {
+                    val first = async { model.search(1L, "Fixture") }
+                    val firstGate = gates.receive()
+                    val second = async { model.search(2L, "Fixture") }
+                    val secondGate = gates.receive()
+                    firstGate.complete(listOf(older)); first.await()
+                    secondGate.complete(listOf(newer)); second.await()
+                    val groups = callback.titlesUntil(listOf("newer"))
+                    assertEquals(listOf(newer.bookSourceUrl), groups.map { it.source.bookSourceUrl })
+                }
+            }
+        } finally {
+            withContext(NonCancellable) {
+                model.closeAndJoin()
+                owner.cancel()
+                if (prior != null) AppConfigProviders.register(prior)
+            }
+        }
+    }
+
     private fun source(id: String) = BookSource(bookSourceUrl = "https://$id.invalid", bookSourceName = id)
 
     private fun page(source: BookSource, title: String, more: Boolean = false) = BookListPage(

@@ -121,7 +121,10 @@ class SearchModel(
     /** Native engine: [closeAndJoin] retires the model; later commands are ignored. */
     private var retired = false
 
-    /** Native engine: counts closes so a search resolving its sources cannot resume after one. */
+    /**
+     * Native engine: counts explicit closes so a search resolving its sources cannot resume
+     * after one. A newer search replacing an older one does not count; search ids order those.
+     */
     private var closeCount = 0L
 
     /** Native engine: generation of the last accepted page per source group. */
@@ -667,6 +670,7 @@ class SearchModel(
     suspend fun closeAndJoin() {
         val jobs = synchronized(stateLock) {
             retired = true
+            closeCount++
             closeLocked()
             liveJobs.toList()
         }
@@ -915,13 +919,13 @@ class SearchModel(
 
     fun close() {
         synchronized(stateLock) {
+            closeCount++
             closeLocked()
         }
     }
 
     /** 调用方持锁: 结束当前轮并取消所有源任务。 */
     private fun closeLocked() {
-        closeCount++
         searchJob?.cancel()
         searchJob = null
         sourceJobs.values.forEach { it.cancel() }
