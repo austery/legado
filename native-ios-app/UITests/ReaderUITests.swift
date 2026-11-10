@@ -135,7 +135,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testManualChapterCheckKeepsSavedReadingPosition() async throws {
-        let app = launchControlsReader()
+        let app = launchControlsReader(readAhead: false)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         waitForStableViewport(app)
         app.textViews["reader.text"].swipeUp()
@@ -234,7 +234,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testCachedSearchNavigatesOriginalHitWithoutNetworkAndRestores() async throws {
-        let app = launchControlsReader()
+        let app = launchControlsReader(readAhead: false)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         waitForStableViewport(app)
         app.buttons["reader.previous"].tap()
@@ -1248,6 +1248,7 @@ final class ReaderUITests: XCTestCase {
     @MainActor func testOfflineCacheControlsAndProtectedRelaunch() async throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_READ_AHEAD"] = "off"
         app.launchEnvironment["READER_UI_SCENARIO"] = "offline"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
@@ -1403,6 +1404,7 @@ final class ReaderUITests: XCTestCase {
     @MainActor func testShelfReadingRecoveryAndResume() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_READ_AHEAD"] = "off"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
@@ -1967,7 +1969,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testHiddenControlsKeepFailureAndCancelActionsAvailable() {
-        let app = launchControlsReader(openSecondChapter: false)
+        let app = launchControlsReader(openSecondChapter: false, readAhead: false)
         let firstIdentity = readingIdentity(app)
         app.buttons["fixture.hold"].tap()
         app.buttons["reader.next"].tap()
@@ -2018,9 +2020,11 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor private func launchControlsReader(openSecondChapter: Bool = true, observeCopy: Bool = false) -> XCUIApplication {
+    @MainActor private func launchControlsReader(openSecondChapter: Bool = true, observeCopy: Bool = false,
+                                                  readAhead: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
+        if !readAhead { app.launchEnvironment["READER_UI_READ_AHEAD"] = "off" }
         app.launchEnvironment["READER_UI_SCENARIO"] = "two-page"
         if observeCopy { app.launchEnvironment["READER_UI_OBSERVE_COPY"] = "1" }
         XCUIDevice.shared.orientation = .portrait
