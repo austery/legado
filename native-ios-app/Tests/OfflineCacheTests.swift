@@ -184,7 +184,7 @@ final class OfflineCacheTests: XCTestCase {
         }
         XCTAssertTrue(saved is ReadingSaved)
         let prefetched = try await progress(engine, book, chapters[0], prefetch: true)
-        XCTAssertEqual(prefetched.target, 2); XCTAssertEqual(prefetched.completed, 2)
+        XCTAssertEqual(prefetched.target, 10); XCTAssertEqual(prefetched.completed, 10)
         let other = ReaderEngine(); defer { other.close() }
         _ = await call { other.initialize(completion: $0) }
         _ = await call { other.openShelfBook(sourceId: book.sourceId, bookId: book.id, completion: $0) }
@@ -193,9 +193,9 @@ final class OfflineCacheTests: XCTestCase {
         XCTAssertTrue(displayed is ContentReply)
         let prepared = await call { engine.prepareCacheClear(sourceId: book.sourceId, bookId: book.id, completion: $0) }
         let plan = try XCTUnwrap(prepared as? CacheClearPrepared)
-        XCTAssertEqual(plan.count, 1)
+        XCTAssertEqual(plan.count, 9)
         let cleared = await call { engine.clearOptionalCache(token: plan.token, completion: $0) }
-        XCTAssertEqual((cleared as? CacheCleared)?.deleted, 1)
+        XCTAssertEqual((cleared as? CacheCleared)?.deleted, 9)
         let states = try await status(engine, book).chapters
         XCTAssertEqual(states[0].availability, .available)
         XCTAssertEqual(states[1].availability, .available)
@@ -225,16 +225,16 @@ final class OfflineCacheTests: XCTestCase {
         XCTAssertEqual(initial[1].availability, .unavailable)
         XCTAssertEqual(initial[2].availability, .unavailable)
         let result = try await progress(engine, book, chapters[0], prefetch: true)
-        XCTAssertEqual(result.completed, 1); XCTAssertEqual(result.failedChapterIds, [chapters[2].id])
+        XCTAssertEqual(result.completed, 9); XCTAssertEqual(result.failedChapterIds, [chapters[2].id])
         let final = try await status(engine, book).chapters
         XCTAssertEqual(final[0].availability, .unavailable)
         XCTAssertEqual(final[1].availability, .available)
         XCTAssertEqual(final[2].availability, .unavailable)
         let prepared = await call { engine.prepareCacheClear(sourceId: book.sourceId, bookId: book.id, completion: $0) }
         let plan = try XCTUnwrap(prepared as? CacheClearPrepared)
-        XCTAssertEqual(plan.count, 2)
+        XCTAssertEqual(plan.count, 10)
         let cleared = await call { engine.clearOptionalCache(token: plan.token, completion: $0) }
-        XCTAssertEqual((cleared as? CacheCleared)?.deleted, 1)
+        XCTAssertEqual((cleared as? CacheCleared)?.deleted, 9)
         XCTAssertEqual((cleared as? CacheCleared)?.failed, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: blocked.appendingPathComponent("marker").path))
     }

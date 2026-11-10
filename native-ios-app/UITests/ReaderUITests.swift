@@ -135,7 +135,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testManualChapterCheckKeepsSavedReadingPosition() async throws {
-        let app = launchControlsReader()
+        let app = launchControlsReader(readAhead: false)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         waitForStableViewport(app)
         app.textViews["reader.text"].swipeUp()
@@ -234,7 +234,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testCachedSearchNavigatesOriginalHitWithoutNetworkAndRestores() async throws {
-        let app = launchControlsReader()
+        let app = launchControlsReader(readAhead: false)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         waitForStableViewport(app)
         app.buttons["reader.previous"].tap()
@@ -1208,7 +1208,7 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor func testGlobalPrefetchToggleCachesTwoAndSurvivesRelaunch() async throws {
+    @MainActor func testReadAheadIsOnByDefaultAndTheToggleStopsAndStartsIt() async throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
         app.launchEnvironment["READER_UI_SCENARIO"] = "offline"
@@ -1217,34 +1217,61 @@ final class ReaderUITests: XCTestCase {
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
-        app.buttons["reader.typography"].tap()
-        let toggle = app.switches["offline.prefetch"]
-        for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
-        XCTAssertEqual(toggle.value as? String, "0")
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        wait(app) { toggle.value as? String == "1" }
-        capture("offline-global-prefetch-enabled")
-        app.buttons["Done"].tap()
-        wait(app) { self.state(app).contains("cached=2;cacheRunning=false;") }
+        // No setting is touched: a fresh install reads ahead by itself.
+        wait(app) { self.state(app).contains("cached=10;cacheRunning=false;") }
         app.buttons["reader.contents"].tap(); app.buttons["contents.details"].tap()
-        wait(app) { app.staticTexts["offline.count"].label == "3 of 26 chapters available offline" }
+        wait(app) { app.staticTexts["offline.count"].label == "11 of 26 chapters available offline" }
+        capture("offline-read-ahead-default-on")
         app.terminate()
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
         app.launch()
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
+        wait(app) { self.state(app).contains("cached=10;cacheRunning=false;") }
+        let toggle = app.switches["offline.prefetch"]
+        setReadAhead(app, toggle, on: false)
+        capture("offline-read-ahead-turned-off")
+        // Off: turning to chapter 2 caches nothing new.
+        app.buttons["reader.next"].tap()
+        wait(app) { self.state(app).contains("chapter=1;") }
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        app.buttons["reader.contents"].tap(); app.buttons["contents.details"].tap()
+        wait(app) { app.staticTexts["offline.count"].label == "11 of 26 chapters available offline" }
+        app.buttons["details.read"].tap()
+        XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
+        // On again at chapter 2: read-ahead covers chapters 3 to 12, so chapter 12 is added.
+        setReadAhead(app, toggle, on: true)
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        wait(app) { self.state(app).contains("cacheRunning=false;") }
+        app.buttons["reader.contents"].tap(); app.buttons["contents.details"].tap()
+        wait(app) { app.staticTexts["offline.count"].label == "12 of 26 chapters available offline" }
+        capture("offline-read-ahead-turned-on-again")
+        app.buttons["details.read"].tap()
+        XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
+        setReadAhead(app, toggle, on: false)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
+        XCTAssertTrue(app.buttons["reader.typography"].waitForExistence(timeout: 15))
         app.buttons["reader.typography"].tap()
         for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
-        XCTAssertEqual(toggle.value as? String, "1")
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        wait(app) { toggle.value as? String == "0" }
+        XCTAssertEqual(toggle.value as? String, "0")
         app.terminate()
+    }
+    @MainActor private func setReadAhead(_ app: XCUIApplication, _ toggle: XCUIElement, on: Bool) {
+        app.buttons["reader.typography"].tap()
+        for _ in 0..<5 where !toggle.isHittable { app.swipeUp() }
+        XCTAssertEqual(toggle.value as? String, on ? "0" : "1")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        wait(app) { toggle.value as? String == (on ? "1" : "0") }
+        app.buttons["Done"].tap()
     }
 
     @MainActor func testOfflineCacheControlsAndProtectedRelaunch() async throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_READ_AHEAD"] = "off"
         app.launchEnvironment["READER_UI_SCENARIO"] = "offline"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
@@ -1400,6 +1427,7 @@ final class ReaderUITests: XCTestCase {
     @MainActor func testShelfReadingRecoveryAndResume() throws {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_READ_AHEAD"] = "off"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
@@ -1964,7 +1992,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testHiddenControlsKeepFailureAndCancelActionsAvailable() {
-        let app = launchControlsReader(openSecondChapter: false)
+        let app = launchControlsReader(openSecondChapter: false, readAhead: false)
         let firstIdentity = readingIdentity(app)
         app.buttons["fixture.hold"].tap()
         app.buttons["reader.next"].tap()
@@ -2015,9 +2043,11 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor private func launchControlsReader(openSecondChapter: Bool = true, observeCopy: Bool = false) -> XCUIApplication {
+    @MainActor private func launchControlsReader(openSecondChapter: Bool = true, observeCopy: Bool = false,
+                                                  readAhead: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"
+        if !readAhead { app.launchEnvironment["READER_UI_READ_AHEAD"] = "off" }
         app.launchEnvironment["READER_UI_SCENARIO"] = "two-page"
         if observeCopy { app.launchEnvironment["READER_UI_OBSERVE_COPY"] = "1" }
         XCUIDevice.shared.orientation = .portrait
