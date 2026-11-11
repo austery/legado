@@ -154,9 +154,10 @@ Read the radius rules with these dependency edges in mind:
   The engine does not link `:ui`.
 - The same `data`, `core` and `foundation` modules are also consumed by the
   original upstream clients: `:ui` (`ui/build.gradle.kts:153-156`), `:app`
-  (`app/build.gradle.kts:328`), `:desktop` and `:desktop-core` through `:ui`
-  (`desktop/build.gradle.kts:181`, `desktop-core/build.gradle.kts:24`),
-  `:headless` (`headless/build.gradle.kts:39`) and `ohosApp`.
+  (`app/build.gradle.kts:328`), `:desktop` through `:ui`
+  (`desktop/build.gradle.kts:181`) and `ohosApp`. Upstream `30d306894` merged
+  the former `:desktop-core` into `:desktop` and replaced `:headless` with the
+  desktop `--server` mode.
 - Keeping upstream integration cheap is a project goal
   ([ADR-001](../architecture/decisions/ADR-001-native-experience-and-upstream-ownership.md#owner-confirmed-policy-round-1-2026-10-13)).
   Every edit to an upstream-owned file is a future merge conflict as well as a
@@ -545,9 +546,10 @@ app on a Mac is possible but is not a target.
 Paths:
 
 - the clients Lei named: `ui/` (original Compose UI), `app/` (Android),
-  `desktop/`, `desktop-core/`, `ohosApp/`, `iosApp/` (upstream Compose iOS app);
+  `desktop/` (including its `--server` mode), `ohosApp/`, `iosApp/` (upstream
+  Compose iOS app);
 - upstream tooling with no consumer in the native product (not named by Lei;
-  same evidence: the engine does not link them): `headless/`, `benchmark/`;
+  same evidence: the engine does not link it): `benchmark/`;
 - modules only those clients use: `modules/treeview`, `modules/web`,
   `modules/quickjs-android-native` and the `modules/*-ohos` modules.
 
