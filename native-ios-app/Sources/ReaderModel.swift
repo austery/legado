@@ -265,6 +265,8 @@ final class ReaderModel: ObservableObject {
     private var statusGeneration = UUID()
     private var foregroundActive = true
     private var prefetchEnabled = false
+    /// True while a run the reader asked for owns the cache lane. Read-ahead never replaces it.
+    @Published private(set) var manualCacheRunning = false
     var isShelved: Bool {
         guard let book else { return false }
         return shelf.contains { $0.book.id == book.id && $0.book.sourceId == book.sourceId }
@@ -290,30 +292,34 @@ final class ReaderModel: ObservableObject {
     }
     func cacheNextChapters(prefetch: Bool = false) {
         guard isShelved, let book, !book.isLocal, foregroundActive, !busy,
-              !prefetch || (prefetchEnabled && content != nil) else { return }
+              !prefetch || (prefetchEnabled && content != nil && !manualCacheRunning) else { return }
         cancelCaching()
         cacheNotice = nil
+        manualCacheRunning = !prefetch
         let generation = UUID(); cacheGeneration = generation
         cacheRequest = engine.cacheNextChapters(sourceId: book.sourceId, bookId: book.id,
             afterChapterId: content?.chapter.id, prefetch: prefetch) { [weak self] reply in
             guard let self, self.cacheGeneration == generation,
                   self.book?.id == book.id, self.book?.sourceId == book.sourceId else { return }
+            // A finished run keeps its result on screen; read-ahead waits for the next displayed chapter.
             if let progress = reply as? CacheProgress {
                 self.cacheProgress = progress
-                if !progress.running { self.cacheRequest = nil; self.refreshOfflineStatus() }
+                if !progress.running { self.cacheRequest = nil; self.manualCacheRunning = false; self.refreshOfflineStatus() }
             } else if let failure = reply as? EngineFailure {
-                self.cacheNotice = failure.message; self.cacheRequest = nil
+                self.cacheNotice = failure.message; self.cacheRequest = nil; self.manualCacheRunning = false
                 self.refreshOfflineStatus()
             }
         }
     }
     func cancelCaching() {
+        manualCacheRunning = false
         cacheRequest?.cancel(); cacheRequest = nil
         engine.cancelCaching()
     }
     func setPrefetchEnabled(_ enabled: Bool) {
         prefetchEnabled = enabled
-        if enabled { cacheNextChapters(prefetch: true) } else { cancelCaching() }
+        // Turning read-ahead off, or the view reapplying "off", leaves the reader's own run alone.
+        if enabled { cacheNextChapters(prefetch: true) } else if !manualCacheRunning { cancelCaching() }
     }
     func setForegroundActive(_ active: Bool) {
         foregroundActive = active

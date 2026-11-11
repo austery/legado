@@ -364,7 +364,7 @@ struct ReaderScreen: View {
             }
             Button(model.cacheProgress?.failedChapterIds.isEmpty == false ? "Retry missing or failed chapters" : "Cache next 20 chapters") {
                 model.cacheNextChapters()
-            }.disabled(model.busy || model.book?.isLocal == true || model.cacheProgress?.running == true).accessibilityIdentifier("offline.cache")
+            }.disabled(model.busy || model.book?.isLocal == true || model.manualCacheRunning).accessibilityIdentifier("offline.cache")
             Button("Clear optional cached chapters", role: .destructive) { model.prepareCacheClear() }
                 .disabled(model.busy).accessibilityIdentifier("offline.clear")
             if let notice = model.cacheNotice { Text(notice).font(.caption).accessibilityIdentifier("offline.notice") }
@@ -632,9 +632,9 @@ struct ReaderScreen: View {
                     Toggle("Dark appearance", isOn: $preferences.style.dark).accessibilityIdentifier("appearance.dark")
                 }
                 Section("Offline reading") {
-                    Toggle("Prefetch next 2 chapters", isOn: $preferences.prefetchNextTwo)
+                    Toggle("Read ahead: cache next 10 chapters", isOn: $preferences.prefetchNextTwo)
                         .accessibilityIdentifier("offline.prefetch")
-                    Text("While reading in the foreground. Applies to every shelved book; off by default.")
+                    Text("While reading in the foreground. Applies to every shelved book; on by default.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {

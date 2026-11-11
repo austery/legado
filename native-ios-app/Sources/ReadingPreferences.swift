@@ -31,6 +31,8 @@ final class ReadingPreferences: ObservableObject {
     @Published var shelfLayout: ShelfLayout {
         didSet { defaults.set(shelfLayout.rawValue, forKey: Self.shelfLayoutKey) }
     }
+    /// Read-ahead while reading. The property and stored key keep their first names so an
+    /// earlier explicit choice survives; an absent key now means on.
     @Published var prefetchNextTwo: Bool {
         didSet { defaults.set(prefetchNextTwo, forKey: Self.prefetchKey) }
     }
@@ -46,7 +48,7 @@ final class ReadingPreferences: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         shelfLayout = defaults.string(forKey: Self.shelfLayoutKey).flatMap(ShelfLayout.init(rawValue:)) ?? .grid
-        prefetchNextTwo = defaults.bool(forKey: Self.prefetchKey)
+        prefetchNextTwo = defaults.object(forKey: Self.prefetchKey) as? Bool ?? true
         let saved = defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode(ReadingStyle.self, from: $0) }
         var value = saved ?? ReadingStyle()

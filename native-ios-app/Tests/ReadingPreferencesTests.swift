@@ -13,14 +13,23 @@ final class ReadingPreferencesTests: XCTestCase {
             XCTAssertEqual(ReadingPreferences(defaults: defaults).shelfLayout, .grid)
         }
     }
-    func testPrefetchIsOptInAndPersistsAcrossStores() {
+    func testReadAheadIsOnByDefaultAndAnExplicitChoicePersistsAcrossStores() {
         withDefaults { defaults in
             let preferences = ReadingPreferences(defaults: defaults)
-            XCTAssertFalse(preferences.prefetchNextTwo)
-            preferences.prefetchNextTwo = true
-            XCTAssertTrue(ReadingPreferences(defaults: defaults).prefetchNextTwo)
+            XCTAssertTrue(preferences.prefetchNextTwo)
+            XCTAssertNil(defaults.object(forKey: ReadingPreferences.prefetchKey))
             preferences.prefetchNextTwo = false
             XCTAssertFalse(ReadingPreferences(defaults: defaults).prefetchNextTwo)
+            preferences.prefetchNextTwo = true
+            XCTAssertTrue(ReadingPreferences(defaults: defaults).prefetchNextTwo)
+        }
+    }
+    func testReadAheadKeepsAChoiceStoredBeforeTheDefaultChanged() {
+        withDefaults { defaults in
+            defaults.set(false, forKey: ReadingPreferences.prefetchKey)
+            XCTAssertFalse(ReadingPreferences(defaults: defaults).prefetchNextTwo)
+            defaults.set(true, forKey: ReadingPreferences.prefetchKey)
+            XCTAssertTrue(ReadingPreferences(defaults: defaults).prefetchNextTwo)
         }
     }
     private func withDefaults(_ body: (UserDefaults) throws -> Void) rethrows {

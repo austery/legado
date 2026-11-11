@@ -27,7 +27,7 @@ Future work must not regress these journeys. Each one has its own delivery evide
 | Shelf admission, paragraph resume after relaunch | SPEC-003 |
 | Shelf groups, grid/list, six sort modes | [PR #55](https://github.com/austery/legado/pull/55), [PR #64](https://github.com/austery/legado/pull/64) |
 | Explicit source switching | [SPEC-005](SPEC-005-explicit-source-switching.md) |
-| Bounded offline cache (next 20) and next-2 prefetch | [SPEC-006](SPEC-006-offline-reading-and-cache-controls.md) |
+| Bounded offline cache (next 20) and next-10 read-ahead, on by default | [SPEC-006](SPEC-006-offline-reading-and-cache-controls.md), [Issue #96](https://github.com/austery/legado/issues/96) |
 | Source management and discovery | [SPEC-007](SPEC-007-native-source-management.md), [SPEC-008](SPEC-008-native-discovery.md) |
 | Source-bound paragraph bookmarks | [PR #62](https://github.com/austery/legado/pull/62) |
 | Current-chapter find and cached-chapter search | [SPEC-009](SPEC-009-native-in-chapter-find.md), [PR #65](https://github.com/austery/legado/pull/65) |

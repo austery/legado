@@ -246,6 +246,10 @@ struct FixtureReaderApp: App {
         if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.storageKey)
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.prefetchKey)
+            // Journeys about foreground loading or manual caching need chapters that are not cached yet.
+            if ProcessInfo.processInfo.environment["READER_UI_READ_AHEAD"] == "off" {
+                UserDefaults.standard.set(false, forKey: ReadingPreferences.prefetchKey)
+            }
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.shelfLayoutKey)
             UserDefaults.standard.removeObject(forKey: "bookshelfSort")
             UserDefaults.standard.removeObject(forKey: "fixture.switchCommitted")

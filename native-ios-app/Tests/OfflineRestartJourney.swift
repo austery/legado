@@ -57,7 +57,7 @@ enum OfflineRestartJourney {
         }
         // Unlike explicit caching, prefetch must leave the single configured permit available.
         XCTAssertEqual((speculative as? CacheProgress)?.completed, 0)
-        XCTAssertEqual((speculative as? CacheProgress)?.failedChapterIds.count, 2)
+        XCTAssertEqual((speculative as? CacheProgress)?.failedChapterIds.count, 5)
         let status = await call { engine.offlineStatus(sourceId: base, bookId: book.id, completion: $0) }
         let available = try XCTUnwrap(status as? OfflineStatus).chapters.filter { $0.availability == .available }
         XCTAssertEqual(available.count, 21)
