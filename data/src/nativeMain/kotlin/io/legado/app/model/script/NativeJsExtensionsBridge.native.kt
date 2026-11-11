@@ -32,8 +32,6 @@ import com.script.jsdispatch.generated.NativeGeneratedDispatch
 import io.legado.app.napi.quickjs.JSContext
 import io.legado.app.napi.quickjs.JSValue
 import io.legado.app.napi.quickjs.qjs_EvalTypeGlobal
-import io.legado.app.napi.quickjs.JS_TAG_INT
-import io.legado.app.napi.quickjs.qjs_ValueGetTag
 import io.legado.app.napi.quickjs.JS_TAG_NULL
 import io.legado.app.napi.quickjs.JS_TAG_UNDEFINED
 import io.legado.app.napi.quickjs.qjs_FreeCString
@@ -58,7 +56,6 @@ import io.legado.app.napi.quickjs.qjs_NewInt32
 import io.legado.app.napi.quickjs.qjs_NewString
 import io.legado.app.napi.quickjs.qjs_ValueGetBool
 import io.legado.app.napi.quickjs.qjs_ToCString
-import io.legado.app.napi.quickjs.qjs_ValueGetFloat64
 import io.legado.app.napi.quickjs.qjs_ValueGetInt
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CValue
@@ -94,11 +91,13 @@ import kotlinx.atomicfu.locks.synchronized
  * 3. [NativeJsEngine.toJsValue] 识别 JsExtensionsCommon 时, 注册 handle, 调 `__createJavaObj(handle)` 得到 JS 对象;
  * 4. JS 调用 `java.md5Encode("str")` → JS 层 `__nativeDispatch(handle, 101, ["str"])` → C 回调 → Kotlin 分派。
  *
- * # 为什么不用 JSClassDef + opaque
+ * # 为什么 JsExtensionsCommon 桥不用 JSClassDef + opaque
  * JSClassDef + opaque + StableRef 是更"正规"的方案, 但实现复杂 (finalizer / StableRef 生命周期管理),
  * 且 cinterop 绑定 JSClassDef 结构体的 finalizer 函数指针类型映射容易出错。
  * 本方案用 handle 表 + JS 层闭包捕获 handle, 避免了 C 层面的上下文传递,
  * 只需 1 个 staticCFunction (C 函数不能捕获上下文), 所有方法分派在 Kotlin 层完成。
+ * ImageOps 需要脚本跨语句真实持有图片对象, 由 NativeImageBridge.native.kt 的顶层包装函数单独用
+ * JSClassDef + opaque + func_data 承载, 不复用本桥的 eval 末尾数字 handle 协议。
  *
  * # handle 生命周期
  * - handleTable 用强引用, 防止 Kotlin 对象在 JS 使用期间被 GC;
@@ -178,12 +177,18 @@ object NativeJsExtensionsBridge {
     /**
      * 注册 dispatch 返回的新对象, 并把 handle 挂到当前 eval scope 上。
      *
-     * 只登记到全局表而不挂 scope 的 handle 在 eval 结束后无人注销 (强引用残留),
-     * 随每次脚本调用累积; 挂到 scope 后与 [NativeJsEngine] 的 scope 关闭回收同路。
+     * 必须先取得真实 owner scope 再注册: 无当前 scope 时直接报错, 不产生无人注销的强引用 handle。
      */
     fun registerScopedObject(obj: Any): Long {
+        val scope = NativeJsEngine.currentScope()
+            ?: error("registerScopedObject: 当前线程无 JS 执行 scope, 无法登记 handle 归属")
+        return registerOwnedObject(obj, scope)
+    }
+
+    /** 注册到调用方明确持有的 owner scope ([createJsObject] 的 scope 参数)。 */
+    private fun registerOwnedObject(obj: Any, scope: NativeJsScope): Long {
         val handle = registerObject(obj)
-        NativeJsEngine.currentScope()?.handles?.add(handle)
+        scope.handles.add(handle)
         return handle
     }
 
@@ -215,8 +220,7 @@ object NativeJsExtensionsBridge {
         ext: Any,
         scope: NativeJsScope
     ): CValue<JSValue> {
-        val handle = registerObject(ext)
-        scope.handles.add(handle)
+        val handle = registerOwnedObject(ext, scope)
         // 调用 JS 工厂函数 __createJavaObj(handle) 或 __createCryptoObj(handle)
         val factoryFn = when (ext) {
             is SymmetricCrypto -> "__createCryptoObj"
@@ -281,12 +285,8 @@ object NativeJsExtensionsBridge {
         val ctxNotNull = ctx ?: return jsUndefined()
         if (argc < 3 || argv == null) return jsUndefined()
         try {
-            // Numeric JS literals use the integer tag while small; reading their
-            // union as a double produces zero and silently loses every host call.
-            val handleValue = argv[0L].readValue()
-            val handle = if (qjs_ValueGetTag(handleValue) == JS_TAG_INT)
-                qjs_ValueGetInt(handleValue).toLong()
-            else qjs_ValueGetFloat64(handleValue).toLong()
+            val handle = readJsNumberValue(argv[0L].readValue())?.toLong()
+                ?: return jsUndefined()
             val methodId = qjs_ValueGetInt(argv[1L].readValue())
             val argsArray = argv[2L].readValue()
             val obj = getObject(handle) ?: return jsUndefined()
@@ -328,7 +328,7 @@ object NativeJsExtensionsBridge {
                 obj,
                 methodId,
                 jsArrayToList(ctx, argsArray),
-                ::registerObject
+                { registerScopedObject(it) }
             )
         if (generated !== NativeDispatchResult.NONE) return nativeResultToJs(ctx, generated)
         // 生成表段 (5000-5999) 未命中 = KSP 漏生成 / jsapi.nativeTargets 配置漂移 / 新增方法没重新生成。
@@ -1278,8 +1278,7 @@ function __createJsUrlObj(handle) {
             return qjs_ValueGetBool(v) != 0
         }
         if (qjs_IsNumber(v) != 0) {
-            return if (qjs_ValueGetTag(v) == JS_TAG_INT) qjs_ValueGetInt(v)
-            else qjs_ValueGetFloat64(v)
+            return readJsNumberValue(v)
         }
         if (qjs_IsString(v) != 0) {
             return jsValueToString(ctx, v)
@@ -1301,7 +1300,7 @@ function __createJsUrlObj(handle) {
      *
      * `JS_SetPropertyStr` 转移 value 所有权, 无需额外 JS_FreeValue。
      */
-    private fun jsThrowError(ctx: CPointer<JSContext>, message: String): CValue<JSValue> {
+    internal fun jsThrowError(ctx: CPointer<JSContext>, message: String): CValue<JSValue> {
         val err = JS_NewError(ctx)
         JS_SetPropertyStr(ctx, err, "message", qjs_NewString(ctx, message))
         return JS_Throw(ctx, err)

@@ -322,6 +322,12 @@ fun KotlinDependencyHandler.sharedJvmAndroidDeps() {
     implementation(sharedLibs.findLibrary("gson").get())
     api(project(":modules:quickjs"))
     api(sharedLibs.findLibrary("okhttp").get())
+    // 扩展 dex 按 FQCN 直调 okhttp3.zstd.Zstd / okhttp3.brotli.Brotli(BrotliInterceptor)与
+    // com.squareup.zstd.okio.OkioZstd.zstdCompress/zstdDecompress, 宿主源码零直调, 只靠依赖
+    // 传递进两端 classpath; 与 okhttp 本体同属宿主向扩展暴露的类路径契约面, 故 api
+    // (Android 变体自动选 zstd-kmp-okio-android AAR; JVM 变体选 zstd-kmp-okio-jvm jar)
+    api(sharedLibs.findLibrary("okhttp-zstd").get())
+    api(sharedLibs.findLibrary("okhttp-brotli").get())
     implementation(sharedLibs.findLibrary("coil3-network-okhttp").get())
     // catvod 壳类 (com.github.catvod.net.OkHttp) 的 ArrayMap 契约面; 原先靠 coil3 传递引入,
     // 上游 Coil 变更即编译断裂, 显式声明与 app 同版本
@@ -454,7 +460,7 @@ kotlin {
                 sharedJvmAndroidDeps()
                 implementation(libs.kxml2)
                 implementation(libs.androidx.sqlite.bundled)
-                // EpubFilePlatform.jvm 的 Skia 图片编码 (与 desktop-core 同款 skiko-awt)
+                // EpubFilePlatform.jvm 的 Skia 图片编码 (与 :desktop 同款 skiko-awt)
                 implementation("org.jetbrains.skiko:skiko-awt:0.144.6")
                 // TVBox 配置/站点解析用 org.json (Android 走 SDK 内置, JVM 走同名构件)
                 implementation(sharedLibs.findLibrary("json").get())

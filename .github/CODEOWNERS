@@ -66,10 +66,8 @@
 /ui/ @austery
 /app/ @austery
 /desktop/ @austery
-/desktop-core/ @austery
 /ohosApp/ @austery
 /iosApp/ @austery
-/headless/ @austery
 /benchmark/ @austery
 /modules/treeview/ @austery
 /modules/web/ @austery

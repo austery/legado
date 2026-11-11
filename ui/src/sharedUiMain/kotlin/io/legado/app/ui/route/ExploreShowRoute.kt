@@ -1,6 +1,7 @@
 package io.legado.app.ui.route
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -16,6 +17,7 @@ import io.legado.app.help.book.isRss
 import io.legado.app.help.book.isVideo
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.showSourceLogin
+import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.book.explore.ExploreShowScreen
 import io.legado.app.ui.book.explore.ExploreShowScreenModel
 import io.legado.app.ui.book.explore.ExploreShowUiActions
@@ -23,6 +25,7 @@ import io.legado.app.ui.book.explore.ExploreShowUiEvent
 import io.legado.app.ui.book.explore.PluginFilterSource
 import io.legado.app.ui.book.search.SearchScope
 import io.legado.app.ui.bookshelf.LocalBookCoverSlot
+import io.legado.app.ui.bookshelf.LocalCoverRatioLayout
 import io.legado.app.ui.bookshelf.ShelfVideoItem
 import io.legado.app.ui.bookshelf.toCoverBook
 import io.legado.app.ui.compose.component.ExploreOptionsRow
@@ -102,7 +105,6 @@ fun ExploreShowRoute(
 
     // 首次加载 + 初始化数据 (对照 Activity.onActivityCreated: startLoad + initData)
     LaunchedEffect(vm, route) {
-        screenModel.dispatch(ExploreShowUiEvent.StartLoad)
         when (route) {
             // 应用内跳转: 已有 BookSource 直传, 不查源 (用户要求)
             is AppRoute.ExploreShow -> vm.initData(route.source, route.title, route.exploreUrl)
@@ -119,22 +121,34 @@ fun ExploreShowRoute(
         }
     }
 
-    // VM 事件流 → ScreenModel 事件桥接 (对照 Activity.observe LiveData)
+    // VM 当前请求状态 → ScreenModel: 只消费同一份 books/hasNext/loading/error/notice。
     LaunchedEffect(vm) {
-        vm.booksFlow.collect { books ->
-            screenModel.dispatch(
-                ExploreShowUiEvent.BooksLoaded(
-                    books = books,
-                    hasNextPage = vm.hasNextPage,
-                    emptyText = emptyText,
-                    bottomLineText = bottomLineText,
+        vm.pageState.collect { page ->
+            if (page.loading) {
+                screenModel.dispatch(
+                    if (page.books.isEmpty()) {
+                        ExploreShowUiEvent.StartLoad
+                    } else {
+                        ExploreShowUiEvent.LoadMore
+                    }
                 )
-            )
-        }
-    }
-    LaunchedEffect(vm) {
-        vm.errorFlow.collect { msg ->
-            screenModel.dispatch(ExploreShowUiEvent.ErrorLoaded(msg, errorLoadText))
+            } else if (page.error != null) {
+                if (page.books.isEmpty()) {
+                    screenModel.dispatch(ExploreShowUiEvent.ClearBooks)
+                }
+                screenModel.dispatch(ExploreShowUiEvent.ErrorLoaded(page.error, errorLoadText))
+                page.notice?.let { Toasters.get().toast(it) }
+            } else {
+                screenModel.dispatch(
+                    ExploreShowUiEvent.BooksLoaded(
+                        books = page.books,
+                        hasNextPage = page.hasNextPage,
+                        emptyText = emptyText,
+                        bottomLineText = bottomLineText,
+                    )
+                )
+                page.notice?.let { Toasters.get().toast(it) }
+            }
         }
     }
     LaunchedEffect(vm) {
@@ -172,11 +186,6 @@ fun ExploreShowRoute(
                     vm.pluginExploreFilters,
                 )
             )
-        }
-    }
-    LaunchedEffect(vm) {
-        vm.optionsReadyFlow.collect {
-            screenModel.dispatch(ExploreShowUiEvent.OptionsVersionBump)
         }
     }
 
@@ -314,6 +323,10 @@ fun ExploreShowRoute(
                     vm.explore(true)
                 }
             }
+
+            override fun onPluginFilterEditingChanged(editing: Boolean) {
+                if (editing) vm.pausePagination() else vm.resumePagination()
+            }
         }
     }
 
@@ -338,7 +351,8 @@ fun ExploreShowRoute(
         )
     }
 
-    // 错误详情对话框 (支持查看详情与一键复制, 替代原版仅重试的简易弹窗)
+    // 错误详情对话框 (支持查看详情与一键复制); 对照原版 LoadMoreView.showErrorDialog:
+    // 发现页不挂重试监听, 故弹窗无重试按钮
     if (showErrorDialog) {
         TextDialog(
             title = errorTitle,
@@ -347,39 +361,52 @@ fun ExploreShowRoute(
         )
     }
 
-    ExploreShowScreen(
-        state = state,
-        actions = actions,
-        optionsRowSlot = {
-            // 参数 chip 行: 读 vm.exploreOptions, 选中变化调 onExploreOptionChanged 重载
-            ExploreOptionsRow(
-                options = vm.exploreOptions,
-                optionsVersion = state.optionsVersion,
-                onOptionSelected = actions::onExploreOptionChanged,
-            )
-        },
-        // 视频卡: 复用 ShelfVideoItem (item_explore_video 的 shared Compose 版), 封面走 LocalBookCoverSlot
-        videoItemSlot = { book, inBookshelf, onClick, onLongClick ->
-            ShelfVideoItem(
-                book = book.toCoverBook(inBookshelf),
-                coverReloadTick = state.bookshelfVersion,
-                onClick = onClick,
-                onLongClick = onLongClick,
-                inBookshelf = inBookshelf,
-                coverSlot = { b, modifier, coverRatio, coverReloadTick ->
-                    LocalBookCoverSlot.current(b, modifier, coverRatio, coverReloadTick)
-                },
-            )
-        },
-        // 封面: 复用 LocalBookCoverSlot (默认 SharedBookCover, 各端统一)
-        coverSlot = { book, inBookshelf, coverRatio, modifier ->
-            // toCoverBook 结果缓存一次, 避免每次重组新建 Book (对照 SearchScreen coverSlot 写法)
-            LocalBookCoverSlot.current(
-                remember(book, inBookshelf) { book.toCoverBook(inBookshelf) },
-                modifier,
-                coverRatio,
-                0,
-            )
-        },
-    )
+    // 封面比例布局状态: 与本页结果集同寿命 (由 ScreenModel 持有), 页面组合重建经此处取回
+    CompositionLocalProvider(
+        LocalCoverRatioLayout provides screenModel.coverRatioLayout,
+    ) {
+        ExploreShowScreen(
+            state = state,
+            actions = actions,
+            optionsRowSlot = {
+                val options by vm.optionsFlow.collectAsState()
+                ExploreOptionsRow(
+                    options = options,
+                    ownerKey = vm.optionsOwnerKey,
+                    onSelect = { name, value ->
+                        if (vm.selectOption(name, value)) actions.onExploreOptionChanged()
+                    },
+                    onMultiSelect = { name, values ->
+                        if (vm.selectOptions(name, values)) actions.onExploreOptionChanged()
+                    },
+                    onReset = { name ->
+                        if (vm.resetOption(name)) actions.onExploreOptionChanged()
+                    },
+                )
+            },
+            // 视频卡: 复用 ShelfVideoItem (item_explore_video 的 shared Compose 版), 封面走 LocalBookCoverSlot
+            videoItemSlot = { book, inBookshelf, onClick, onLongClick ->
+                ShelfVideoItem(
+                    book = book.toCoverBook(inBookshelf),
+                    coverReloadTick = state.bookshelfVersion,
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                    inBookshelf = inBookshelf,
+                    coverSlot = { b, modifier, coverRatio, coverReloadTick ->
+                        LocalBookCoverSlot.current(b, modifier, coverRatio, coverReloadTick)
+                    },
+                )
+            },
+            // 封面: 复用 LocalBookCoverSlot (默认 SharedBookCover, 各端统一)
+            coverSlot = { book, inBookshelf, coverRatio, modifier ->
+                // toCoverBook 结果缓存一次, 避免每次重组新建 Book (对照 SearchScreen coverSlot 写法)
+                LocalBookCoverSlot.current(
+                    remember(book, inBookshelf) { book.toCoverBook(inBookshelf) },
+                    modifier,
+                    coverRatio,
+                    0,
+                )
+            },
+        )
+    }
 }

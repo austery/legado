@@ -7,7 +7,7 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.config.NativeAppConfigAccessor
 import io.legado.app.help.config.PreferenceProvider
-import io.legado.app.model.webBook.SourcePageOutcome
+import io.legado.app.model.webBook.SourcePageReport
 import io.legado.app.model.webBook.SourceSearchGroup
 import io.legado.app.model.webBook.SearchModel
 import io.legado.app.ui.book.search.SearchScope
@@ -51,8 +51,9 @@ class SearchModelSessionTest {
             })
         try {
             model.search(1L, "Fixture")
-            assertEquals("failed", withTimeout(5000) { callback.rounds.receive() })
-            model.search(1L, "Fixture")
+            // Upstream b3f36f905: a source failure finishes the round; only an explicit retry re-requests it.
+            assertEquals("finished:false", withTimeout(5000) { callback.rounds.receive() })
+            model.retrySource(source.bookSourceUrl)
             assertEquals("finished:false", withTimeout(5000) { callback.rounds.receive() })
             assertEquals(listOf(1, 1), requestedPages)
         } finally {
@@ -136,9 +137,9 @@ class SearchModelSessionTest {
         }) { model, callback ->
             model.search(1L, "Fixture")
             val events = List(3) { callback.pages.receive() }.associateBy { it.sourceId }
-            assertEquals(SourcePageOutcome.Success(false, false), events.getValue(found.bookSourceUrl).outcome)
-            assertEquals(SourcePageOutcome.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
-            val failure = events.getValue(failed.bookSourceUrl).outcome as SourcePageOutcome.Failure
+            assertEquals(SourcePageReport.Success(false, false), events.getValue(found.bookSourceUrl).outcome)
+            assertEquals(SourcePageReport.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
+            val failure = events.getValue(failed.bookSourceUrl).outcome as SourcePageReport.Failure
             assertEquals("Controlled source failure", failure.error.message)
             assertEquals("finished:false", callback.rounds.receive())
             callback.titlesUntil(listOf("Retained title"))
@@ -155,9 +156,9 @@ class SearchModelSessionTest {
         }) { model, callback ->
             model.search(1L, "Fixture")
             val events = List(2) { callback.pages.receive() }.associateBy { it.sourceId }
-            val outcome = events.getValue(timed.bookSourceUrl).outcome as SourcePageOutcome.Failure
+            val outcome = events.getValue(timed.bookSourceUrl).outcome as SourcePageReport.Failure
             assertTrue(outcome.error is TimeoutCancellationException)
-            assertEquals(SourcePageOutcome.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
+            assertEquals(SourcePageReport.Success(false, true), events.getValue(empty.bookSourceUrl).outcome)
             assertEquals("finished:false", callback.rounds.receive())
         }
     }
@@ -171,9 +172,10 @@ class SearchModelSessionTest {
             page(current, "Page $number", more = number == 1)
         }) { model, callback ->
             model.search(1L, "Fixture"); assertEquals("finished:true", callback.rounds.receive())
-            model.search(1L, "Fixture"); assertEquals("failed", callback.rounds.receive())
+            // Upstream b3f36f905: a source failure finishes the round instead of cancelling it.
+            model.search(1L, "Fixture"); assertEquals("finished:false", callback.rounds.receive())
             model.retrySource(source.bookSourceUrl)
-            assertEquals(SourcePageOutcome.Success(false, false), callback.pageUntil(source.bookSourceUrl, 1, 2).outcome)
+            assertEquals(SourcePageReport.Success(false, false), callback.pageUntil(source.bookSourceUrl, 1, 2).outcome)
             val snapshot = callback.titlesUntil(listOf("Page 1", "Page 2"))
             assertEquals(listOf(1, 2, 2), requests)
             assertEquals(1, snapshot.single().generation)
@@ -193,7 +195,7 @@ class SearchModelSessionTest {
             model.loadMore(); assertEquals("finished:false", callback.rounds.receive())
             assertEquals(1, attempts.value)
             model.retrySource(failed.bookSourceUrl)
-            assertEquals(SourcePageOutcome.Success(false, false), callback.pageUntil(failed.bookSourceUrl, 1, 1).outcome)
+            assertEquals(SourcePageReport.Success(false, false), callback.pageUntil(failed.bookSourceUrl, 1, 1).outcome)
             callback.titlesUntil(listOf("Recovered title"))
             assertEquals(2, attempts.value)
         }
@@ -230,7 +232,7 @@ class SearchModelSessionTest {
                     val event = callback.pages.tryReceive().getOrNull() ?: break
                     events.add(event)
                 }
-                assertFalse(events.any { it.page == 2 && it.outcome is SourcePageOutcome.Success })
+                assertFalse(events.any { it.page == 2 && it.outcome is SourcePageReport.Success })
             } finally { releaseOld.complete(Unit) }
         }
     }
@@ -322,7 +324,7 @@ class SearchModelSessionTest {
     }
 
     @Test
-    fun queuedMainPagesKeepTheirOriginalGenerationAndShareRestartConcurrencyLimit() = runBlocking {
+    fun queuedMainPagesKeepTheirOriginalGenerationWhileARestartRunsOutsideTheCap() = runBlocking {
         val first = source("first")
         val second = source("second")
         val queued = source("queued")
@@ -358,18 +360,19 @@ class SearchModelSessionTest {
                 assertEquals(setOf("first", "second"), setOf(entered.receive(), entered.receive()))
                 model.restartSource(restarted.bookSourceUrl)
                 callback.titlesUntil(emptyList())
-                assertTrue(entered.tryReceive().isFailure, "A restart shares the existing page concurrency budget")
-                releaseFirst.complete(Unit)
+                // Upstream b3f36f905: a source restart runs outside the main chain's concurrency cap.
                 assertEquals("restarted", entered.receive())
-                releaseSecond.complete(Unit)
+                assertTrue(entered.tryReceive().isFailure, "Queued main work still waits for a main-chain slot")
+                releaseFirst.complete(Unit)
                 assertEquals("queued", entered.receive())
+                releaseSecond.complete(Unit)
                 callback.pageUntil(queued.bookSourceUrl, 0, 1)
                 releaseRestart.complete(Unit)
                 callback.pageUntil(restarted.bookSourceUrl, 1, 1)
                 model.loadMore()
                 model.closeAndJoin()
                 assertEquals(1, restartedRequests.value, "Queued pre-restart work must not fetch a second page")
-                assertEquals(2, peak.value)
+                assertEquals(3, peak.value)
             } finally {
                 releaseFirst.complete(Unit)
                 releaseSecond.complete(Unit)
@@ -463,6 +466,41 @@ class SearchModelSessionTest {
         }
     }
 
+    @Test
+    fun aNewerSearchStillStartsWhenAnOlderSearchFinishesResolvingFirst() = runBlocking {
+        val prior = runCatching { AppConfigProviders.get() }.getOrNull()
+        AppConfigProviders.register(NativeAppConfigAccessor(FixturePreferences()))
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val callback = RecordingCallback()
+        val older = source("older"); val newer = source("newer")
+        val gates = Channel<CompletableDeferred<List<BookSource>>>(Channel.UNLIMITED)
+        val model = SearchModel(owner, callback, sourceResolver = {
+            val gate = CompletableDeferred<List<BookSource>>()
+            gates.send(gate)
+            gate.await()
+        }, pageExecutor = { current, _, _ -> page(current, current.bookSourceName) })
+        try {
+            withTimeout(10_000) {
+                coroutineScope {
+                    val first = async { model.search(1L, "Fixture") }
+                    val firstGate = gates.receive()
+                    val second = async { model.search(2L, "Fixture") }
+                    val secondGate = gates.receive()
+                    firstGate.complete(listOf(older)); first.await()
+                    secondGate.complete(listOf(newer)); second.await()
+                    val groups = callback.titlesUntil(listOf("newer"))
+                    assertEquals(listOf(newer.bookSourceUrl), groups.map { it.source.bookSourceUrl })
+                }
+            }
+        } finally {
+            withContext(NonCancellable) {
+                model.closeAndJoin()
+                owner.cancel()
+                if (prior != null) AppConfigProviders.register(prior)
+            }
+        }
+    }
+
     private fun source(id: String) = BookSource(bookSourceUrl = "https://$id.invalid", bookSourceName = id)
 
     private fun page(source: BookSource, title: String, more: Boolean = false) = BookListPage(
@@ -491,7 +529,7 @@ class SearchModelSessionTest {
         }
     }
 
-    private data class PageEvent(val sourceId: String, val generation: Int, val page: Int, val outcome: SourcePageOutcome)
+    private data class PageEvent(val sourceId: String, val generation: Int, val page: Int, val outcome: SourcePageReport)
 
     private class RecordingCallback : SearchModel.CallBack {
         val resolved = Channel<List<BookSource>>(Channel.UNLIMITED)
@@ -505,7 +543,7 @@ class SearchModelSessionTest {
         override fun onSearchGroupsChanged(groups: List<SourceSearchGroup>) {
             this.groups.trySend(groups.map { it.copy(books = it.books.map { book -> book.copy() }) })
         }
-        override fun onSourcePageFinished(sourceId: String, generation: Int, page: Int, outcome: SourcePageOutcome) {
+        override fun onSourcePageFinished(sourceId: String, generation: Int, page: Int, outcome: SourcePageReport) {
             pages.trySend(PageEvent(sourceId, generation, page, outcome))
         }
         override fun onSearchFinish(isEmpty: Boolean, hasMore: Boolean) { rounds.trySend("finished:$hasMore") }

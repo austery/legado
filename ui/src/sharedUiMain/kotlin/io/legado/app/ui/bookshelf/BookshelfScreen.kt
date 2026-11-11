@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -212,6 +213,13 @@ fun BookshelfScreen(
     // 单一数据源: 页数据/顶栏计数均读 VM 缓存切片 (未访问过的分组无条目, 顶栏显示 "..")
     val booksCache by viewModel.booksCache.collectAsState()
     val groupBookCounts = remember(booksCache) { booksCache.mapValues { it.value.size } }
+    // 封面比例收敛: 活跃集合 = 全部分组书籍 + 分组封面 (与样式2同口径), 随书架数据增删清理;
+    // 持有者由路由层下发, 书架子树重建 (导航栏方位切换) 不丢
+    val coverRatioState = LocalCoverRatioLayout.current
+    val activeCoverResources = remember(groups, booksCache) {
+        shelfActiveCoverResources(groups, booksCache)
+    }
+    SideEffect { coverRatioState?.updateActiveResources(activeCoverResources) }
     val scope = rememberCoroutineScope()
 
     // 顶栏 tab 是否显示分组数量 (对照 app 端 AppConfig.bookshelfShowGroupCount)
@@ -614,7 +622,7 @@ internal fun DefaultBookshelfActions(
  * 书籍封面 (加载与渲染管线见 [SharedCoverContent])。
  *
  * 书籍特有的输入: 默认封面选图 seed = 书名 (无书名回落封面路径), 与详情/搜索/发现共用
- * [DecodedBitmapCache] 的已解码封面小表, 默认封面上叠竖排书名/作者, 挂共享元素转场端点。
+ * [DecodedBitmapCache] 的已登记封面复用, 默认封面上叠竖排书名/作者, 挂共享元素转场端点。
  *
  * 尺寸按 [coverRatio] 选 16:9 / 3:4, 由调用方给出的那一个维度反算另一个维度 (对齐原 View 版
  * `CoverImageView.onMeasure` 按 coverRatio 自适应)。
@@ -687,4 +695,18 @@ val LocalBookCoverSlot =
  */
 fun SearchBook.toCoverBook(inBookshelf: Boolean = false): Book = toBook().apply {
     if (!inBookshelf) addType(BookType.notShelf)
+}
+
+/**
+ * 书架活跃封面资源集合: 全部分组书籍 + 分组封面 (样式1 pager 全页与样式2 各层级条目的并集)。
+ * 持有者清理由此收敛: 书架数据增删即清理对应资源比例, 下钻/翻页等未减结果集的变化全保留。
+ */
+internal fun shelfActiveCoverResources(
+    groups: List<BookGroup>,
+    booksCache: Map<Long, List<Book>>,
+): Set<CoverResourceKey> = buildSet {
+    groups.forEach { add(it.coverResourceKey()) }
+    booksCache.values.forEach { books ->
+        books.forEach { add(it.coverResourceKey()) }
+    }
 }

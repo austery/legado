@@ -30,6 +30,7 @@ import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -49,8 +50,10 @@ import io.legado.app.model.webBook.PluginFilterSession
 import io.legado.app.ui.bookshelf.BookshelfBadge
 import io.legado.app.ui.bookshelf.CoverSlotRatio
 import io.legado.app.ui.bookshelf.KindLabels
+import io.legado.app.ui.bookshelf.LocalCoverRatioLayout
 import io.legado.app.ui.bookshelf.ShelfExploreListItem
 import io.legado.app.ui.bookshelf.ShelfGridItem
+import io.legado.app.ui.bookshelf.coverResourceKey
 import io.legado.app.ui.bookshelf.shelfCoverHeightDp
 import io.legado.app.ui.bookshelf.toCoverBook
 import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
@@ -108,7 +111,7 @@ import org.jetbrains.compose.resources.stringResource
  *     → coverSlot: @Composable (book, inBookshelf, coverRatio, modifier) -> Unit
  *     (现各端统一默认 SharedBookCover)
  *   - AndroidView { LinearLayout + setUpExploreOptions(viewModel.exploreOptions) }
- *     → optionsRowSlot: @Composable () -> Unit (内部读 state.optionsVersion + 调 actions.onExploreOptionChanged)
+ *     → optionsRowSlot: @Composable () -> Unit (读当前参数快照 + 调 actions.onExploreOptionChanged)
  *   - AndroidView { ItemExploreVideoBinding } (视频卡 ViewBinding)
  *     → videoItemSlot: @Composable (book, inBookshelf, onClick, onLongClick) -> Unit
  *
@@ -159,7 +162,6 @@ private sealed interface ExplorePreloadSignal {
  *   与 Activity 同名字段一一对应
  * - [canLogin]: 书源带登录入口 (对照原 hasLoginUrl), 菜单"书源登录"显隐
  * - [bookshelfVersion]: 书架增删时递增驱动重组刷新绿点/徽标
- * - [optionsVersion]: 参数 chip 结构变化时递增驱动 optionsRowSlot 重组重绑
  * - [scrollTopEpoch]: 标题栏点击回顶信号, >0 时触发列表 animateScrollToItem(0)
  * - [pluginFilterSource]: 插件源筛选入口目标 (非插件源为 null), 驱动 [PluginExploreFilterRow]
  */
@@ -174,7 +176,6 @@ data class ExploreShowUiState(
      */
     val canLogin: Boolean,
     val bookshelfVersion: Int,
-    val optionsVersion: Int,
     val scrollTopEpoch: Int,
     val footerLoading: Boolean,
     val footerText: String?,
@@ -246,6 +247,9 @@ interface ExploreShowUiActions {
      * 筛选重置 (入口行"重置"): 宿主换新默认会话实例、同步 UiState 并重载第 1 页, 仍停留筛选面。
      */
     fun onPluginFiltersReset() {}
+
+    /** 筛选面板打开/关闭: 编辑期间暂停翻页, 关闭未改动时恢复。 */
+    fun onPluginFilterEditingChanged(editing: Boolean) {}
 }
 
 /**
@@ -257,7 +261,7 @@ interface ExploreShowUiActions {
  * @param state 展示状态
  * @param actions 交互回调
  * @param optionsRowSlot 参数 chip 行 (L3: AndroidView + LinearLayout + setUpExploreOptions)
- *   - 内部自行读 state.optionsVersion + 调 actions.onExploreOptionChanged
+ *   - 内部读当前参数快照 + 调 actions.onExploreOptionChanged
  * @param videoItemSlot 视频卡 (L3: ItemExploreVideoBinding ViewBinding)
  *   - 调用方传入 (book, inBookshelf, onClick, onLongClick)
  * @param coverSlot 封面 (默认 SharedBookCover)
@@ -281,6 +285,13 @@ fun ExploreShowScreen(
         modifier: Modifier,
     ) -> Unit,
 ) {
+    // 封面比例布局状态: 持有者在路由层 (ScreenModel 内部状态, 与结果集同寿命),
+    // 活跃集合随发现结果增删在此层提交, 先于条目级生效
+    val coverRatioState = LocalCoverRatioLayout.current
+    val activeCoverResources = remember(state.books, state.bookshelfVersion) {
+        state.books.mapTo(HashSet()) { it.coverResourceKey(actions.isInBookshelf(it)) }
+    }
+    SideEffect { coverRatioState?.updateActiveResources(activeCoverResources) }
     Column(Modifier.fillMaxSize()) {
         AppTitleBar(
             title = state.title,
@@ -299,6 +310,7 @@ fun ExploreShowScreen(
             filters = state.pluginExploreFilters,
             onFiltersApplied = actions::onExploreOptionChanged,
             onResetFilters = actions::onPluginFiltersReset,
+            onEditingChanged = actions::onPluginFilterEditingChanged,
         )
         ResultArea(state, actions, videoItemSlot, coverSlot, Modifier.weight(1f))
     }
