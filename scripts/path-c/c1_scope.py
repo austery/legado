@@ -27,6 +27,8 @@ def document(path: str) -> bool:
     return (not any(part in ('.', '..') for part in parts)
             and (path in DOCUMENTS or
                  (path.startswith('docs/architecture/') and path.endswith('.md')) or
+                 # Agent guidance; only CODEOWNERS and the link check read it.
+                 (path.startswith('docs/agents/') and path.endswith('.md')) or
                  # Markdown issue templates are read only by GitHub's issue form UI.
                  (parts[:-1] == ('.github', 'ISSUE_TEMPLATE') and path.endswith('.md'))))
 
