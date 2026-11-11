@@ -73,6 +73,17 @@ class ScopeTest(unittest.TestCase):
                      '.github/pull_request_template.md'):
             self.assertFalse(document(path), path)
 
+    def test_agent_guidance_markdown_skips_heavy_regression(self) -> None:
+        self.write('docs/agents/impact-radius.md', '# Radius\n\n[Guide](../architecture/guide.md#guide)\n')
+        head = self.commit()
+        mode, paths, _ = plan(self.root, self.event(head), 'pull_request')
+        self.assertEqual(mode, 'docs')
+        self.assertEqual(paths, ['docs/agents/impact-radius.md'])
+
+    def test_agent_guidance_non_markdown_requires_full_regression(self) -> None:
+        for path in ('docs/agents/radius.json', 'docs/agents/check.py', 'docs/agentsx/notes.md'):
+            self.assertFalse(document(path), path)
+
     def test_more_than_api_page_of_paths_is_fully_classified(self) -> None:
         for number in range(105):
             self.write(f'docs/architecture/{number}.md', '# Note\n')
