@@ -3,7 +3,7 @@ specId: ADR-005
 title: Upstream Integration Cadence
 status: accepted
 creationDate: 2026-11-08
-lastUpdateDate: 2026-11-08
+lastUpdateDate: 2026-11-10
 relatedSpecs: [ADR-001, ADR-002]
 ---
 
@@ -15,6 +15,10 @@ Lei approved this direction in the Claude Code session on 2026-11-08 ("按照建
 The approval covers the cadence and triggers below. It does not authorize a
 new workflow, a scheduled job, or any merge; each of those still needs its own
 approval.
+
+On 2026-11-10 Lei approved the merge and upgrade principles below ("批准并写入").
+That approval covers the principles only. It does not start an integration or
+authorize building the fork-patch ledger (principle 6).
 
 ## Context
 
@@ -48,7 +52,9 @@ The rules for *how* to integrate already exist:
   integration merge is Trunk and an Always stop, and its `.github/` changes are
   reviewed on their own.
 
-What was missing is *when* to integrate. Without a rule, two failures are
+What was missing is *when* to integrate. The 2026-11-10 test merge also showed
+gaps in how to resolve conflicts with our own patches; the merge and upgrade
+principles below cover them. Without a rule, two failures are
 likely: long gaps that make each merge huge, or merges that only chase the
 newest commit.
 
@@ -83,6 +89,46 @@ A real integration PR starts only when one of these holds:
 Each integration PR follows the existing process: an H1, isolated validation
 and recovery per ADR-002, the impact radius map's checks, and Lei's explicit
 merge approval.
+
+### Merge and upgrade principles
+
+Approved on 2026-11-10, after the mirror moved from `83657e548` to
+`52519722d` (31 commits). A test merge of that range into `native-reader`
+showed six conflicts. Principles 2 to 5 name the case that showed the need.
+
+These principles add to the existing rules listed in Context and to the
+upstream-first rule in `AGENTS.md`.
+
+1. **The mirror moves by fast-forward only.** Update `master` only when
+   `origin/master` is an ancestor of the upstream head. If it is not, stop and
+   report. Do not merge, rebase or force-push the mirror.
+   `scripts/ci/sync-upstream-mirror.sh` already enforces this check; this
+   principle also covers a manual update.
+2. **Upstream is the base for upstream-owned files that we patched.** In a
+   conflict, start from the upstream version and re-apply our change as a
+   narrow export. First check whether upstream now provides the capability; if
+   it does, drop our patch instead of re-applying it. Case: upstream rewrote
+   `SearchModel.kt` with per-source pause and resume, which overlaps our
+   per-source page and lifetime patches.
+3. **For a duplicate fix, keep the upstream fix and our test.** When both sides
+   fixed the same defect, take the upstream implementation and keep our
+   regression test as the proof. Case: upstream `b5f4a2447` and our
+   `4c3f0cdc6` both fix how native scripts read integer handles.
+4. **Our additions follow a moved or deleted upstream module.** Move our code
+   and tests to the new location, and update `.github/CODEOWNERS` and
+   `scripts/path-c/doc_links.py` paths. Never drop them silently. Case: upstream
+   merged `desktop-core` into `desktop`; `DesktopPreferenceMigrationTest.kt`
+   would stay in a directory the build no longer includes, so a local Gradle
+   test run would skip it without a failure.
+5. **A clean text merge is not verification.** A file that both sides changed
+   needs the `engine-ios` compile (the Kotlin/Native engine module that the
+   native app links) and C1, even when Git merged it without a conflict. Case: eight overlapping files merged cleanly in the same test
+   merge.
+6. **Keep a fork-patch ledger (proposed, not built).** On 2026-11-10, about 165
+   files outside our own directories (`native-ios-app/`, `engine-ios/`,
+   `docs/`, `scripts/`) differed from upstream `83657e548`. A ledger that separates
+   intentional fork patches from noise, such as whitespace cleanup, keeps
+   upgrades mechanical. Building it needs its own task.
 
 ### If upstream stops
 
