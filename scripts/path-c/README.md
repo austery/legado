@@ -119,7 +119,7 @@ bridge, including signed/unsigned cipher arrays, native-returned bytes, hex,
 Base64, Unicode and error recovery.
 
 The regular job runs the network/cache harness and the Swift suites via
-`native_product_ci.py --include-process-tests`: the ordinary suite, then all four
+`native_product_ci.py --include-process-tests`: the ordinary suite, then all
 interruption boundaries and the offline shelf restart with the same build, under
 the machine lock the job already holds. Only for manual `execution=cloud` does the
 regular job run on a hosted runner without process tests; a second local job then

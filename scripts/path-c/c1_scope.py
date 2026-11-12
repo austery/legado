@@ -21,7 +21,8 @@ DOCUMENTS = frozenset({
 # job that a docs-only or merged run skips, so only a full regression qualifies.
 ACTIONS_APP_ID = 15368
 TESTED_CHECKS = ('C1 engine regression', 'C1 builds and regular regressions')
-CheckLookup = Callable[[str], Mapping[str, str]]
+# Maps each check name to (check-run id, conclusion), both from one check suite.
+CheckLookup = Callable[[str], Mapping[str, tuple[int, str]]]
 LINK = re.compile(r'!?\[[^\]\n]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)')
 
 
@@ -64,20 +65,38 @@ def docs_only(root: Path, paths: Sequence[str], base: str, head: str) -> bool:
     return True
 
 
-def github_checks(sha: str) -> Mapping[str, str]:
-    """Latest conclusion per check name from GitHub Actions for one commit."""
+def newest_suite(runs: Sequence[Mapping[str, object]]) -> dict[str, tuple[int, str]]:
+    """Check runs of the newest GitHub Actions check suite that holds every tested check.
+
+    Both checks must come from one workflow run; a newer run of the same name wins.
+    """
+    suites: dict[int, dict[str, tuple[int, str]]] = {}
+    for run in runs:
+        app, suite = run['app'], run['check_suite']
+        if not isinstance(app, dict) or not isinstance(suite, dict) or app['id'] != ACTIONS_APP_ID:
+            continue
+        name, run_id = str(run['name']), int(str(run['id']))
+        checks = suites.setdefault(int(str(suite['id'])), {})
+        if run_id > checks.get(name, (-1, ''))[0]:
+            checks[name] = (run_id, str(run['conclusion']))
+    complete = [suite for suite in suites if all(name in suites[suite] for name in TESTED_CHECKS)]
+    return suites[max(complete)] if complete else {}
+
+
+def github_checks(sha: str) -> Mapping[str, tuple[int, str]]:
+    """Tested checks of one commit from GitHub Actions, or an empty map."""
     repository, token = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN']
     api = os.environ.get('GITHUB_API_URL', 'https://api.github.com')
-    request = Request(f'{api}/repos/{quote(repository)}/commits/{sha}/check-runs?filter=latest&per_page=100',
+    request = Request(f'{api}/repos/{quote(repository)}/commits/{sha}/check-runs?filter=all&per_page=100',
                       headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json',
                                'X-GitHub-Api-Version': '2022-11-28'})
     with urlopen(request, timeout=30) as response:
-        runs = json.load(response)['check_runs']
-    latest: dict[str, tuple[int, str]] = {}
-    for run in runs:
-        if run['app']['id'] == ACTIONS_APP_ID and run['id'] > latest.get(run['name'], (-1, ''))[0]:
-            latest[run['name']] = (run['id'], str(run['conclusion']))
-    return {name: conclusion for name, (_, conclusion) in latest.items()}
+        payload = json.load(response)
+    runs = payload['check_runs']
+    # A truncated page could hide a newer failed run; never decide on partial evidence.
+    if not isinstance(runs, list) or int(payload['total_count']) != len(runs):
+        raise ValueError('Incomplete check-run listing')
+    return newest_suite(runs)
 
 
 def tested_merge(root: Path, head: str, lookup: CheckLookup) -> Optional[str]:
@@ -89,11 +108,11 @@ def tested_merge(root: Path, head: str, lookup: CheckLookup) -> Optional[str]:
     tree = git(root, 'rev-parse', head + '^{tree}').decode().strip()
     if tree != git(root, 'rev-parse', tested + '^{tree}').decode().strip():
         return None
-    conclusions = lookup(tested)
-    if any(conclusions.get(name) != 'success' for name in TESTED_CHECKS):
+    checks = lookup(tested)
+    if any(checks.get(name, (0, ''))[1] != 'success' for name in TESTED_CHECKS):
         return None
     return f'Merge {head} has tree {tree}, identical to PR head {tested}, where ' + \
-        ' and '.join(f'"{name}"' for name in TESTED_CHECKS) + ' succeeded'
+        ' and '.join(f'"{name}" (check run {checks[name][0]})' for name in TESTED_CHECKS) + ' succeeded'
 
 
 def headings(content: str) -> set[str]:

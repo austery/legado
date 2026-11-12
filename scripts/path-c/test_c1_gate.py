@@ -97,7 +97,12 @@ class C1GateTest(unittest.TestCase):
         self.assertIn('github.event.pull_request.number || github.ref', concurrency)
         scope = workflow.split('  scope:\n', 1)[1].split('\n  regression:\n', 1)[0]
         self.assertIn('checks: read', scope)
-        self.assertIn('GITHUB_TOKEN: ${{ github.token }}', scope)
+        self.assertIn("GITHUB_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}", scope)
+        # A job-level always() survives cancellation; heavy jobs must use !cancelled().
+        for job in ('  engine:\n', '  native-process:\n'):
+            condition = next(line for line in workflow.split(job, 1)[1].splitlines() if line.startswith('    if:'))
+            self.assertIn('!cancelled()', condition)
+            self.assertNotIn('always()', condition)
         for job in ('  engine:\n', '  native-process:\n'):
             release = workflow.split(job, 1)[1].split('Release the shared Mac heavy-CI lock', 1)[1]
             self.assertIn("if: always() && steps.machine-lock.outcome == 'success'", release.split('\n')[1])

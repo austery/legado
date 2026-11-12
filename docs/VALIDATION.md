@@ -85,8 +85,8 @@ only success from the scope/static job and the regular job. With local execution
 (automatic runs) the regular job runs the process suites and the `native-process`
 job must be skipped; with `execution=cloud` the `native-process` job must succeed.
 The documented docs-only and merged cases above are the only other skipped-job
-exceptions. A newer push to the same PR cancels its running C1; pushes to
-`native-reader` and manual runs queue instead.
+exceptions. A newer push to the same PR cancels its running C1, including the heavy
+job. A running C1 for a push to `native-reader` or a manual run is not cancelled.
 The URI and Native XML validators reject missing execution, failures and skips;
 the Native validator also requires named suites. The product runner compares
 executed counts with tests discovered in the candidate source. It cannot detect
