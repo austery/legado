@@ -1,13 +1,17 @@
 """Behavioral coverage for documentation routing and its cheap static checks."""
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
+import threading
 from pathlib import Path
 import subprocess
 import tempfile
 import sys
 import unittest
 
-from c1_scope import changed_paths, check_documents, docs_only, document, plan
+from c1_scope import ACTIONS_APP_ID, TESTED_CHECKS, changed_paths, check_documents, docs_only, document, plan
+
+FULL = {name: 'success' for name in TESTED_CHECKS}
 
 
 class ScopeTest(unittest.TestCase):
@@ -192,6 +196,114 @@ class ScopeTest(unittest.TestCase):
             self.assertEqual(result.returncode == 0, passed, result.stderr)
             self.assertIn('run_regression=false', output.read_text())
             # Invalid docs fail the scope job; they never schedule heavy runtime work.
+
+    def merge(self, branch_change: str = 'val x = 2\n', main_change: str = '') -> str:
+        """Merge a code-changing branch into the base line with --no-ff; return the merge SHA."""
+        main = self.git('rev-parse', '--abbrev-ref', 'HEAD')
+        self.git('checkout', '-qb', 'feature')
+        self.write('src/main.kt', branch_change)
+        self.commit()
+        self.git('checkout', '-q', main)
+        if main_change:
+            self.write('src/other.kt', main_change)
+            self.commit()
+        self.git('merge', '-q', '--no-ff', '--no-edit', 'feature')
+        return self.git('rev-parse', 'HEAD')
+
+    def test_push_of_merge_with_fully_tested_identical_tree_skips_regression(self) -> None:
+        head = self.merge()
+        tested = self.git('rev-parse', 'HEAD^2')
+        seen: list[str] = []
+        mode, _, reason = plan(self.root, self.event(head, 'push'), 'push',
+                               lookup=lambda sha: seen.append(sha) or FULL)
+        self.assertEqual(mode, 'merged')
+        self.assertEqual(seen, [tested])
+        self.assertIn(tested, reason)
+        self.assertIn(self.git('rev-parse', 'HEAD^{tree}'), reason)
+
+    def test_merge_skip_requires_full_regression_success_on_the_pr_head(self) -> None:
+        head = self.merge()
+        for conclusions in ({}, {'C1 engine regression': 'success'},
+                            {'C1 engine regression': 'success', 'C1 builds and regular regressions': 'skipped'},
+                            {**FULL, 'C1 engine regression': 'failure'},
+                            {**FULL, 'C1 builds and regular regressions': 'cancelled'}):
+            with self.subTest(conclusions=conclusions):
+                self.assertEqual(plan(self.root, self.event(head, 'push'), 'push',
+                                      lookup=lambda _sha, c=conclusions: c)[0], 'regression')
+
+    def test_merge_skip_fails_closed_when_the_lookup_fails(self) -> None:
+        head = self.merge()
+        def broken(_sha: str) -> dict[str, str]:
+            raise OSError('network down')
+        mode, _, reason = plan(self.root, self.event(head, 'push'), 'push', lookup=broken)
+        self.assertEqual(mode, 'regression')
+        self.assertIn('OSError', reason)
+
+    def test_untested_merge_trees_pull_requests_and_plain_pushes_run_regression(self) -> None:
+        moved = self.merge(main_change='val y = 1\n')  # Base moved: merge tree differs from the PR head.
+        self.assertEqual(plan(self.root, self.event(moved, 'push'), 'push', lookup=lambda _: FULL)[0],
+                         'regression')
+        self.git('reset', '-q', '--hard', self.base)
+        self.git('branch', '-qD', 'feature')
+        head = self.merge()
+        pull = {'pull_request': {'base': {'sha': self.base}, 'head': {'sha': head}}}
+        self.assertEqual(plan(self.root, pull, 'pull_request', lookup=lambda _: FULL)[0], 'regression')
+        self.git('reset', '-q', '--hard', self.base)
+        self.write('src/main.kt', 'val x = 3\n')
+        plain = self.commit()
+        self.assertEqual(plan(self.root, self.event(plain, 'push'), 'push', lookup=lambda _: FULL)[0],
+                         'regression')
+
+    def test_docs_only_merge_stays_docs_without_a_lookup(self) -> None:
+        main = self.git('rev-parse', '--abbrev-ref', 'HEAD')
+        self.git('checkout', '-qb', 'feature')
+        self.write('README.md', '# Reader\n\nChanged.\n')
+        self.commit()
+        self.git('checkout', '-q', main)
+        self.git('merge', '-q', '--no-ff', '--no-edit', 'feature')
+        head = self.git('rev-parse', 'HEAD')
+        def unexpected(_sha: str) -> dict[str, str]:
+            raise AssertionError('docs-only pushes must not query checks')
+        self.assertEqual(plan(self.root, self.event(head, 'push'), 'push', lookup=unexpected)[0], 'docs')
+
+    def test_cli_merged_push_reads_github_checks_and_skips_heavy_jobs(self) -> None:
+        head = self.merge()
+        tested = self.git('rev-parse', 'HEAD^2')
+        for app_id, expected in ((ACTIONS_APP_ID, 'false'), (1, 'true')):
+            requests: list[str] = []
+
+            class Checks(BaseHTTPRequestHandler):
+                def do_GET(self) -> None:  # noqa: N802
+                    requests.append(self.path + ' ' + self.headers.get('Authorization', ''))
+                    body = json.dumps({'check_runs': [
+                        {'id': index, 'name': name, 'conclusion': 'success', 'app': {'id': app_id}}
+                        for index, name in enumerate(TESTED_CHECKS)]}).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *_args: object) -> None:
+                    pass
+
+            server = HTTPServer(('127.0.0.1', 0), Checks)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            event = self.root / '.git/event.json'
+            output = self.root / '.git/output.txt'
+            output.write_text('')
+            event.write_text(json.dumps(self.event(head, 'push')))
+            result = subprocess.run([sys.executable, str(self.root / 'scripts/path-c/c1_scope.py'), 'plan'],
+                env={**os.environ, 'GITHUB_EVENT_NAME': 'push', 'GITHUB_EVENT_PATH': str(event),
+                     'GITHUB_OUTPUT': str(output), 'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_TOKEN': 'fixture',
+                     'GITHUB_API_URL': f'http://127.0.0.1:{server.server_port}'},
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f'run_regression={expected}', output.read_text())
+            self.assertEqual(requests, [f'/repos/owner/repo/commits/{tested}/check-runs?filter=latest&per_page=100 '
+                                        'Bearer fixture'])
 
 
 if __name__ == '__main__':

@@ -8,13 +8,20 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 from typing import Callable, Mapping, Optional, Sequence
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCUMENTS = frozenset({
     'README.md', 'English.md', 'AGENTS.md', 'docs/VALIDATION.md', 'docs/MAINTENANCE.md',
     'engine-ios/README.md', 'native-ios-app/README.md', 'scripts/path-c/README.md',
 })
+# A merge whose tree is its tested PR head needs no second full regression. Both
+# check runs must come from GitHub Actions: the required aggregate, and the heavy
+# job that a docs-only or merged run skips, so only a full regression qualifies.
+ACTIONS_APP_ID = 15368
+TESTED_CHECKS = ('C1 engine regression', 'C1 builds and regular regressions')
+CheckLookup = Callable[[str], Mapping[str, str]]
 LINK = re.compile(r'!?\[[^\]\n]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)')
 
 
@@ -55,6 +62,38 @@ def docs_only(root: Path, paths: Sequence[str], base: str, head: str) -> bool:
             if record and not record.startswith('100644 blob '):
                 return False
     return True
+
+
+def github_checks(sha: str) -> Mapping[str, str]:
+    """Latest conclusion per check name from GitHub Actions for one commit."""
+    repository, token = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN']
+    api = os.environ.get('GITHUB_API_URL', 'https://api.github.com')
+    request = Request(f'{api}/repos/{quote(repository)}/commits/{sha}/check-runs?filter=latest&per_page=100',
+                      headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json',
+                               'X-GitHub-Api-Version': '2022-11-28'})
+    with urlopen(request, timeout=30) as response:
+        runs = json.load(response)['check_runs']
+    latest: dict[str, tuple[int, str]] = {}
+    for run in runs:
+        if run['app']['id'] == ACTIONS_APP_ID and run['id'] > latest.get(run['name'], (-1, ''))[0]:
+            latest[run['name']] = (run['id'], str(run['conclusion']))
+    return {name: conclusion for name, (_, conclusion) in latest.items()}
+
+
+def tested_merge(root: Path, head: str, lookup: CheckLookup) -> Optional[str]:
+    """Return the evidence line when head is a merge with the exact tree of a fully tested PR head."""
+    parents = git(root, 'rev-list', '--parents', '-n', '1', head).decode().split()
+    if len(parents) != 3:
+        return None
+    tested = parents[2]
+    tree = git(root, 'rev-parse', head + '^{tree}').decode().strip()
+    if tree != git(root, 'rev-parse', tested + '^{tree}').decode().strip():
+        return None
+    conclusions = lookup(tested)
+    if any(conclusions.get(name) != 'success' for name in TESTED_CHECKS):
+        return None
+    return f'Merge {head} has tree {tree}, identical to PR head {tested}, where ' + \
+        ' and '.join(f'"{name}"' for name in TESTED_CHECKS) + ' succeeded'
 
 
 def headings(content: str) -> set[str]:
@@ -144,16 +183,20 @@ def check_documents(root: Path, paths: Sequence[str], base: str) -> None:
                 check_link(root, root / path, target)
 
 
-def accepted(mode: str, scope: str, engine: str, process: str, trusted: str) -> bool:
+def accepted(mode: str, scope: str, engine: str, process: str, trusted: str, execution: str) -> bool:
     if scope != 'success' or trusted != 'true':
         return False
-    if mode == 'docs':
+    if mode in ('docs', 'merged'):
         return engine == process == 'skipped'
-    return mode == 'regression' and engine == process == 'success'
+    if mode != 'regression' or engine != 'success':
+        return False
+    # Local execution runs the process suites inside the engine job; cloud keeps a separate local job.
+    return process == {'local': 'skipped', 'cloud': 'success'}.get(execution)
 
 
 def plan(root: Path, event: Mapping[str, object], event_name: str,
-         on_classified: Optional[Callable[[str], None]] = None) -> tuple[str, list[str], str]:
+         on_classified: Optional[Callable[[str], None]] = None,
+         lookup: CheckLookup = github_checks) -> tuple[str, list[str], str]:
     if event_name == 'workflow_dispatch':
         return 'regression', [], 'Manual validation always runs full regression'
     try:
@@ -179,11 +222,20 @@ def plan(root: Path, event: Mapping[str, object], event_name: str,
         if str(error).startswith(('Missing or invalid', 'Checkout does not', 'Unknown event', 'Invalid pull request')):
             return 'regression', [], f'{error}; full regression required'
         raise
+    reason = 'Complete pinned diff classified and documentation checked'
+    if mode == 'regression' and event_name == 'push':
+        try:
+            evidence = tested_merge(root, head, lookup)
+        except Exception as error:  # Any lookup failure keeps full regression.
+            evidence = None
+            reason += f'; tested-merge lookup unavailable ({type(error).__name__}), full regression required'
+        if evidence:
+            mode, reason = 'merged', f'{evidence}; documentation checked'
     if on_classified is not None:
         on_classified(mode)
     check_documents(root, paths, base)
     git(root, 'diff', '--check', base, head)
-    return mode, paths, 'Complete pinned diff classified and documentation checked'
+    return mode, paths, reason
 
 
 def main() -> None:
@@ -193,11 +245,12 @@ def main() -> None:
     if args.command == 'gate':
         passed = accepted(os.environ.get('MODE', ''), os.environ.get('SCOPE_RESULT', ''),
                           os.environ.get('ENGINE_RESULT', ''), os.environ.get('PROCESS_RESULT', ''),
-                          os.environ.get('TRUSTED', ''))
+                          os.environ.get('TRUSTED', ''), os.environ.get('EXECUTION', ''))
         if not passed:
             raise SystemExit('C1 failed: invalid scope/static checks or required job results')
-        print('Documentation static checks passed; runtime regression not applicable.'
-              if os.environ['MODE'] == 'docs' else 'All C1 regression suites passed.')
+        print({'docs': 'Documentation static checks passed; runtime regression not applicable.',
+               'merged': 'Merge tree is a fully tested PR head; runtime regression not repeated.'}
+              .get(os.environ['MODE'], 'All C1 regression suites passed.'))
         return
     mode = 'regression'
 
@@ -220,7 +273,7 @@ def main() -> None:
         output = os.environ.get('GITHUB_OUTPUT')
         if output:
             with Path(output).open('a') as stream:
-                stream.write(f'mode={mode}\nrun_regression={str(mode != "docs").lower()}\n')
+                stream.write(f'mode={mode}\nrun_regression={str(mode not in ("docs", "merged")).lower()}\n')
 
 
 if __name__ == '__main__':
