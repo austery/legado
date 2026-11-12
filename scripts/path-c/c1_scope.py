@@ -66,9 +66,10 @@ def docs_only(root: Path, paths: Sequence[str], base: str, head: str) -> bool:
 
 
 def newest_suite(runs: Sequence[Mapping[str, object]]) -> dict[str, tuple[int, str]]:
-    """Check runs of the newest GitHub Actions check suite that holds every tested check.
+    """Tested check runs of the newest GitHub Actions check suite that has any of them.
 
-    Both checks must come from one workflow run; a newer run of the same name wins.
+    Both checks must come from one workflow run; a newer run of the same name wins. An
+    incomplete newest suite (still running, or partly reported) yields no evidence.
     """
     suites: dict[int, dict[str, tuple[int, str]]] = {}
     for run in runs:
@@ -79,8 +80,11 @@ def newest_suite(runs: Sequence[Mapping[str, object]]) -> dict[str, tuple[int, s
         checks = suites.setdefault(int(str(suite['id'])), {})
         if run_id > checks.get(name, (-1, ''))[0]:
             checks[name] = (run_id, str(run['conclusion']))
-    complete = [suite for suite in suites if all(name in suites[suite] for name in TESTED_CHECKS)]
-    return suites[max(complete)] if complete else {}
+    tested = [suite for suite in suites if any(name in suites[suite] for name in TESTED_CHECKS)]
+    if not tested:
+        return {}
+    newest = suites[max(tested)]
+    return newest if all(name in newest for name in TESTED_CHECKS) else {}
 
 
 def github_checks(sha: str) -> Mapping[str, tuple[int, str]]:

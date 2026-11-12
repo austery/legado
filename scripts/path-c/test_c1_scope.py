@@ -283,9 +283,11 @@ class ScopeTest(unittest.TestCase):
              {GATE: (5, 'failure'), ENGINE: (4, 'success')}),
             ([run(3, GATE, 'success', 7), run(4, ENGINE, 'success', 7), run(9, GATE, 'failure', 8),
               run(10, ENGINE, 'success', 8)], {GATE: (9, 'failure'), ENGINE: (10, 'success')}),
-            # Names from two different suites never combine; an incomplete newer suite is ignored.
+            # Names from two different suites never combine; an incomplete newest suite gives no evidence.
             ([run(3, GATE, 'success', 7), run(4, ENGINE, 'success', 8)], {}),
-            ([run(3, GATE, 'success', 7), run(4, ENGINE, 'success', 7), run(9, GATE, None, 8)],
+            ([run(3, GATE, 'success', 7), run(4, ENGINE, 'success', 7), run(9, ENGINE, 'failure', 8)], {}),
+            # Suites without tested checks (other workflows) do not hide older evidence.
+            ([run(3, GATE, 'success', 7), run(4, ENGINE, 'success', 7), run(9, 'other job', 'success', 8)],
              {GATE: (3, 'success'), ENGINE: (4, 'success')}),
             # Other apps cannot supply evidence.
             ([run(3, GATE, 'success', 7, app=1), run(4, ENGINE, 'success', 7, app=1)], {}),

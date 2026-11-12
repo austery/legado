@@ -30,11 +30,12 @@ its result explicitly says runtime regression was not applicable.
 A push to `native-reader` skips runtime regression in a second mode, `merged`, only
 when the pushed commit is a merge whose tree is identical to its second parent (the
 PR head), and GitHub Actions reported success on that PR head for both
-`C1 engine regression` and `C1 builds and regular regressions`. The second check
+`C1 engine regression` and `C1 builds and regular regressions`, both in the newest
+workflow run that reported either check. The second check
 excludes PR heads that only passed docs-only or merged mode. The ruleset requires
 PR branches to be up to date, so a normal PR merge qualifies. Any other push, or a
 failed check lookup, runs full regression. The scope job log records both SHAs, the
-tree and the checks; that is the merged-head C1 record. The required aggregate
+tree and both check-run ids; that is the merged-head C1 record. The required aggregate
 accepts `merged` only with both heavy jobs skipped.
 Classification/static-check failure, unknown mode, untrusted fork or unexpected job
 outcomes cannot pass.
