@@ -10,7 +10,7 @@ import unittest
 
 
 class C1GateTest(unittest.TestCase):
-    def test_process_coverage_is_local_and_both_jobs_pin_the_same_revision(self) -> None:
+    def test_process_coverage_runs_locally_in_one_job_and_both_jobs_pin_the_same_revision(self) -> None:
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/c1-engine.yml').read_text()
         engine, process = workflow.split('  engine:\n', 1)[1].split('\n  native-process:\n', 1)
         for job in (engine, process):
@@ -21,8 +21,13 @@ class C1GateTest(unittest.TestCase):
             self.assertNotIn('continue-on-error:', job)
         self.assertIn('runs-on: [self-hosted, macOS, ARM64, legado-macos-local]', process)
         self.assertIn('--process-tests-only --runtime-version 27.0', process)
+        # Local execution (the automatic default) runs the process suites inside the engine job;
+        # only manual cloud execution starts the separate local process job.
+        self.assertIn("inputs.execution == 'cloud'", process.split('runs-on:', 1)[0])
         self.assertNotIn('--process-tests-only', engine)
-        self.assertNotIn('--include-process-tests', engine)
+        self.assertIn("(inputs.execution || 'local') != 'local' && '--runtime-version 27.0' || "
+                      "'--include-process-tests'", engine)
+        self.assertIn('bash scripts/ci/ci-machine-lock.sh acquire', engine)
         for required in ('verify_url_tests.py', 'kotlin_native_ci.py', ':data:jvmTest :core:jvmTest :ui:jvmTest',
                          'ci_harness.py --output ci-results', 'native_product_ci.py --output'):
             self.assertIn(required, engine)
@@ -42,12 +47,15 @@ class C1GateTest(unittest.TestCase):
 
     def test_gate_fails_closed_for_every_job_result(self) -> None:
         outcomes = ('success', 'failure', 'cancelled', 'skipped', '')
-        for mode, scope, engine, process, trusted in itertools.product(
-                ('docs', 'regression', ''), outcomes, outcomes, outcomes, ('true', 'false')):
+        for mode, scope, engine, process, trusted, execution in itertools.product(
+                ('docs', 'merged', 'regression', ''), outcomes, outcomes, outcomes, ('true', 'false'),
+                ('local', 'cloud', '')):
             expected = (scope == 'success' and trusted == 'true' and
-                        ((mode == 'docs' and engine == process == 'skipped') or
-                         (mode == 'regression' and engine == process == 'success')))
-            self.assertEqual(accepted(mode, scope, engine, process, trusted), expected)
+                        ((mode in ('docs', 'merged') and engine == process == 'skipped') or
+                         (mode == 'regression' and engine == 'success' and
+                          ((execution == 'local' and process == 'skipped') or
+                           (execution == 'cloud' and process == 'success')))))
+            self.assertEqual(accepted(mode, scope, engine, process, trusted, execution), expected)
 
     def test_link_check_runs_after_the_scope_step(self) -> None:
         # A failure before the scope step leaves run_regression empty, which starts both heavy jobs.
@@ -65,14 +73,39 @@ class C1GateTest(unittest.TestCase):
         self.assertIn('run: python3 scripts/path-c/c1_scope.py gate', gate)
         self.assertNotIn('paths-ignore:', workflow)
         self.assertNotIn('pull_request_target:', workflow)
-        for mode, engine, process, passed in (('docs', 'skipped', 'skipped', True),
-                                             ('docs', 'success', 'skipped', False),
-                                             ('regression', 'success', 'success', True),
-                                             ('regression', 'success', 'skipped', False)):
+        self.assertIn("EXECUTION: ${{ inputs.execution || 'local' }}", gate)
+        for mode, engine, process, execution, passed in (
+                ('docs', 'skipped', 'skipped', 'local', True),
+                ('docs', 'success', 'skipped', 'local', False),
+                ('merged', 'skipped', 'skipped', 'local', True),
+                ('merged', 'success', 'skipped', 'local', False),
+                ('regression', 'success', 'skipped', 'local', True),
+                ('regression', 'success', 'success', 'local', False),
+                ('regression', 'success', 'success', 'cloud', True),
+                ('regression', 'success', 'skipped', 'cloud', False),
+                ('regression', 'success', 'skipped', '', False)):
             result = subprocess.run([sys.executable, str(root / 'scripts/path-c/c1_scope.py'), 'gate'],
                 env={**os.environ, 'MODE': mode, 'SCOPE_RESULT': 'success', 'ENGINE_RESULT': engine,
-                     'PROCESS_RESULT': process, 'TRUSTED': 'true'}, capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode == 0, passed)
+                     'PROCESS_RESULT': process, 'TRUSTED': 'true', 'EXECUTION': execution},
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode == 0, passed, (mode, engine, process, execution))
+
+    def test_superseded_pull_request_runs_cancel_and_the_scope_job_can_read_checks(self) -> None:
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/c1-engine.yml').read_text()
+        concurrency = workflow.split('concurrency:\n', 1)[1].split('\njobs:', 1)[0]
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", concurrency)
+        self.assertIn('github.event.pull_request.number || github.ref', concurrency)
+        scope = workflow.split('  scope:\n', 1)[1].split('\n  regression:\n', 1)[0]
+        self.assertIn('checks: read', scope)
+        self.assertIn("GITHUB_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}", scope)
+        # A job-level always() survives cancellation; heavy jobs must use !cancelled().
+        for job in ('  engine:\n', '  native-process:\n'):
+            condition = next(line for line in workflow.split(job, 1)[1].splitlines() if line.startswith('    if:'))
+            self.assertIn('!cancelled()', condition)
+            self.assertNotIn('always()', condition)
+        for job in ('  engine:\n', '  native-process:\n'):
+            release = workflow.split(job, 1)[1].split('Release the shared Mac heavy-CI lock', 1)[1]
+            self.assertIn("if: always() && steps.machine-lock.outcome == 'success'", release.split('\n')[1])
 
 
 if __name__ == '__main__':

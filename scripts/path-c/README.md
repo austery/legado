@@ -118,17 +118,18 @@ regressions execute JavaScript through `AnalyzeRuleCore` and the real Native
 bridge, including signed/unsigned cipher arrays, native-returned bytes, hex,
 Base64, Unicode and error recovery.
 
-The regular job runs the network/cache harness and ordinary Swift suite via
-`native_product_ci.py`, without process tests. A second local job checks out the
-same PR head, builds its own simulator engine and fresh Swift test host, and runs
-`native_product_ci.py --process-tests-only --runtime-version 27.0`. This mode runs
-all four interruption boundaries and the offline shelf restart without repeating
-the ordinary Swift suite or starting its fixtures. The existing
-`--include-process-tests` mode remains available for full local validation.
+The regular job runs the network/cache harness and the Swift suites via
+`native_product_ci.py --include-process-tests`: the ordinary suite, then all
+interruption boundaries and the offline shelf restart with the same build, under
+the machine lock the job already holds. Only for manual `execution=cloud` does the
+regular job run on a hosted runner without process tests; a second local job then
+checks out the same head, builds its own simulator engine and fresh Swift test host,
+and runs `native_product_ci.py --process-tests-only --runtime-version 27.0`.
 
-The required `C1 engine regression` check depends on both jobs and fails unless
-both report success; failure, cancellation, missing results and skipped jobs never
-pass. Fork PRs cannot execute either job and therefore cannot satisfy the gate.
+The required `C1 engine regression` check fails unless the regular job succeeds
+and, for `execution=cloud`, the process job succeeds too; for local execution the
+process job must be skipped. Failure, cancellation, missing results and other
+skipped jobs never pass. Fork PRs cannot execute either job and therefore cannot satisfy the gate.
 Automatic PR/push validation uses the complete local profile for the regular job
 as approved on 2026-10-21. Manual dispatch keeps both `execution=local` and
 `execution=cloud` (dispatch default) for explicit validation/hosted diagnosis; process

@@ -26,6 +26,17 @@ inline repository links/anchors and Markdown fences, plus inbound references to
 affected documents. Both heavy jobs are skipped for this mode. The required aggregate
 passes only when the scope/static job succeeds and both jobs are skipped as expected;
 its result explicitly says runtime regression was not applicable.
+
+A push to `native-reader` skips runtime regression in a second mode, `merged`, only
+when the pushed commit is a merge whose tree is identical to its second parent (the
+PR head), and GitHub Actions reported success on that PR head for both
+`C1 engine regression` and `C1 builds and regular regressions`, both in the newest
+workflow run that reported either check. The second check
+excludes PR heads that only passed docs-only or merged mode. The ruleset requires
+PR branches to be up to date, so a normal PR merge qualifies. Any other push, or a
+failed check lookup, runs full regression. The scope job log records both SHAs, the
+tree and both check-run ids; that is the merged-head C1 record. The required aggregate
+accepts `merged` only with both heavy jobs skipped.
 Classification/static-check failure, unknown mode, untrusted fork or unexpected job
 outcomes cannot pass.
 
@@ -68,11 +79,15 @@ as environment blockers; they are not passing acceptance evidence.
 | Native product behavior | Ordinary `native_product_ci.py` suites | Real bridge/storage and selected UI-facing assertions; not daily reading comfort or complete device acceptance. |
 | Actual UI controls and navigation journeys | [UI driver](../scripts/path-c/reader_ui_ci.py), `NativeReaderUI` XCUITest scheme; [setup and evidence](../native-ios-app/README.md#minimal-reading-ui-and-actual-control-validation). Select relevant declared journeys with `--only-test` according to changed behavior and risk. | Actual controls in an isolated synthetic iPad simulator app, with screenshots and `.xcresult`; inspect screenshots as well as results. Not physical-device comfort or live-source acceptance; separate from ordinary product suites, not a universal required CI gate. |
 | What a UI change looks like and how it behaves when an agent operates it | Agent-driven walkthrough of the product app on a throwaway iPad simulator, with screenshots; [recipe and limits](../native-ios-app/README.md#agent-driven-simulator-walkthrough) | Shows what an agent saw, not a CI gate. It can be the real-run evidence that the [impact radius map](agents/impact-radius.md) asks for, unless the change's risk calls for a `native_product_ci.py` suite or `reader_ui_ci.py` journey. It does not replace C1. Not live-source or physical-device acceptance. A physical-device run is final acceptance, not a per-PR step, and stays with Lei through Device Hub (the tool that operates the connected iPad). Lei decides when it runs; until then, report it as not run. |
-| Durable save, interruption or offline restart | Separate workflow `native-process` job using the product driver's process-only mode | Synthetic process interruption, not physical power loss or all platform lifecycle behavior. |
+| Durable save, interruption or offline restart | The product driver's `--include-process-tests` mode inside the regular job (automatic and `execution=local`); the separate `native-process` job only for `execution=cloud` | Synthetic process interruption, not physical power loss or all platform lifecycle behavior. |
 
 For full-regression mode, the required aggregate `C1 engine regression` accepts
-only success from both heavy jobs plus the scope/static job. The documented
-docs-only case above is the sole deliberate skipped-job exception.
+only success from the scope/static job and the regular job. With local execution
+(automatic runs) the regular job runs the process suites and the `native-process`
+job must be skipped; with `execution=cloud` the `native-process` job must succeed.
+The documented docs-only and merged cases above are the only other skipped-job
+exceptions. A newer push to the same PR cancels its running C1, including the heavy
+job. A running C1 for a push to `native-reader` or a manual run is not cancelled.
 The URI and Native XML validators reject missing execution, failures and skips;
 the Native validator also requires named suites. The product runner compares
 executed counts with tests discovered in the candidate source. It cannot detect

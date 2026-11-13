@@ -23,13 +23,21 @@ permissions:
 
 concurrency:
   group: c1-engine-${{ inputs.execution || 'local' }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  # A newer push to the same PR supersedes the running check. Pushes and manual runs are not
+  # cancelled while running; GitHub keeps one pending run per group, so a newer one replaces it.
+  # Heavy jobs use !cancelled(), not always(), so cancellation actually stops them. The lock
+  # release step runs on cancellation, and a lock whose Runner.Worker is gone is stale.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   scope:
     name: C1 change scope and documentation checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # Read the PR head's C1 check runs to skip a repeated regression on an identical merge tree.
+      checks: read
     outputs:
       mode: ${{ steps.scope.outputs.mode }}
       run_regression: ${{ steps.scope.outputs.run_regression }}
@@ -43,8 +51,11 @@ jobs:
         run: python3 -m unittest discover -s scripts/path-c -p 'test_c1_*.py'
       - name: Classify complete diff and check documentation
         id: scope
+        env:
+          # Only a push looks up the PR head's checks; PR-head code gets no token.
+          GITHUB_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}
         run: python3 scripts/path-c/c1_scope.py plan
-      # After the scope step: an empty run_regression output starts both heavy jobs.
+      # After the scope step: an empty run_regression output starts the heavy jobs.
       - name: Select Python for the Markdown link check
         id: link-python
         uses: actions/setup-python@v5
@@ -79,6 +90,7 @@ jobs:
           ENGINE_RESULT: ${{ needs.engine.result }}
           PROCESS_RESULT: ${{ needs.native-process.result }}
           TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          EXECUTION: ${{ inputs.execution || 'local' }}
         run: python3 scripts/path-c/c1_scope.py gate
 
   # Automatic PR/push validation uses the complete local profile while hosted
@@ -86,9 +98,10 @@ jobs:
   engine:
     name: C1 builds and regular regressions
     needs: scope
-    if: ${{ always() && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ fromJSON((inputs.execution || 'local') != 'local' && '["xcode-27"]' || '["self-hosted","macOS","ARM64","legado-macos-local"]') }}
-    # 90 min of work plus up to 45 min waiting for the shared Mac lock.
+    # Up to 90 min of work, including the local process suites, plus up to 45 min waiting
+    # for the shared Mac lock.
     timeout-minutes: 135
     defaults:
       run:
@@ -231,8 +244,10 @@ jobs:
             build 2>&1 | tee ci-results/harness-build.log
       - name: Run network, restart cache and fresh network regressions
         run: python3 scripts/path-c/ci_harness.py --output ci-results ${{ (inputs.execution || 'local') != 'local' && '--runtime-version 27.0' || '' }}
-      - name: Run native Swift product regressions
-        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ (inputs.execution || 'local') != 'local' && '--runtime-version 27.0' || '' }}
+      # Local execution also runs the interruption and offline restart suites here, under the
+      # lock this job already holds and with its build; cloud execution keeps the native-process job.
+      - name: Run native Swift product, interruption and offline restart regressions
+        run: python3 scripts/path-c/native_product_ci.py --output ci-results/native-product ${{ (inputs.execution || 'local') != 'local' && '--runtime-version 27.0' || '--include-process-tests' }}
       - name: Stop hosted resource sampler
         if: always() && (inputs.execution || 'local') != 'local'
         run: |
@@ -284,6 +299,7 @@ jobs:
           path: |
             ci-results/
             !ci-results/native-product/DerivedData/
+            !ci-results/native-product/*/DerivedData/
           retention-days: 7
       - name: Release the shared Mac heavy-CI lock
         if: always() && steps.machine-lock.outcome == 'success'
@@ -292,7 +308,8 @@ jobs:
   native-process:
     name: C1 local interruption and offline restart
     needs: scope
-    if: ${{ always() && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # Only manual cloud execution: local execution runs these suites inside the engine job.
+    if: ${{ !cancelled() && inputs.execution == 'cloud' && needs.scope.outputs.run_regression != 'false' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: [self-hosted, macOS, ARM64, legado-macos-local]
     # 60 min of work plus up to 45 min waiting for the shared Mac lock.
     timeout-minutes: 105
