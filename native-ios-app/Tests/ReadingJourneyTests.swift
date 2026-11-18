@@ -97,7 +97,14 @@ final class ReadingJourneyTests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
-    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, duplicateChapters: Bool = false) async throws {
+    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, duplicateChapters: Bool = false, brokenContent: Bool = false) async throws {
+        let json = try await fixtureJSON(base: base, unknown: unknown, enabled: enabled, titleSuffix: titleSuffix, paragraphs: paragraphs, duplicateChapters: duplicateChapters, brokenContent: brokenContent)
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        try Data(json.utf8).write(to: local)
+        model.importFile(local); try await settle(model); model.confirmFixtureImport(); try await settle(model); XCTAssertNil(model.message)
+    }
+
+    private func fixtureJSON(base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, duplicateChapters: Bool = false, brokenContent: Bool = false) async throws -> String {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
         var json = try XCTUnwrap(String(data: data, encoding: .utf8))
         if !titleSuffix.isEmpty {
@@ -110,9 +117,8 @@ final class ReadingJourneyTests: XCTestCase {
         }
         if unknown { json = json.replacingOccurrences(of: "class.author@text", with: "class.absent-author@text") }
         if !enabled { json = json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false") }
-        let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
-        try Data(json.utf8).write(to: local)
-        model.importFile(local); try await settle(model); model.confirmFixtureImport(); try await settle(model); XCTAssertNil(model.message)
+        if brokenContent { json = json.replacingOccurrences(of: "id.content@text", with: "id.absent-content@text") }
+        return json
     }
 
     func testConflictingTargetKeepsItsCacheAndIsNeverReportedAsSuccessfulSwitch() async throws {
@@ -130,9 +136,8 @@ final class ReadingJourneyTests: XCTestCase {
         model.select(old); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
-        model.beginSourceSwitch(); try await settle(model)
-        model.select(target); try await settle(model)
-        let chapter = try XCTUnwrap(model.switchChapters.first)
+        // The one-step switch locates the fixture's first chapter (index 0, "Chapter 1").
+        let chapter = (id: second + "/chapter/1", title: "Chapter 1")
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var db: OpaquePointer?
         XCTAssertEqual(sqlite3_open(documents.appendingPathComponent("legado.db").path, &db), SQLITE_OK)
@@ -168,12 +173,11 @@ final class ReadingJourneyTests: XCTestCase {
             other.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: 10) { continuation.resume(returning: $0) }
         }
         XCTAssertTrue(saved is ReadingSaved)
-        model.prepareSourceSwitch(chapter); try await settle(model)
-        XCTAssertNotNil(model.preparedSwitch)
-        XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), originalBody)
-        model.confirmSourceSwitch(); try await settle(model)
-        XCTAssertNotNil(model.message)
+        model.beginSourceSwitch(); try await settle(model)
+        model.select(target); try await settle(model)
+        XCTAssertTrue(model.message?.hasPrefix("Could not switch to ") == true, model.message ?? "no message")
         XCTAssertNotNil(model.switchingFrom)
+        XCTAssertNil(model.switchCandidate)
         XCTAssertEqual(model.book?.sourceId, first)
         XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), originalBody)
         let recovered = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
@@ -249,8 +253,18 @@ final class ReadingJourneyTests: XCTestCase {
         model.closeBookmarks()
     }
 
-    func testExplicitSourceSwitchCancellationCommitAndReopen() async throws {
-        let model = ReaderModel()
+    func testOneStepSourceSwitchLocatesChapterCancelsAndReopens() async throws {
+        // Cancels the next prepared switch before it can commit (Issue #108 cancellation path).
+        final class Interceptor { var cancelNextPreparation = false; weak var model: ReaderModel? }
+        let interceptor = Interceptor()
+        let model = ReaderModel(deliverReply: { _, reply, apply in
+            if interceptor.cancelNextPreparation, reply is SourceSwitchPrepared {
+                interceptor.cancelNextPreparation = false
+                interceptor.model?.cancelLoading()
+            }
+            apply(reply)
+        })
+        interceptor.model = model
         model.start(); try await settle(model)
         let first = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
@@ -264,7 +278,8 @@ final class ReadingJourneyTests: XCTestCase {
         model.select(oldBook); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.refreshShelf(); try await settle(model)
-        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        // Read the second chapter so the upstream locator has a non-trivial position to map.
+        model.read(model.chapters[1]); try await settle(model)
         let readingToken = try XCTUnwrap(model.content?.reading?.token)
         model.readingDisplayed(readingToken, 0)
         model.saveCurrentBookmark()
@@ -274,22 +289,28 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertEqual(model.bookmarkNotice, "Bookmark saved.")
         XCTAssertTrue(model.canChangeSource)
         model.beginSourceSwitch(); try await settle(model)
-        model.select(replacement); try await settle(model)
-        XCTAssertEqual(model.route, .sourceSwitch)
-        let recommended = try XCTUnwrap(model.recommendedSwitchChapter)
-        model.prepareSourceSwitch(recommended); try await settle(model)
-        XCTAssertNotNil(model.preparedSwitch)
         model.cancelSourceSwitch(); try await settle(model)
         XCTAssertEqual(model.book?.sourceId, first)
         XCTAssertEqual(model.content?.chapter.sourceId, first)
         model.beginSourceSwitch(); try await settle(model)
+        interceptor.cancelNextPreparation = true
         model.select(replacement); try await settle(model)
-        model.prepareSourceSwitch(try XCTUnwrap(model.recommendedSwitchChapter)); try await settle(model)
-        model.confirmSourceSwitch(); try await settle(model)
+        XCTAssertFalse(interceptor.cancelNextPreparation, "The switch must reach preparation")
+        XCTAssertNil(model.message)
+        XCTAssertNotNil(model.switchingFrom, "Cancelling a switch keeps the candidate list open")
+        XCTAssertEqual(model.book?.sourceId, first)
+        model.cancelSourceSwitch(); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.sourceId, first)
+        XCTAssertEqual(model.content?.chapter.index, 1)
+        model.beginSourceSwitch(); try await settle(model)
+        model.select(replacement); try await settle(model)
         XCTAssertNil(model.message)
         XCTAssertNil(model.switchingFrom)
+        XCTAssertEqual(model.route, .reading)
         XCTAssertEqual(model.book?.sourceId, second)
+        XCTAssertEqual(model.content?.chapter.index, 1, "Upstream getDurChapter maps Chapter 2 to Chapter 2")
         XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, 0)
+        let located = try XCTUnwrap(model.content?.chapter.id)
         model.showBookmarks()
         let listDeadline = Date().addingTimeInterval(10)
         while model.bookmarkBusy && Date() < listDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
@@ -308,40 +329,48 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertTrue(ready is EngineReady)
         let result = await call { reopened.openReading(sourceId: second, bookId: replacement.id, cacheOnly: true, completion: $0) }
         let content = try XCTUnwrap(result as? ContentReply)
-        XCTAssertEqual(content.chapter.id, recommended.id)
+        XCTAssertEqual(content.chapter.id, located)
         XCTAssertEqual(content.reading?.paragraphUtf16Offset, 0)
     }
 
-    func testSwitchPreparationFailureRetainsOriginalReading() async throws {
+    func testOneStepSwitchFailureKeepsOriginalReadingAndRetrySucceeds() async throws {
         let model = ReaderModel()
         model.start(); try await settle(model)
         let first = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         let title = UUID().uuidString
         try await importFixture(model, base: first, titleSuffix: title)
-        try await importFixture(model, base: second, titleSuffix: title, duplicateChapters: true)
+        try await importFixture(model, base: second, titleSuffix: title, brokenContent: true)
         model.searchScope = .selected; model.selectedSourceIDs = [first, second]
         model.query = "Path"; model.search(); try await settle(model)
         let replacement = try XCTUnwrap(model.results.first { $0.sourceId == second })
         model.select(try XCTUnwrap(model.results.first { $0.sourceId == first })); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.refreshShelf(); try await settle(model)
-        model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
+        model.read(model.chapters[2]); try await settle(model)
         let originalText = model.content?.text
         model.beginSourceSwitch(); try await settle(model)
         model.select(replacement); try await settle(model)
-        XCTAssertNil(model.recommendedSwitchChapter, "Duplicate titles require explicit chapter selection")
-        model.prepareSourceSwitch(try XCTUnwrap(model.switchChapters.last)); try await settle(model)
-        XCTAssertNil(model.preparedSwitch)
-        XCTAssertNotNil(model.message)
+        XCTAssertTrue(model.message?.hasPrefix("Could not switch to Path C Controlled Source: ") == true, model.message ?? "no message")
+        XCTAssertNotNil(model.switchingFrom, "A failed switch keeps the candidate list open")
+        XCTAssertEqual(model.route, .search)
         XCTAssertEqual(model.book?.sourceId, first)
         XCTAssertEqual(model.content?.text, originalText)
-        model.prepareSourceSwitch(try XCTUnwrap(model.switchChapters.last)); try await settle(model)
-        XCTAssertNotNil(model.preparedSwitch)
-        model.confirmSourceSwitch(); try await settle(model)
+        // Repair the replacement source in storage, then retry the same switch from the banner.
+        let other = ReaderEngine()
+        defer { other.close() }
+        func call(_ action: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
+            await withCheckedContinuation { continuation in _ = action { continuation.resume(returning: $0) } }
+        }
+        _ = await call { other.initialize(completion: $0) }
+        let repairedJSON = try await fixtureJSON(base: second, titleSuffix: title)
+        let repaired = await call { other.importSources(json: repairedJSON, completion: $0) }
+        XCTAssertTrue(repaired is SourcesReply)
+        model.retry(); try await settle(model)
         XCTAssertNil(model.message)
+        XCTAssertNil(model.switchingFrom)
         XCTAssertEqual(model.content?.chapter.sourceId, second)
-        XCTAssertEqual(model.content?.chapter.index, 2, "Manual selection must win over chapter index matching")
+        XCTAssertEqual(model.content?.chapter.index, 2, "Upstream getDurChapter maps Chapter 3 to Chapter 3")
         XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, 0)
     }
 

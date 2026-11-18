@@ -3,7 +3,7 @@ import CryptoKit
 import ReaderEngine
 import SwiftUI
 
-enum ReaderRoute { case shelf, search, sources, discovery, details, contents, reading, sourceSwitch }
+enum ReaderRoute { case shelf, search, sources, discovery, details, contents, reading }
 enum ReaderSearchScope: String, CaseIterable { case all, selected }
 
 struct ShelfCheckProgress: Equatable {
@@ -347,23 +347,16 @@ final class ReaderModel: ObservableObject {
     @Published var shelfNotice: String?
     @Published private(set) var switchingFrom: BookSnapshot?
     @Published private(set) var switchCandidate: BookSnapshot?
-    @Published private(set) var switchChapters: [ChapterSnapshot] = []
     @Published private(set) var preparedSwitch: SourceSwitchPrepared?
     @Published private(set) var committingSwitch = false
-    private var switchChapterTitle = ""
     var canChangeSource: Bool {
         guard let book else { return false }
         return shelf.contains { $0.book.id == book.id && $0.book.sourceId == book.sourceId } &&
             !book.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !book.author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-    var recommendedSwitchChapter: ChapterSnapshot? {
-        guard !switchChapterTitle.isEmpty else { return nil }
-        let matches = switchChapters.filter {
-            $0.title.trimmingCharacters(in: .whitespacesAndNewlines) == switchChapterTitle
-        }
-        return matches.count == 1 ? matches[0] : nil
-    }
+    /// True while a selected replacement source is being prepared or committed.
+    var switchingSource: Bool { busy && switchingFrom != nil && switchCandidate != nil }
     func eligibleSwitchCandidate(_ candidate: BookSnapshot) -> Bool {
         guard let original = switchingFrom else { return true }
         return candidate.id != original.id &&
@@ -375,10 +368,7 @@ final class ReaderModel: ObservableObject {
         navigate(.search) { [weak self] in
             guard let self else { return }
             self.switchingFrom = original
-            self.switchChapterTitle = (self.content?.chapter.title ??
-                self.shelf.first { $0.book.id == original.id && $0.book.sourceId == original.sourceId }?.lastChapter ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            self.switchCandidate = nil; self.switchChapters = []; self.preparedSwitch = nil
+            self.switchCandidate = nil; self.preparedSwitch = nil
             self.query = original.title
             self.search()
         }
@@ -387,24 +377,31 @@ final class ReaderModel: ObservableObject {
         guard !committingSwitch else { return }
         cancel()
         engine.cancelSourceSwitch { _ in }
-        switchingFrom = nil; switchCandidate = nil; switchChapters = []; preparedSwitch = nil
+        switchingFrom = nil; switchCandidate = nil; preparedSwitch = nil
         if content != nil { returnToCurrentReading() } else { route = .details }
     }
-    func prepareSourceSwitch(_ chapter: ChapterSnapshot) {
-        guard let original = switchingFrom, let candidate = switchCandidate else { return }
-        preparedSwitch = nil
-        perform(retry: { [weak self] in self?.prepareSourceSwitch(chapter) }, start: {
-            self.engine.prepareSourceSwitch(oldSourceId: original.sourceId, oldBookId: original.id,
-                sourceId: candidate.sourceId, bookId: candidate.id, chapterId: chapter.id, completion: $0)
+    /// One-step switch, as in Android Legado (Issue #108): the engine locates the replacement
+    /// chapter with upstream getDurChapter, downloads and verifies it, then the switch commits.
+    /// Any failure keeps the original source and leaves the candidate list open.
+    private func switchToLocatedChapter(_ candidate: BookSnapshot) {
+        guard let original = switchingFrom else { return }
+        switchCandidate = candidate; preparedSwitch = nil
+        perform(retry: { [weak self] in self?.switchToLocatedChapter(candidate) }, failure: { [weak self] error in
+            self?.reportSwitchFailure(candidate, error.message)
+        }, start: {
+            self.engine.prepareLocatedSourceSwitch(oldSourceId: original.sourceId, oldBookId: original.id,
+                sourceId: candidate.sourceId, bookId: candidate.id, completion: $0)
         }) { [weak self] reply in
-            self?.preparedSwitch = reply as? SourceSwitchPrepared
+            guard let self, let prepared = reply as? SourceSwitchPrepared else { return }
+            self.preparedSwitch = prepared
+            self.commitPreparedSwitch(candidate)
         }
     }
-    func confirmSourceSwitch() {
+    private func commitPreparedSwitch(_ candidate: BookSnapshot) {
         guard let prepared = preparedSwitch, !committingSwitch else { return }
         cancel()
         committingSwitch = true; busy = true
-        // Confirmation cannot be cancelled. An ambiguous acknowledgment is resolved from Room.
+        // A commit cannot be cancelled. An ambiguous acknowledgment is resolved from Room.
         request = engine.commitSourceSwitch(token: prepared.token) { [weak self] reply in
             guard let self else { return }
             self.deliverReply(.sourceSwitch, reply) { [weak self] reply in
@@ -420,14 +417,20 @@ final class ReaderModel: ObservableObject {
                         guard let self else { return }
                         self.committingSwitch = false; self.busy = false
                         if let entry = recovered as? ShelfEntryReply { self.finishSourceSwitch(entry) }
-                        else { self.message = failure + " Prepare the chapter again to retry." }
+                        else { self.reportSwitchFailure(candidate, failure) }
                     }
                 }
             }
         }
     }
+    private func reportSwitchFailure(_ candidate: BookSnapshot, _ reason: String) {
+        switchCandidate = nil; preparedSwitch = nil
+        let name = sources.first { $0.id == candidate.sourceId }?.name ?? candidate.sourceId
+        message = "Could not switch to \(name): \(reason)"
+        retryAction = { [weak self] in self?.switchToLocatedChapter(candidate) }
+    }
     private func finishSourceSwitch(_ entry: ShelfEntryReply) {
-        switchingFrom = nil; switchCandidate = nil; switchChapters = []; preparedSwitch = nil
+        switchingFrom = nil; switchCandidate = nil; preparedSwitch = nil
         shelf.removeAll { $0.book.title == entry.entry.book.title && $0.book.author == entry.entry.book.author }
         shelf.append(entry.entry)
         acceptShelfEntry(entry)
@@ -1043,8 +1046,7 @@ final class ReaderModel: ObservableObject {
         }) { [weak self] reply in
             guard let self, let reply = reply as? TocReply else { return }
             if self.switchingFrom != nil {
-                self.switchCandidate = selected; self.switchChapters = reply.chapters.filter { !$0.isVolume }
-                self.preparedSwitch = nil; self.route = .sourceSwitch
+                self.switchToLocatedChapter(selected)
                 return
             }
             self.shelfNotice = nil

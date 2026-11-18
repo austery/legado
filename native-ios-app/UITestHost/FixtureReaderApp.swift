@@ -6,6 +6,11 @@ import SQLite3
 @main
 struct FixtureReaderApp: App {
     @StateObject private var model = ReaderModel(deliverReply: { stage, reply, apply in
+        // Hold a prepared one-step switch before its commit, so a test can end the process there.
+        if reply is SourceSwitchPrepared, ProcessInfo.processInfo.environment["READER_UI_HOLD_SWITCH_PREPARE"] == "1" {
+            UserDefaults.standard.set(true, forKey: "fixture.switchPrepared")
+            return
+        }
         if stage == .sourceSwitch, reply is ShelfEntryReply,
            ProcessInfo.processInfo.environment["READER_UI_DROP_SWITCH_ACK"] == "1" {
             UserDefaults.standard.set(true, forKey: "fixture.switchCommitted")
@@ -33,6 +38,7 @@ struct FixtureReaderApp: App {
     @State private var positionStatus = "preparing"
     @State private var storedStatus = "preparing"
     @State private var switchCommitted = false
+    @State private var switchPrepared = false
     @State private var rejectingGroupSave = false
     @State private var shelfMutation = "none"
     @State private var copyObservation = "{}"
@@ -54,6 +60,7 @@ struct FixtureReaderApp: App {
                             .accessibilityValue("\(model.txtImportRevision)|\(model.busy)|\(model.message ?? "")")
                         Text("Stored record").accessibilityIdentifier("fixture.stored").accessibilityValue(storedStatus)
                         Text("Switch committed").accessibilityIdentifier("fixture.switchCommit").accessibilityValue(switchCommitted ? "true" : "false")
+                        Text("Switch prepared").accessibilityIdentifier("fixture.switchPrepared").accessibilityValue(switchPrepared ? "true" : "false")
                         if scenario == "sources" {
                             Text("Source replies").accessibilityIdentifier("fixture.sourceReplies")
                                 .accessibilityValue(UserDefaults.standard.string(forKey: "fixture.sourceReplies") ?? "none")
@@ -120,6 +127,7 @@ struct FixtureReaderApp: App {
                 if let failure { Text(failure).accessibilityIdentifier("fixture.failure") }
             }.onReceive(tick) { _ in
                 switchCommitted = UserDefaults.standard.bool(forKey: "fixture.switchCommitted")
+                switchPrepared = UserDefaults.standard.bool(forKey: "fixture.switchPrepared")
                 let text = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                     .flatMap(\.windows).compactMap { $0.rootViewController?.view }.lazy.compactMap(findText).first
                 let chapter = model.chapterPosition.map(String.init) ?? "none"
@@ -253,6 +261,7 @@ struct FixtureReaderApp: App {
             UserDefaults.standard.removeObject(forKey: ReadingPreferences.shelfLayoutKey)
             UserDefaults.standard.removeObject(forKey: "bookshelfSort")
             UserDefaults.standard.removeObject(forKey: "fixture.switchCommitted")
+            UserDefaults.standard.removeObject(forKey: "fixture.switchPrepared")
             UserDefaults.standard.removeObject(forKey: "fixture.sourceReplies")
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             for name in ["legado.db", "legado.db-wal", "legado.db-shm"] {

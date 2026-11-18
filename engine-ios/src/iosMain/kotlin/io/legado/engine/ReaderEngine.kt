@@ -26,6 +26,7 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.book.BookStorageProviders
 import io.legado.app.help.book.BookHelpProviders
+import io.legado.app.help.book.BookHelpChapterLocator
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.model.webBook.WebBookResponsePolicy
 import io.ktor.client.plugins.HttpRequestTimeoutException
@@ -133,10 +134,25 @@ class ReaderEngine {
 
     fun prepareSourceSwitch(oldSourceId: String, oldBookId: String, sourceId: String,
         bookId: String, chapterId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        prepareSwitch(oldSourceId, oldBookId, sourceId, bookId, chapterId)
+    }
+
+    /**
+     * Prepare the chapter that upstream [BookHelpChapterLocator.getDurChapter] locates in the
+     * loaded replacement catalog, as Android Legado does when it changes source (Issue #108).
+     */
+    fun prepareLocatedSourceSwitch(oldSourceId: String, oldBookId: String, sourceId: String,
+        bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        prepareSwitch(oldSourceId, oldBookId, sourceId, bookId, null)
+    }
+
+    private suspend fun prepareSwitch(oldSourceId: String, oldBookId: String, sourceId: String,
+        bookId: String, chapterId: String?): EngineReply {
         preparedSwitches.clear()
         committedSwitches.clear()
         val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
-        val original = dao.openBook(oldSourceId, oldBookId).book.copy()
+        val originalEntry = dao.openBook(oldSourceId, oldBookId)
+        val original = originalEntry.book.copy()
         require(!NativeLocalTxt.owns(original)) { "Local TXT books cannot switch network sources" }
         val revision = dao.resume(oldBookId)?.revision ?: 0L
         val candidate = book(sourceId, bookId).copy()
@@ -147,8 +163,9 @@ class ReaderEngine {
         candidate.name = original.name
         candidate.author = original.author
         val catalog = chapters[sourceId to bookId]?.map { it.copy() } ?: throw InvalidInput("Load the replacement catalog")
-        val chapter = catalog.singleOrNull { it.url == chapterId && !it.isVolume }
-            ?: throw InvalidInput("Choose a readable replacement chapter")
+        val chapter = if (chapterId == null) locatedChapter(original, originalEntry.chapters.size, catalog)
+            else catalog.singleOrNull { it.url == chapterId && !it.isVolume }
+                ?: throw InvalidInput("Choose a readable replacement chapter")
         val targetSource = source(sourceId)
         val body = EngineHost.withSourceRequest(sourceId) {
             WebBook.getContentAwait(targetSource, candidate, chapter,
@@ -156,12 +173,25 @@ class ReaderEngine {
         }
         currentCoroutineContext().ensureActive()
         if (body.isEmpty()) throw CacheUnavailable("Replacement chapter is empty")
-        EngineHost.interactionFailure()?.let { return@request it }
+        EngineHost.interactionFailure()?.let { return it }
         val token = NSUUID().UUIDString
         // Keep preparation in memory. A conflicting listing must never overwrite another book's cache.
         preparedSwitches[token] = PreparedSourceSwitch(original, revision,
             NativeChapterProjection.from(original), candidate, catalog, chapter, body, targetSource)
-        SourceSwitchPrepared(token, snapshot(sourceId, chapter), snapshot(original), snapshot(candidate))
+        return SourceSwitchPrepared(token, snapshot(sourceId, chapter), snapshot(original), snapshot(candidate))
+    }
+
+    /**
+     * Upstream locator over the shelf book's current chapter. Resume saves project the chapter
+     * into durChapterIndex/durChapterTitle. The locator works on list positions; a volume
+     * heading is not readable, so take the next readable chapter, else the previous one.
+     */
+    private fun locatedChapter(original: Book, oldCatalogSize: Int, catalog: List<BookChapter>): BookChapter {
+        if (catalog.none { !it.isVolume }) throw InvalidInput("The replacement catalog has no readable chapter")
+        val located = BookHelpChapterLocator.getDurChapter(original.durChapterIndex, original.durChapterTitle,
+            catalog, oldCatalogSize).coerceIn(0, catalog.lastIndex)
+        return catalog.drop(located).firstOrNull { !it.isVolume }
+            ?: catalog.take(located).last { !it.isVolume }
     }
 
     fun cancelSourceSwitch(completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
