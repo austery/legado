@@ -174,6 +174,10 @@ class ReaderEngine {
         }
         currentCoroutineContext().ensureActive()
         if (body.isEmpty()) throw CacheUnavailable("Replacement chapter is empty")
+        // Upstream returns the chapter URL as the body when the content rule is empty (#112).
+        // A one-step switch commits on success, so never accept that URL as verified text.
+        if (body.trim() == chapter.url || body.trim() == chapter.getAbsoluteURL(candidate))
+            throw CacheUnavailable("Replacement source returned a link instead of chapter text")
         EngineHost.interactionFailure()?.let { return it }
         val token = NSUUID().UUIDString
         // Keep preparation in memory. A conflicting listing must never overwrite another book's cache.

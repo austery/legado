@@ -97,14 +97,14 @@ final class ReadingJourneyTests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
-    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, duplicateChapters: Bool = false, brokenContent: Bool = false) async throws {
-        let json = try await fixtureJSON(base: base, unknown: unknown, enabled: enabled, titleSuffix: titleSuffix, paragraphs: paragraphs, duplicateChapters: duplicateChapters, brokenContent: brokenContent)
+    private func importFixture(_ model: ReaderModel, base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, brokenContent: Bool = false) async throws {
+        let json = try await fixtureJSON(base: base, unknown: unknown, enabled: enabled, titleSuffix: titleSuffix, paragraphs: paragraphs, brokenContent: brokenContent)
         let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
         try Data(json.utf8).write(to: local)
         model.importFile(local); try await settle(model); model.confirmFixtureImport(); try await settle(model); XCTAssertNil(model.message)
     }
 
-    private func fixtureJSON(base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, duplicateChapters: Bool = false, brokenContent: Bool = false) async throws -> String {
+    private func fixtureJSON(base: String, unknown: Bool = false, enabled: Bool = true, titleSuffix: String = "", paragraphs: Bool = false, brokenContent: Bool = false) async throws -> String {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
         var json = try XCTUnwrap(String(data: data, encoding: .utf8))
         if !titleSuffix.isEmpty {
@@ -112,9 +112,6 @@ final class ReadingJourneyTests: XCTestCase {
                 .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$## " + titleSuffix)
         }
         if paragraphs { json = json.replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第") }
-        if duplicateChapters {
-            json = json.replacingOccurrences(of: "\"chapterName\": \"text\"", with: "\"chapterName\": \"text##Chapter [0-9]+##Chapter 1\"")
-        }
         if unknown { json = json.replacingOccurrences(of: "class.author@text", with: "class.absent-author@text") }
         if !enabled { json = json.replacingOccurrences(of: "\"enabled\": true", with: "\"enabled\": false") }
         if brokenContent { json = json.replacingOccurrences(of: "id.content@text", with: "id.absent-content@text") }
@@ -293,8 +290,9 @@ final class ReadingJourneyTests: XCTestCase {
         model.read(model.chapters[1]); try await settle(model)
         let readingToken = try XCTUnwrap(model.content?.reading?.token)
         let text = try XCTUnwrap(model.content?.text) as NSString
-        let secondParagraph = text.range(of: "\n").location + 1
-        XCTAssertGreaterThan(secondParagraph, 0)
+        let newline = text.range(of: "\n").location
+        XCTAssertNotEqual(newline, NSNotFound, "The fixture chapter needs a second paragraph")
+        let secondParagraph = newline == NSNotFound ? 0 : newline + 1
         model.readingDisplayed(readingToken, secondParagraph)
         model.saveCurrentBookmark()
         let saveDeadline = Date().addingTimeInterval(10)
@@ -310,13 +308,15 @@ final class ReadingJourneyTests: XCTestCase {
         interceptor.cancelNextPreparation = true
         model.select(replacement); try await settle(model)
         XCTAssertFalse(interceptor.cancelNextPreparation, "The switch must reach preparation")
-        XCTAssertNil(model.message)
+        XCTAssertEqual(model.message, "Source switch cancelled. The original source is kept.")
         XCTAssertNotNil(model.switchingFrom, "Cancelling a switch keeps the candidate list open")
         XCTAssertEqual(model.book?.sourceId, first)
         model.cancelSourceSwitch(); try await settle(model)
         XCTAssertEqual(model.content?.chapter.sourceId, first)
         XCTAssertEqual(model.content?.chapter.index, 1)
-        XCTAssertEqual(try storedProgress(oldBook.id)[1], String(secondParagraph), "Cancelling must keep the saved paragraph")
+        let kept = try storedProgress(oldBook.id)
+        XCTAssertEqual(kept.count, 3, "Cancelling must keep the saved reading position")
+        XCTAssertEqual(kept.dropFirst().first, String(secondParagraph), "Cancelling must keep the saved paragraph")
         model.beginSourceSwitch(); try await settle(model)
         model.select(replacement); try await settle(model)
         XCTAssertNil(model.message)

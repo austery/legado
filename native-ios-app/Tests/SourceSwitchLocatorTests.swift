@@ -12,11 +12,12 @@ final class SourceSwitchLocatorTests: XCTestCase {
     }
 
     /// Imports the fixture source at a fresh base with an optional chapterName replacement.
-    private func source(_ engine: ReaderEngine, _ base: String, suffix: String, chapterName: String?) async throws {
+    private func source(_ engine: ReaderEngine, _ base: String, suffix: String, chapterName: String?, emptyContent: Bool = false) async throws {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
         var json = try XCTUnwrap(String(data: data, encoding: .utf8))
             .replacingOccurrences(of: "class.name@text", with: "class.name@text##$## " + suffix)
             .replacingOccurrences(of: "tag.h1@text", with: "tag.h1@text##$## " + suffix)
+        if emptyContent { json = json.replacingOccurrences(of: "\"content\": \"id.content@text\"", with: "\"content\": \"\"") }
         if let chapterName {
             json = json.replacingOccurrences(of: "\"chapterName\": \"text\"", with: "\"chapterName\": \"text##\(chapterName)\"")
         }
@@ -67,8 +68,8 @@ final class SourceSwitchLocatorTests: XCTestCase {
     }
 
     func testPunctuationAndSpacingDifferencesStillMatch() async throws {
-        let result = try await locate(old: "Chapter 2##第2章 白眉针", new: "Chapter 3##第2章：白眉针！")
-        XCTAssertEqual(result.titles, ["Chapter 1", "Chapter 2", "第2章：白眉针！"])
+        let result = try await locate(old: "Chapter 2##第2章 白眉针", new: "Chapter 3##第2章：  白眉 针！")
+        XCTAssertEqual(result.titles, ["Chapter 1", "Chapter 2", "第2章：  白眉 针！"])
         XCTAssertEqual(result.located, 2)
     }
 
@@ -78,11 +79,36 @@ final class SourceSwitchLocatorTests: XCTestCase {
         XCTAssertEqual(result.located, 2)
     }
 
-    func testDuplicateTitlesFallBackToTheOldIndex() async throws {
-        // Every replacement title is "Chapter 1"; no title or number decides, so upstream keeps index 1.
+    func testSimilarTitlesBelowTheThresholdFallBackToTheOldIndex() async throws {
+        // Every replacement title is "Chapter 1"; similarity 7/9 is below 0.96, so upstream keeps index 1.
         let result = try await locate(old: nil, new: "Chapter [0-9]+##Chapter 1")
         XCTAssertEqual(result.titles, ["Chapter 1", "Chapter 1", "Chapter 1"])
         XCTAssertEqual(result.located, 1)
+    }
+
+    func testSeveralExactMatchesTakeTheFirstInTheWindow() async throws {
+        // Old index 1 is "Chapter 2"; every replacement title becomes "Chapter 2", so upstream takes index 0.
+        let result = try await locate(old: nil, new: "Chapter [13]##Chapter 2")
+        XCTAssertEqual(result.titles, ["Chapter 2", "Chapter 2", "Chapter 2"])
+        XCTAssertEqual(result.located, 0)
+    }
+
+    func testEmptyContentRuleIsRejectedInsteadOfCommittingTheChapterLink() async throws {
+        let engine = ReaderEngine()
+        defer { engine.close() }
+        _ = await call { engine.initialize(completion: $0) }
+        let suffix = UUID().uuidString
+        let old = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        let new = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await source(engine, old, suffix: suffix, chapterName: nil)
+        try await source(engine, new, suffix: suffix, chapterName: nil, emptyContent: true)
+        let (oldBook, oldChapters) = try await catalog(engine, old)
+        _ = await call { engine.addToShelf(sourceId: old, bookId: oldBook.id, completion: $0) }
+        let (candidate, _) = try await catalog(engine, new)
+        let prepared = await call { engine.prepareLocatedSourceSwitch(oldSourceId: old, oldBookId: oldBook.id,
+            sourceId: new, bookId: candidate.id, readingChapterId: oldChapters[1].id, completion: $0) }
+        let failure = try XCTUnwrap(prepared as? EngineFailure, "\(prepared)")
+        XCTAssertTrue(failure.message.contains("link instead of chapter text"), failure.message)
     }
 
     func testNoTitleOrNumberMatchFallsBackToTheOldIndex() async throws {

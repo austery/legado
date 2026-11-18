@@ -43,14 +43,14 @@ The Swift UI remains a client of the KMP engine. Room remains the book, catalog,
 3. ~~Selecting a candidate loads its details and catalog without altering the shelf. Recommend a chapter only when its trimmed title uniquely matches the current chapter title in the replacement catalog. Do not remove numbers or punctuation or use chapter index as an automatic fallback.~~
 4. ~~With no unique match, require manual chapter selection. Always allow the reader to choose another chapter.~~
 5. ~~Load and verify the selected chapter body before enabling final confirmation. Show both sources and the replacement chapter, with a clear notice that reading will start at the beginning of that chapter.~~
-6. ~~Commit only on explicit confirmation. Cancellation, search failures, unavailable chapters, and preparation failures preserve the old active source and resume.~~
+6. ~~Commit only on explicit confirmation.~~ Cancellation, search failures, unavailable chapters, and preparation failures preserve the old active source and resume.
 
 The old reader remains recoverable throughout preparation. Flush pending reading progress before capturing the switch's expected state. If saving fails, retain the existing retry/discard decision; do not silently discard progress to continue switching. Changes after preparation make ~~confirmation~~ the prepared switch stale and require preparation again.
 
 ### Persistence and concurrency
 
 - Add an engine-owned prepared-switch token bound to the current shelf identity, old source, resume revision, shared progress projection, target catalog, selected chapter, and verified body fingerprint.
-- Keep preparation separate from durable shelf admission. Keep the fetched body in immutable memory until confirmation; preparation must not overwrite an existing listing's cache or create another shelf entry.
+- Keep preparation separate from durable shelf admission. Keep the fetched body in immutable memory until ~~confirmation~~ the commit (#108); preparation must not overwrite an existing listing's cache or create another shelf entry.
 - Commit replacement book identity, catalog, and native resume in one Room transaction. Preserve existing user-owned shelf metadata; take source-owned metadata from the replacement. Explicitly enumerate the field ownership during implementation and review.
 - Validate the expected old source, revision, shared projection, candidate identity, target source availability, and target URL conflicts at commit. Reject stale or conflicting requests without partial mutation.
 - Acquire the database write lock before publishing the target cache, verify its readback, and then commit the replacement. A cache publication failure rolls back the transaction; the old source's cache is never touched.

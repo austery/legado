@@ -1181,7 +1181,12 @@ final class ReaderModel: ObservableObject {
     func cancelLoading() {
         let previous = content
         let needsRecovery = previous?.reading?.canSave == true && route == .reading
+        let cancellingSwitch = switchingFrom != nil && switchCandidate != nil && !committingSwitch
         cancel()
+        if cancellingSwitch {
+            switchCandidate = nil; preparedSwitch = nil
+            message = "Source switch cancelled. The original source is kept."
+        }
         if needsRecovery, let previous {
             finishReading { [weak self] in self?.recoverDisplayedReading(previous) }
         }

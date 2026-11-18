@@ -487,7 +487,7 @@ does: the engine locates the chapter with upstream
 Change source began, as upstream starts from the live reading position. Without an
 open chapter it uses the shelf book's saved chapter (`durChapterIndex` and
 `durChapterTitle`, which resume saves keep current). If the located
-entry is a volume heading, the next readable chapter is used. A wrong match is
+entry is a volume heading, the next readable chapter is used, else the previous one. A wrong match is
 corrected from the catalog in the reader, as upstream does.
 
 The replacement chapter is fetched into immutable in-memory preparation, then
@@ -496,14 +496,16 @@ transaction, then publishes and verifies the body cache before committing the
 shelf record, catalog, and native resume,
 preserving user shelf metadata. Reading starts at offset zero. Existing progress,
 source-rule, and URL-ownership changes reject stale preparations. Cancel and
-pre-commit failures retain the original source and keep the candidate list open with
-"Could not switch to <source>: <reason>"; Retry repeats the same switch; a lost post-commit acknowledgment
+pre-commit failures retain the original source and keep the candidate list open.
+A failure shows "Could not switch to <source>: <reason>" and Retry repeats the step
+that failed; Cancel shows "Source switch cancelled. The original source is kept."
+A body equal to the chapter link (an empty content rule) is rejected. A lost post-commit acknowledgment
 is resolved only with this engine's successful commit receipt and matching durable
 shelf/resume state. Preparation never overwrites a different book's cache.
 
-The synthetic UI host can withhold only the final switch reply to test termination
-after database commit but before UI acknowledgment. This hook is excluded from the
-product application. It can also hold the prepared switch before its commit
+The synthetic UI host can withhold the final switch reply to test termination
+after database commit but before UI acknowledgment. These hooks are excluded from the
+product application. The host can also hold the prepared switch before its commit
 (`READER_UI_HOLD_SWITCH_PREPARE`), so the UI suite terminates there and checks that
 relaunch retains the old source. Actual results and revision evidence are
 recorded separately; these test descriptions are not acceptance claims.
