@@ -391,7 +391,7 @@ final class ReaderModel: ObservableObject {
         guard let original = switchingFrom else { return }
         switchCandidate = candidate; preparedSwitch = nil
         perform(retry: { [weak self] in self?.switchToLocatedChapter(candidate) }, failure: { [weak self] error in
-            self?.reportSwitchFailure(candidate, error.message)
+            self?.reportSwitchFailure(candidate, error.message) { [weak self] in self?.switchToLocatedChapter(candidate) }
         }, start: {
             self.engine.prepareLocatedSourceSwitch(oldSourceId: original.sourceId, oldBookId: original.id,
                 sourceId: candidate.sourceId, bookId: candidate.id, readingChapterId: self.switchReadingChapterID, completion: $0)
@@ -421,17 +421,19 @@ final class ReaderModel: ObservableObject {
                         guard let self else { return }
                         self.committingSwitch = false; self.busy = false
                         if let entry = recovered as? ShelfEntryReply { self.finishSourceSwitch(entry) }
-                        else { self.reportSwitchFailure(candidate, failure) }
+                        else { self.reportSwitchFailure(candidate, failure) { [weak self] in self?.switchToLocatedChapter(candidate) } }
                     }
                 }
             }
         }
     }
-    private func reportSwitchFailure(_ candidate: BookSnapshot, _ reason: String) {
+    /// Only acts during Change source; other flows keep the generic failure message.
+    private func reportSwitchFailure(_ candidate: BookSnapshot, _ reason: String, retry: @escaping () -> Void) {
+        guard switchingFrom != nil else { return }
         switchCandidate = nil; preparedSwitch = nil
         let name = sources.first { $0.id == candidate.sourceId }?.name ?? candidate.sourceId
         message = "Could not switch to \(name): \(reason)"
-        retryAction = { [weak self] in self?.switchToLocatedChapter(candidate) }
+        retryAction = retry
     }
     private func finishSourceSwitch(_ entry: ShelfEntryReply) {
         switchingFrom = nil; switchCandidate = nil; preparedSwitch = nil
@@ -1036,7 +1038,9 @@ final class ReaderModel: ObservableObject {
         if route == .discovery { detailReturnRoute = .discovery }
         else if route == .search { detailReturnRoute = .search }
         guard eligibleSwitchCandidate(selected) else { return }
-        perform(stage: .detail, retry: { [weak self] in self?.select(selected) }, start: {
+        perform(stage: .detail, retry: { [weak self] in self?.select(selected) }, failure: { [weak self] error in
+            self?.reportSwitchFailure(selected, error.message) { [weak self] in self?.select(selected) }
+        }, start: {
             self.engine.loadBook(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? BookReply else { return }
@@ -1045,7 +1049,9 @@ final class ReaderModel: ObservableObject {
     }
 
     private func loadContents(_ selected: BookSnapshot) {
-        perform(stage: .contents, retry: { [weak self] in self?.loadContents(selected) }, start: {
+        perform(stage: .contents, retry: { [weak self] in self?.loadContents(selected) }, failure: { [weak self] error in
+            self?.reportSwitchFailure(selected, error.message) { [weak self] in self?.loadContents(selected) }
+        }, start: {
             self.engine.loadToc(sourceId: selected.sourceId, bookId: selected.id, completion: $0)
         }) { [weak self] reply in
             guard let self, let reply = reply as? TocReply else { return }

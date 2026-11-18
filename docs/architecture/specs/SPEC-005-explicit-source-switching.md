@@ -32,20 +32,20 @@ The Swift UI remains a client of the KMP engine. Room remains the book, catalog,
 
 ## 3. Proposed Design Decision
 
-**Owner-approved approach:** prepare a replacement chapter before an explicit commit; recommend only an unambiguous matching chapter and start the replacement at its beginning.
+**Owner-approved approach (2026-10-20, superseded in part by #108):** ~~prepare a replacement chapter before an explicit commit; recommend only an unambiguous matching chapter~~ and start the replacement at its beginning. Since #108: prepare the chapter that upstream `getDurChapter` locates, then commit without a separate confirmation.
 
-> **Amended 2026-11-17 by [Issue #108](https://github.com/austery/legado/issues/108).** Journey steps 3 to 6 below are replaced. Selecting a candidate now switches in one step, as Android Legado does: the engine locates the replacement chapter with upstream `BookHelpChapterLocator.getDurChapter` (title similarity within ±10 chapters, then the "第N章" number, then the old chapter index as a fallback), prepares and verifies it, and commits. There is no chapter-selection page and no confirm step. Reason: follow upstream behavior under the upstream-first rule in `AGENTS.md`; on the physical iPad the explicit steps made the feature hard to use, because exact title matches were rare (owner retest, 2026-11-17). Unchanged: equivalence (step 2), prepare-then-commit atomicity, offset-zero start, and failure or cancellation keeping the old source. Lei approved H1 on #108 on 2026-11-17.
+> **Amended 2026-11-17 by [Issue #108](https://github.com/austery/legado/issues/108).** Journey steps 3 to 6 below are replaced. Selecting a candidate now switches in one step, as Android Legado does: the engine locates the replacement chapter with upstream `BookHelpChapterLocator.getDurChapter` (title similarity within ±10 chapters, then the "第N章" number, then the old chapter index as a fallback), prepares and verifies it, and commits. There is no chapter-selection page and no confirm step. Reason: follow upstream behavior under the upstream-first rule in `AGENTS.md`; on the physical iPad the explicit steps made the feature hard to use, because exact title matches were rare (owner retest, 2026-11-17). Unchanged: equivalence (step 2), prepare-then-commit atomicity, offset-zero start, and the rule from step 6 that cancellation and failures keep the old source. If `getDurChapter` returns a volume heading, which the native reader cannot open, the next readable chapter is used, else the previous one; Lei decides whether to keep this adaptation (PR #110). Struck-through text below is superseded. Lei approved H1 on #108 on 2026-11-17.
 
 ### User journey
 
 1. Offer Change source for a shelved book from its details and reader controls.
 2. Reuse incremental multi-source search. For this slice, eligible replacements require equal trimmed, nonblank title and author; the active listing is identified and cannot be selected as its own replacement. Missing or different authors do not establish equivalence.
-3. Selecting a candidate loads its details and catalog without altering the shelf. Recommend a chapter only when its trimmed title uniquely matches the current chapter title in the replacement catalog. Do not remove numbers or punctuation or use chapter index as an automatic fallback.
-4. With no unique match, require manual chapter selection. Always allow the reader to choose another chapter.
-5. Load and verify the selected chapter body before enabling final confirmation. Show both sources and the replacement chapter, with a clear notice that reading will start at the beginning of that chapter.
-6. Commit only on explicit confirmation. Cancellation, search failures, unavailable chapters, and preparation failures preserve the old active source and resume.
+3. ~~Selecting a candidate loads its details and catalog without altering the shelf. Recommend a chapter only when its trimmed title uniquely matches the current chapter title in the replacement catalog. Do not remove numbers or punctuation or use chapter index as an automatic fallback.~~
+4. ~~With no unique match, require manual chapter selection. Always allow the reader to choose another chapter.~~
+5. ~~Load and verify the selected chapter body before enabling final confirmation. Show both sources and the replacement chapter, with a clear notice that reading will start at the beginning of that chapter.~~
+6. ~~Commit only on explicit confirmation. Cancellation, search failures, unavailable chapters, and preparation failures preserve the old active source and resume.~~
 
-The old reader remains recoverable throughout preparation. Flush pending reading progress before capturing the switch's expected state. If saving fails, retain the existing retry/discard decision; do not silently discard progress to continue switching. Changes after preparation make confirmation stale and require preparation again.
+The old reader remains recoverable throughout preparation. Flush pending reading progress before capturing the switch's expected state. If saving fails, retain the existing retry/discard decision; do not silently discard progress to continue switching. Changes after preparation make ~~confirmation~~ the prepared switch stale and require preparation again.
 
 ### Persistence and concurrency
 
@@ -58,11 +58,12 @@ The old reader remains recoverable throughout preparation. Flush pending reading
 - Create a valid native resume for the selected replacement chapter at offset zero, using its actual body hash and coordinate version. Never copy character offsets, percentages, or paragraph numbers between sources.
 - Invalidate old reading-session tokens after successful commit. Old tokens must also fail persistent identity/revision checks if invalidation is interrupted.
 - If acknowledgment is lost after commit, resolve the durable active entry before reporting success or failure. Never promise that the old source survived an already committed replacement.
-- A subsequent reverse switch uses the same explicit chapter selection contract. Automatic restoration of a historical per-source paragraph is outside this slice.
+- A subsequent reverse switch uses the same ~~explicit chapter selection~~ located-chapter contract (#108). Automatic restoration of a historical per-source paragraph is outside this slice.
 
 | Alternative | Benefit | Limitation | Proposed disposition |
 | --- | --- | --- | --- |
-| Prepare, confirm, and begin selected chapter | Predictable position with recoverable failures | Reader may reread part of a chapter | Recommended |
+| Prepare, confirm, and begin selected chapter | Predictable position with recoverable failures | Reader may reread part of a chapter | ~~Recommended~~ Superseded by #108 |
+| Locate with upstream `getDurChapter`, prepare, and commit in one step (#108) | Same behavior as Android Legado; one tap | A wrong match opens the wrong chapter at its start; fix it from the catalog | Selected 2026-11-17 |
 | Copy chapter index and character offset | Fewer interactions | Different catalogs and bodies make the position misleading | Reject |
 | Fuzzy text alignment across sources | Potentially closer resume | Requires a separate confidence and ambiguity contract | Defer |
 | Reuse ordinary shelf admission or raw book replacement | Small implementation | Does not satisfy source/catalog/resume atomicity | Reject |
@@ -80,7 +81,7 @@ The old reader remains recoverable throughout preparation. Flush pending reading
 
 ### Phase 2: Native interaction
 
-- [ ] Add source selection, matching/manual chapter selection, preparation, and confirmation UI.
+- [ ] Add source selection, ~~matching/manual chapter selection,~~ preparation, ~~and confirmation~~ UI.
 - [ ] Retain readable old content and actionable errors until commit succeeds.
 - [ ] Refresh details, shelf, catalog, and reader from the committed engine result.
 
@@ -96,7 +97,7 @@ The old reader remains recoverable throughout preparation. Flush pending reading
 
 ## 5. Acceptance Criteria
 
-- [ ] Unique chapter-title match is recommended; duplicate/missing matches require explicit selection.
+- [ ] ~~Unique chapter-title match is recommended; duplicate/missing matches require explicit selection.~~ Since #108: the replacement chapter is the one upstream `getDurChapter` locates.
 - [ ] Different/missing author and target URL conflicts cannot silently replace an entry.
 - [ ] Preparation and cancellation leave the old shelf/catalog/resume unchanged.
 - [ ] Failed body loading or cache verification cannot commit a replacement.

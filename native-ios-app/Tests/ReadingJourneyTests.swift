@@ -122,7 +122,13 @@ final class ReadingJourneyTests: XCTestCase {
     }
 
     func testConflictingTargetKeepsItsCacheAndIsNeverReportedAsSuccessfulSwitch() async throws {
-        let model = ReaderModel()
+        // Observes the prepared reply so the test proves the commit, not preparation, rejected the switch.
+        final class Observer { var onPrepared: (() -> Void)?; var prepared = 0 }
+        let observer = Observer()
+        let model = ReaderModel(deliverReply: { _, reply, apply in
+            if reply is SourceSwitchPrepared { observer.prepared += 1; observer.onPrepared?() }
+            apply(reply)
+        })
         model.start(); try await settle(model)
         let first = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
@@ -173,9 +179,14 @@ final class ReadingJourneyTests: XCTestCase {
             other.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: 10) { continuation.resume(returning: $0) }
         }
         XCTAssertTrue(saved is ReadingSaved)
+        var cacheAtPreparation: String?
+        observer.onPrepared = { cacheAtPreparation = try? String(contentsOf: cache, encoding: .utf8) }
         model.beginSourceSwitch(); try await settle(model)
         model.select(target); try await settle(model)
+        XCTAssertEqual(observer.prepared, 1, "Preparation must succeed so the commit performs the ownership check")
+        XCTAssertEqual(cacheAtPreparation, originalBody, "Preparation must not overwrite the conflicting book's cache")
         XCTAssertTrue(model.message?.hasPrefix("Could not switch to ") == true, model.message ?? "no message")
+        XCTAssertTrue(model.message?.contains("conflict") == true, model.message ?? "no message")
         XCTAssertNotNil(model.switchingFrom)
         XCTAssertNil(model.switchCandidate)
         XCTAssertEqual(model.book?.sourceId, first)
@@ -281,7 +292,10 @@ final class ReadingJourneyTests: XCTestCase {
         // Read the second chapter so the upstream locator has a non-trivial position to map.
         model.read(model.chapters[1]); try await settle(model)
         let readingToken = try XCTUnwrap(model.content?.reading?.token)
-        model.readingDisplayed(readingToken, 0)
+        let text = try XCTUnwrap(model.content?.text) as NSString
+        let secondParagraph = text.range(of: "\n").location + 1
+        XCTAssertGreaterThan(secondParagraph, 0)
+        model.readingDisplayed(readingToken, secondParagraph)
         model.saveCurrentBookmark()
         let saveDeadline = Date().addingTimeInterval(10)
         while model.bookmarkBusy && Date() < saveDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
@@ -302,6 +316,7 @@ final class ReadingJourneyTests: XCTestCase {
         model.cancelSourceSwitch(); try await settle(model)
         XCTAssertEqual(model.content?.chapter.sourceId, first)
         XCTAssertEqual(model.content?.chapter.index, 1)
+        XCTAssertEqual(try storedProgress(oldBook.id)[1], String(secondParagraph), "Cancelling must keep the saved paragraph")
         model.beginSourceSwitch(); try await settle(model)
         model.select(replacement); try await settle(model)
         XCTAssertNil(model.message)
@@ -344,7 +359,8 @@ final class ReadingJourneyTests: XCTestCase {
         model.searchScope = .selected; model.selectedSourceIDs = [first, second]
         model.query = "Path"; model.search(); try await settle(model)
         let replacement = try XCTUnwrap(model.results.first { $0.sourceId == second })
-        model.select(try XCTUnwrap(model.results.first { $0.sourceId == first })); try await settle(model)
+        let oldBook = try XCTUnwrap(model.results.first { $0.sourceId == first })
+        model.select(oldBook); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.refreshShelf(); try await settle(model)
         // The reading fixture fails chapter 3 once on purpose, so open chapter 2. No position is
@@ -359,6 +375,7 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertEqual(model.route, .search)
         XCTAssertEqual(model.book?.sourceId, first)
         XCTAssertEqual(model.content?.text, originalText)
+        XCTAssertEqual(try storedProgress(oldBook.id), [], "A failed switch must not write a reading position")
         // Repair the replacement source in storage, then retry the same switch from the banner.
         let other = ReaderEngine()
         defer { other.close() }

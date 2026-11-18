@@ -4,9 +4,9 @@ An independent SwiftUI/TextKit client of ReaderEngine, with bundle ID
 `io.legado.pathc.nativereader`. It does not share a sandbox with existing readers
 or the C1 harness. The app covers source import, incremental multi-source search,
 contents, adaptive scrolling/two-page text, chapter navigation, typography, an explicit bookshelf
-and durable reading positions with cached reopening. Explicit source switching
-prepares replacement text before confirmation and starts the chosen chapter at
-its beginning.
+and durable reading positions with cached reopening. Source switching
+locates the replacement chapter with the upstream locator, verifies its text, and
+switches in one step, starting that chapter at its beginning.
 
 ## Deliberate UI defaults
 
