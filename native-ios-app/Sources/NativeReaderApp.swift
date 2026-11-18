@@ -54,7 +54,7 @@ struct ReaderScreen: View {
                 }
                 if model.busy {
                     HStack {
-                        ProgressView(); Text(model.committingSwitch ? "Switching source…" : "Loading…"); Spacer()
+                        ProgressView(); Text(model.switchingSource ? "Switching source…" : "Loading…"); Spacer()
                         if !model.committingSwitch { Button("Cancel") { model.cancelLoading() } }
                     }.padding()
                 }
@@ -85,7 +85,6 @@ struct ReaderScreen: View {
                     if model.route == .sources { sources }
                     if model.route == .details { details }
                     if model.route == .contents { contents }
-                    if model.route == .sourceSwitch { sourceSwitch }
                 }
                 .overlay(alignment: .top) {
                     if model.route == .reading { readingHeader }
@@ -179,7 +178,6 @@ struct ReaderScreen: View {
         case .details: return "Book details"
         case .contents: return "Contents"
         case .reading: return model.content?.chapter.title ?? "Reader"
-        case .sourceSwitch: return "Replacement chapter"
         }
     }
 
@@ -541,50 +539,6 @@ struct ReaderScreen: View {
         .padding(.top, menu ? 8 : 4).padding(.bottom, 12)
         .frame(maxWidth: .infinity).background(paper)
         .overlay(alignment: .top) { if menu { Divider().opacity(0.35) } }
-    }
-
-    private var sourceSwitch: some View {
-        List {
-            if let candidate = model.switchCandidate {
-                Section("Replacement source") {
-                    if let original = model.switchingFrom {
-                        Text("From: " + (model.sources.first { $0.id == original.sourceId }?.name ?? original.sourceId))
-                            .accessibilityIdentifier("switch.originalSource")
-                    }
-                    Text("To: " + (model.sources.first { $0.id == candidate.sourceId }?.name ?? candidate.sourceId))
-                        .accessibilityIdentifier("switch.replacementSource")
-                    Text(candidate.title)
-                    Text("Choose a chapter. Switching starts at its beginning; the old paragraph position is not copied.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button("Choose another source") { model.navigate(.search) }
-                        .disabled(model.busy)
-                }
-                if let prepared = model.preparedSwitch {
-                    Section("Ready to switch") {
-                        Text(prepared.chapter.title)
-                        Text("The replacement text is downloaded. Your original source stays active until you confirm.")
-                            .font(.callout).foregroundStyle(.secondary)
-                        Button("Confirm source switch") { model.confirmSourceSwitch() }
-                            .disabled(model.busy).accessibilityIdentifier("switch.confirm")
-                    }
-                }
-                Section("Choose replacement chapter") {
-                    if model.recommendedSwitchChapter == nil {
-                        Text("No unique title match. Select the chapter explicitly.").foregroundStyle(.secondary)
-                    }
-                    ForEach(model.switchChapters, id: \.id) { chapter in
-                        Button { model.prepareSourceSwitch(chapter) } label: {
-                            HStack {
-                                Text(chapter.title)
-                                if model.recommendedSwitchChapter?.id == chapter.id {
-                                    Text("Recommended").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }.disabled(model.busy).accessibilityIdentifier("switch.chapter.\(chapter.index)")
-                    }
-                }
-            }
-        }
     }
 
     private func chapterButton(_ title: String, icon: String, delta: Int) -> some View {
