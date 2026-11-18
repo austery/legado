@@ -483,8 +483,10 @@ Change source is available for shelved books with a known title and author. Sear
 retains exact candidates; only another listing with the same trimmed title and
 author is eligible. Selecting a candidate switches in one step, as Android Legado
 does: the engine locates the chapter with upstream
-`BookHelpChapterLocator.getDurChapter`, using the shelf book's current chapter
-(resume saves keep `durChapterIndex` and `durChapterTitle` current). If the located
+`BookHelpChapterLocator.getDurChapter`, starting from the chapter on screen when
+Change source began, as upstream starts from the live reading position. Without an
+open chapter it uses the shelf book's saved chapter (`durChapterIndex` and
+`durChapterTitle`, which resume saves keep current). If the located
 entry is a volume heading, the next readable chapter is used. A wrong match is
 corrected from the catalog in the reader, as upstream does.
 

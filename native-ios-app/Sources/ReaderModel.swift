@@ -349,6 +349,8 @@ final class ReaderModel: ObservableObject {
     @Published private(set) var switchCandidate: BookSnapshot?
     @Published private(set) var preparedSwitch: SourceSwitchPrepared?
     @Published private(set) var committingSwitch = false
+    /// The old-source chapter on screen when the switch began; the engine locates from it.
+    private var switchReadingChapterID: String?
     var canChangeSource: Bool {
         guard let book else { return false }
         return shelf.contains { $0.book.id == book.id && $0.book.sourceId == book.sourceId } &&
@@ -365,9 +367,11 @@ final class ReaderModel: ObservableObject {
     }
     func beginSourceSwitch() {
         guard canChangeSource, let original = book else { return }
+        let readingChapterID = content.flatMap { $0.chapter.sourceId == original.sourceId ? $0.chapter.id : nil }
         navigate(.search) { [weak self] in
             guard let self else { return }
             self.switchingFrom = original
+            self.switchReadingChapterID = readingChapterID
             self.switchCandidate = nil; self.preparedSwitch = nil
             self.query = original.title
             self.search()
@@ -390,7 +394,7 @@ final class ReaderModel: ObservableObject {
             self?.reportSwitchFailure(candidate, error.message)
         }, start: {
             self.engine.prepareLocatedSourceSwitch(oldSourceId: original.sourceId, oldBookId: original.id,
-                sourceId: candidate.sourceId, bookId: candidate.id, completion: $0)
+                sourceId: candidate.sourceId, bookId: candidate.id, readingChapterId: self.switchReadingChapterID, completion: $0)
         }) { [weak self] reply in
             guard let self, let prepared = reply as? SourceSwitchPrepared else { return }
             self.preparedSwitch = prepared

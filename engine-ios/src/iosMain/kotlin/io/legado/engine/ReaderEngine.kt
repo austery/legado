@@ -140,14 +140,15 @@ class ReaderEngine {
     /**
      * Prepare the chapter that upstream [BookHelpChapterLocator.getDurChapter] locates in the
      * loaded replacement catalog, as Android Legado does when it changes source (Issue #108).
+     * [readingChapterId] is the old-source chapter on screen; without it the shelf book's
+     * saved chapter is used.
      */
     fun prepareLocatedSourceSwitch(oldSourceId: String, oldBookId: String, sourceId: String,
-        bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
-        prepareSwitch(oldSourceId, oldBookId, sourceId, bookId, null)
-    }
+        bookId: String, readingChapterId: String?, completion: (EngineReply) -> Unit): EngineRequest =
+        request(completion) { prepareSwitch(oldSourceId, oldBookId, sourceId, bookId, null, readingChapterId) }
 
     private suspend fun prepareSwitch(oldSourceId: String, oldBookId: String, sourceId: String,
-        bookId: String, chapterId: String?): EngineReply {
+        bookId: String, chapterId: String?, readingChapterId: String? = null): EngineReply {
         preparedSwitches.clear()
         committedSwitches.clear()
         val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
@@ -163,7 +164,7 @@ class ReaderEngine {
         candidate.name = original.name
         candidate.author = original.author
         val catalog = chapters[sourceId to bookId]?.map { it.copy() } ?: throw InvalidInput("Load the replacement catalog")
-        val chapter = if (chapterId == null) locatedChapter(original, originalEntry.chapters.size, catalog)
+        val chapter = if (chapterId == null) locatedChapter(original, originalEntry.chapters, readingChapterId, catalog)
             else catalog.singleOrNull { it.url == chapterId && !it.isVolume }
                 ?: throw InvalidInput("Choose a readable replacement chapter")
         val targetSource = source(sourceId)
@@ -182,14 +183,19 @@ class ReaderEngine {
     }
 
     /**
-     * Upstream locator over the shelf book's current chapter. Resume saves project the chapter
-     * into durChapterIndex/durChapterTitle. The locator works on list positions; a volume
-     * heading is not readable, so take the next readable chapter, else the previous one.
+     * Upstream locator over the old chapter. Upstream passes the live reading position; here
+     * that is the chapter on screen. Without it, use the shelf book's chapter, which resume
+     * saves project into durChapterIndex/durChapterTitle. The locator works on list positions;
+     * a volume heading is not readable, so take the next readable chapter, else the previous one.
      */
-    private fun locatedChapter(original: Book, oldCatalogSize: Int, catalog: List<BookChapter>): BookChapter {
+    private fun locatedChapter(original: Book, oldCatalog: List<BookChapter>, readingChapterId: String?,
+        catalog: List<BookChapter>): BookChapter {
         if (catalog.none { !it.isVolume }) throw InvalidInput("The replacement catalog has no readable chapter")
-        val located = BookHelpChapterLocator.getDurChapter(original.durChapterIndex, original.durChapterTitle,
-            catalog, oldCatalogSize).coerceIn(0, catalog.lastIndex)
+        val reading = readingChapterId?.let { id -> oldCatalog.indexOfFirst { it.url == id } }?.takeIf { it >= 0 }
+        val oldIndex = reading ?: original.durChapterIndex
+        val oldTitle = reading?.let { oldCatalog[it].title } ?: original.durChapterTitle
+        val located = BookHelpChapterLocator.getDurChapter(oldIndex, oldTitle, catalog, oldCatalog.size)
+            .coerceIn(0, catalog.lastIndex)
         return catalog.drop(located).firstOrNull { !it.isVolume }
             ?: catalog.take(located).last { !it.isVolume }
     }
