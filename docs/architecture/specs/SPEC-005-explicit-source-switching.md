@@ -4,7 +4,7 @@ title: Explicit Active-Book Source Switching
 status: Ready for Implementation
 priority: P1 - Core Feature
 creationDate: 2026-10-20
-lastUpdateDate: 2026-10-20
+lastUpdateDate: 2026-11-17
 owner: User (AI-Assisted)
 relatedSpecs:
   - PLAN-005
@@ -33,6 +33,8 @@ The Swift UI remains a client of the KMP engine. Room remains the book, catalog,
 ## 3. Proposed Design Decision
 
 **Owner-approved approach:** prepare a replacement chapter before an explicit commit; recommend only an unambiguous matching chapter and start the replacement at its beginning.
+
+> **Amended 2026-11-17 by [Issue #108](https://github.com/austery/legado/issues/108).** Journey steps 3 to 6 below are replaced. Selecting a candidate now switches in one step, as Android Legado does: the engine locates the replacement chapter with upstream `BookHelpChapterLocator.getDurChapter` (title similarity within ±10 chapters, then the "第N章" number, then the old chapter index as a fallback), prepares and verifies it, and commits. There is no chapter-selection page and no confirm step. Reason: follow upstream behavior under the upstream-first rule in `AGENTS.md`; on the physical iPad the explicit steps made the feature hard to use, because exact title matches were rare (owner retest, 2026-11-17). Unchanged: equivalence (step 2), prepare-then-commit atomicity, offset-zero start, and failure or cancellation keeping the old source. Lei approved H1 on #108 on 2026-11-17.
 
 ### User journey
 
@@ -114,6 +116,7 @@ Whole-book downloads, fuzzy body alignment, missing-author equivalence, source h
 | --- | --- | --- |
 | 2026-10-20 | Draft | Prepared after PR #30 merge; source equivalence and chapter-start policy await owner confirmation. |
 | 2026-10-20 | Ready for Implementation | Owner approved the proposed switching rules, simulator implementation and acceptance, and continuous goal execution. |
+| 2026-11-17 | Amended | Issue #108: one-step switch with the upstream chapter locator replaces explicit chapter selection and confirmation (steps 3 to 6). |
 
 ## 7. Related
 

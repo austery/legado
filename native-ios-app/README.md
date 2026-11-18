@@ -477,27 +477,33 @@ recorded separately; adding tests is not a claim that they passed.
 A separate two-source UI journey verifies catalog-filter reset and global settings
 across source entries, without changing the original shelf entry.
 
-## Explicit source switching (SPEC-005)
+## Explicit source switching (SPEC-005, amended by Issue #108)
 
 Change source is available for shelved books with a known title and author. Search
 retains exact candidates; only another listing with the same trimmed title and
-author is eligible. A unique trimmed chapter-title match is recommended; duplicate
-or missing matches require manual selection. Volume headings are excluded.
+author is eligible. Selecting a candidate switches in one step, as Android Legado
+does: the engine locates the chapter with upstream
+`BookHelpChapterLocator.getDurChapter`, using the shelf book's current chapter
+(resume saves keep `durChapterIndex` and `durChapterTitle` current). If the located
+entry is a volume heading, the next readable chapter is used. A wrong match is
+corrected from the catalog in the reader, as upstream does.
 
-The replacement chapter is fetched into immutable in-memory preparation before
-confirmation. Confirmation validates URL ownership under the database write
+The replacement chapter is fetched into immutable in-memory preparation, then
+committed without a separate confirmation. The commit validates URL ownership under the database write
 transaction, then publishes and verifies the body cache before committing the
 shelf record, catalog, and native resume,
 preserving user shelf metadata. Reading starts at offset zero. Existing progress,
 source-rule, and URL-ownership changes reject stale preparations. Cancel and
-pre-commit failures retain the original source; a lost post-commit acknowledgment
+pre-commit failures retain the original source and keep the candidate list open with
+"Could not switch to <source>: <reason>"; Retry repeats the same switch; a lost post-commit acknowledgment
 is resolved only with this engine's successful commit receipt and matching durable
 shelf/resume state. Preparation never overwrites a different book's cache.
 
 The synthetic UI host can withhold only the final switch reply to test termination
 after database commit but before UI acknowledgment. This hook is excluded from the
-product application. The UI suite also terminates before confirmation and checks
-that relaunch retains the old source. Actual results and revision evidence are
+product application. It can also hold the prepared switch before its commit
+(`READER_UI_HOLD_SWITCH_PREPARE`), so the UI suite terminates there and checks that
+relaunch retains the old source. Actual results and revision evidence are
 recorded separately; these test descriptions are not acceptance claims.
 
 
