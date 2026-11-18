@@ -347,8 +347,11 @@ final class ReadingJourneyTests: XCTestCase {
         model.select(try XCTUnwrap(model.results.first { $0.sourceId == first })); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.refreshShelf(); try await settle(model)
-        model.read(model.chapters[2]); try await settle(model)
-        let originalText = model.content?.text
+        // The reading fixture fails chapter 3 once on purpose, so open chapter 2. No position is
+        // saved, so the locator must start from the chapter on screen, not the shelf record.
+        model.read(model.chapters[1]); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.index, 1)
+        let originalText = try XCTUnwrap(model.content?.text)
         model.beginSourceSwitch(); try await settle(model)
         model.select(replacement); try await settle(model)
         XCTAssertTrue(model.message?.hasPrefix("Could not switch to Path C Controlled Source: ") == true, model.message ?? "no message")
@@ -370,7 +373,7 @@ final class ReadingJourneyTests: XCTestCase {
         XCTAssertNil(model.message)
         XCTAssertNil(model.switchingFrom)
         XCTAssertEqual(model.content?.chapter.sourceId, second)
-        XCTAssertEqual(model.content?.chapter.index, 2, "Upstream getDurChapter maps Chapter 3 to Chapter 3")
+        XCTAssertEqual(model.content?.chapter.index, 1, "Upstream getDurChapter maps Chapter 2 to Chapter 2")
         XCTAssertEqual(model.content?.reading?.paragraphUtf16Offset, 0)
     }
 
