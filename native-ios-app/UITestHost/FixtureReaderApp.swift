@@ -175,6 +175,12 @@ struct FixtureReaderApp: App {
                 }
                 if let progress = model.cacheProgress {
                     positionStatus += ";cached=\(progress.completed);cacheRunning=\(progress.running);"
+                    if scenario == "offline-active-cache" {
+                        positionStatus += "cacheTarget=\(progress.target);cacheCancelled=\(progress.cancelled);cacheFailure=\(progress.lastFailure);"
+                    }
+                }
+                if scenario == "offline-active-cache" {
+                    positionStatus += ";manualCacheRunning=\(model.manualCacheRunning);cacheNotice=\(model.cacheNotice ?? "");"
                 }
             }.task {
                 guard !prepared else { return }

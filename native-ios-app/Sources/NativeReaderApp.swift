@@ -557,14 +557,14 @@ struct ReaderScreen: View {
         }
         .accessibilityLabel(title)
         .accessibilityIdentifier(delta < 0 ? "reader.previous" : "reader.next")
-        .disabled(!model.canMoveChapter(delta))
+        .disabled(model.busy || model.chapterPosition.map { !model.chapters.indices.contains($0 + delta) } != false)
     }
 
     private func chapterEndAction(for content: ContentReply) -> (() -> Void)? {
-        guard model.route == .reading, model.canMoveChapter(1) else { return nil }
+        guard model.route == .reading, model.canAdvanceFromSpread else { return nil }
         return {
             guard model.route == .reading, model.content === content else { return }
-            model.moveChapter(1)
+            model.advanceFromSpread()
         }
     }
 

@@ -113,6 +113,62 @@ final class ReadingPaginationTests: XCTestCase {
         XCTAssertEqual(view.anchor, 6)
         XCTAssertTrue(samples.isEmpty, "No displayed acknowledgment means no durable progress sampling")
     }
+
+    func testEndSwipeRestoresVisibleOffsetThroughSpreadReflowAndScrollFallback() throws {
+        let body = "Opening\n" + String(repeating: "A long paragraph continues with original text. ", count: 360) + "Chapter end"
+        let host = UIViewController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1100, height: 760))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let view = AnchoredTextView(frame: CGRect(x: 0, y: 0, width: 1100, height: 660))
+        _ = view.layoutManager
+        view.delegate = view
+        view.isEditable = false
+        host.view.addSubview(view)
+        var swipes = 0
+        view.onForwardAtEnd = { swipes += 1 }
+        view.configure(chapterKey: "chapter", body: body, style: ReadingStyle(),
+                       restoration: ReadingRestoration(identity: "token", utf16Offset: 0),
+                       onDisplayed: nil, onParagraphScroll: nil)
+        view.layoutIfNeeded()
+        XCTAssertTrue(view.usesSpreads)
+        while view.accessibilityScroll(.left) {}
+        let spreads = try XCTUnwrap(view.spreadView)
+        let visibleOffset = spreads.firstVisibleOffset
+        let paragraph = view.anchor
+        XCTAssertGreaterThan(visibleOffset, paragraph)
+        XCTAssertEqual(paragraph, "Opening\n".utf16.count)
+
+        // The UI journey exercises touch. Start at the accepted callback to isolate layout.
+        try XCTUnwrap(spreads.onForwardAtEnd)()
+        XCTAssertEqual(swipes, 1)
+
+        view.frame.size.height = 160
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        XCTAssertTrue(view.usesSpreads)
+        XCTAssertTrue(renderedSpreadRanges(in: view).contains { NSLocationInRange(visibleOffset, $0) })
+        let ranges = try XCTUnwrap(spreads.pagination).ranges
+        let finalSpreadOffset = ranges[(ranges.count - 1) / 2 * 2].location
+        XCTAssertLessThan(visibleOffset, finalSpreadOffset, "This resize creates a new final spread past the retained offset")
+
+        view.frame.size.height = 159
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        XCTAssertFalse(view.usesSpreads)
+        let bounds = view.bounds.offsetBy(dx: -view.textContainerInset.left, dy: -view.textContainerInset.top)
+        let glyphs = view.layoutManager.glyphRange(forBoundingRect: bounds, in: view.textContainer)
+        let rendered = view.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        XCTAssertTrue(NSLocationInRange(visibleOffset, rendered))
+        XCTAssertEqual(view.anchor, paragraph)
+
+        view.scrollViewWillBeginDragging(view)
+        view.setContentOffset(.zero, animated: false)
+        view.scrollViewDidEndDragging(view, willDecelerate: false)
+        XCTAssertEqual(view.anchor, 0, "Continuing to scroll in the chapter releases the retained offset")
+    }
+
     func testAccessibleTurnsSaveOnlyDisplayedActiveToken() async throws {
         let body = (0..<120).map { "Paragraph \($0) " + String(repeating: "中文 text ", count: 20) }.joined(separator: "\n")
         let view = AnchoredTextView()

@@ -72,7 +72,7 @@ class BoundaryHandler(C2Handler):
         if route == '/toc/chapter-end':
             self.reply(f'<a class="chapter" href="{run_prefix}/chapter/1">Chapter 1</a>'
                        '<a class="chapter" data-volume="true">Volume Two</a>'
-                       f'<a class="chapter" href="{run_prefix}/chapter/2">Chapter 2</a>'
+                       f'<a class="chapter" data-volume="true" href="{run_prefix}/chapter/2">Chapter 2</a>'
                        f'<a class="chapter" href="{run_prefix}/chapter/3">Chapter 3</a>'
                        '<a class="chapter" data-volume="true">End of Volume Two</a>')
             return

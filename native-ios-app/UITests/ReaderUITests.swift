@@ -1827,6 +1827,8 @@ final class ReaderUITests: XCTestCase {
         let app = launchEndSwipeReader(scenario: "chapter-end", orientation: .portrait)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let body = app.textViews["reader.text"]
+        let source = String(try XCTUnwrap(readingIdentity(app).first).dropFirst("source=".count))
+        let initialRequests = try await fixtureResponse(source, "/control/requests")
         body.swipeLeft()
         XCTAssertTrue(state(app).contains("chapter=0;"), "A horizontal swipe in portrait must stay in the chapter")
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -1840,10 +1842,13 @@ final class ReaderUITests: XCTestCase {
         body.swipeUp()
         XCTAssertTrue(state(app).contains("chapter=0;"), "Short, backwards and vertical gestures stay in the chapter")
         XCTAssertFalse(app.buttons["reader.next"].exists)
+        XCTAssertFalse(app.buttons["Cancel"].exists)
+        let beforeForwardSwipe = try await fixtureResponse(source, "/control/requests")
+        XCTAssertEqual(beforeForwardSwipe, initialRequests, "The gestures that stay in Chapter 1 must not start another load")
 
         body.swipeLeft()
         wait(app) { self.state(app).contains("chapter=2;anchor=0;") && self.spreadCount(app) > 1 }
-        XCTAssertTrue(visiblePage(app, contains: "C2-FIRST"))
+        XCTAssertTrue(visiblePage(app, contains: "C2-FIRST"), "A volume entry with a real body is readable")
         XCTAssertFalse(app.buttons["reader.next"].exists)
         capture("end-swipe-one-spread-to-readable-chapter")
         for spread in 1..<spreadCount(app) {
@@ -1852,10 +1857,11 @@ final class ReaderUITests: XCTestCase {
         }
         XCTAssertTrue(visiblePage(app, contains: "C2-LAST"), "The swipe into the final spread must stay in Chapter 2")
         let finalAnchor = anchor(app)
+        let finalVisibleOffset = try XCTUnwrap(renderedSpreadRanges(app).map(\.location).min())
         XCTAssertGreaterThan(finalAnchor, 0)
+        XCTAssertGreaterThanOrEqual(finalVisibleOffset, finalAnchor)
         capture("end-swipe-final-spread")
 
-        let source = String(try XCTUnwrap(readingIdentity(app).first).dropFirst("source=".count))
         _ = try await fixtureResponse(source, "/control/hold/chapter-3")
         body.swipeLeft()
         let entered = try await fixtureResponse(source, "/control/entered/chapter-3")
@@ -1866,7 +1872,9 @@ final class ReaderUITests: XCTestCase {
         XCTAssertEqual(anchor(app), finalAnchor)
         _ = try await fixtureResponse(source, "/control/release/chapter-3")
         XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 15))
-        wait(app) { !app.buttons["Cancel"].exists && self.visiblePage(app, contains: "C2-LAST") }
+        wait(app) {
+            !app.buttons["Cancel"].exists && self.renderedSpreadRanges(app).contains { NSLocationInRange(finalVisibleOffset, $0) }
+        }
         XCTAssertTrue(state(app).contains("chapter=2;"))
         XCTAssertEqual(anchor(app), finalAnchor)
         let requests = try await fixtureResponse(source, "/control/requests")
@@ -1877,7 +1885,7 @@ final class ReaderUITests: XCTestCase {
         app.buttons["Retry"].tap()
         wait(app) { self.state(app).contains("chapter=3;anchor=0;") && self.visiblePage(app, contains: "C3-FIRST") }
         app.buttons["reader.controls"].tap()
-        XCTAssertFalse(app.buttons["reader.next"].isEnabled)
+        XCTAssertTrue(app.buttons["reader.next"].isEnabled, "The explicit button still sees the trailing catalog entry")
         let beforeEnd = try await fixtureResponse(source, "/control/requests")
         body.swipeLeft()
         XCTAssertTrue(state(app).contains("chapter=3;anchor=0;"))
@@ -1919,6 +1927,19 @@ final class ReaderUITests: XCTestCase {
         let reopened = try await fixtureResponse(source, "/offline/count")
         XCTAssertEqual(reopened, before)
         capture("end-swipe-cached-chapter-relaunched")
+
+        app.buttons["reader.contents"].tap()
+        let lastCached = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Chapter 21")).firstMatch
+        for _ in 0..<8 where !lastCached.isHittable { app.swipeUp() }
+        XCTAssertTrue(lastCached.isHittable)
+        lastCached.tap()
+        wait(app) { self.state(app).contains("chapter=20;anchor=0;") && self.visiblePage(app, contains: "Chapter 21 start.") }
+        app.textViews["reader.text"].swipeLeft()
+        XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 15))
+        wait(app) { !app.buttons["Cancel"].exists && self.state(app).contains("chapter=20;anchor=0;") && self.visiblePage(app, contains: "Chapter 21 start.") }
+        let unavailable = try await fixtureResponse(source, "/offline/count")
+        XCTAssertTrue(unavailable.hasSuffix(",22"), "The uncached chapter must reach the disabled loopback source")
+        capture("end-swipe-uncached-chapter-unavailable")
     }
 
     @MainActor func testLandscapeEndSwipeWhileManualCacheIsActive() async throws {
@@ -1931,17 +1952,35 @@ final class ReaderUITests: XCTestCase {
         XCTAssertEqual(entered, "entered")
         wait(app) {
             let position = self.state(app)
-            return position.contains("chapter=0;anchor=0;") && position.contains("spreads=1;") && position.contains("cached=1;cacheRunning=true;")
+            return position.contains("chapter=0;anchor=0;") && position.contains("spreads=1;") &&
+                position.contains("cacheRunning=true;") && position.contains("manualCacheRunning=true;")
         }
         let before = state(app)
-        XCTAssertTrue(before.contains("cacheRunning=true;"))
         capture("end-swipe-manual-cache-before")
+        let atSwipe = state(app)
+        XCTAssertTrue(atSwipe.contains("cacheRunning=true;") && atSwipe.contains("manualCacheRunning=true;"))
         app.textViews["reader.text"].swipeLeft()
         wait(app) { self.state(app).contains("chapter=1;anchor=0;") && self.visiblePage(app, contains: "Chapter 2 start.") }
         let after = state(app)
         capture("end-swipe-manual-cache-after")
-        _ = try await fixtureResponse(source, "/control/release/offline-chapter-3")
-        print("Manual cache observation (#125)\nBefore swipe: \(before)\nAfter swipe: \(after)")
+        let released = try await fixtureResponse(source, "/control/release/offline-chapter-3")
+        let completed = try await fixtureResponse(source, "/control/completed/offline-chapter-3")
+        let deadline = Date().addingTimeInterval(8)
+        var final = state(app)
+        while final.contains("manualCacheRunning=true;") && Date() < deadline {
+            try await Task.sleep(nanoseconds: 250_000_000)
+            final = state(app)
+        }
+        let requests = try await fixtureResponse(source, "/offline/count")
+        print("""
+        Manual cache observation (#125)
+        Before swipe: \(before)
+        At swipe: \(atSwipe)
+        After swipe: \(after)
+        Gate release/completion: \(released)/\(completed)
+        Final sample: \(final)
+        Requested chapters: \(requests)
+        """)
     }
 
     @MainActor private func launchEndSwipeReader(scenario: String, orientation: UIDeviceOrientation) -> XCUIApplication {
@@ -1962,13 +2001,17 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor private func visiblePage(_ app: XCUIApplication, contains marker: String) -> Bool {
-        guard let body = app.textViews["reader.text"].value as? NSString,
-              let rendered = state(app).split(separator: ";").first(where: { $0.hasPrefix("rendered=") }) else { return false }
+        guard let body = app.textViews["reader.text"].value as? NSString else { return false }
         let markerRange = body.range(of: marker)
         guard markerRange.location != NSNotFound else { return false }
-        return rendered.dropFirst("rendered=".count).split(separator: ",").contains { segment in
+        return renderedSpreadRanges(app).contains { NSIntersectionRange(markerRange, $0) == markerRange }
+    }
+
+    @MainActor private func renderedSpreadRanges(_ app: XCUIApplication) -> [NSRange] {
+        guard let rendered = state(app).split(separator: ";").first(where: { $0.hasPrefix("rendered=") }) else { return [] }
+        return rendered.dropFirst("rendered=".count).split(separator: ",").compactMap { segment in
             let range = segment.split(separator: ":").compactMap { Int($0) }
-            return range.count == 2 && NSIntersectionRange(markerRange, NSRange(location: range[0], length: range[1])) == markerRange
+            return range.count == 2 ? NSRange(location: range[0], length: range[1]) : nil
         }
     }
 

@@ -51,9 +51,12 @@ merge is explicitly withheld.
 
 The owner approved [H1](https://github.com/austery/legado/issues/46) on 2026-10-23.
 At 900 points of available reader width, iPad landscape presents consecutive left
-and right pages. Swipe horizontally to advance one spread. Portrait, narrow windows
-and body heights below 160 points retain vertical single-column scrolling. A chapter
-ends in its own spread; the right page may be empty. Existing chapter controls remain.
+and right pages. Swipe horizontally to turn one spread within a chapter. A forward
+swipe from the final spread opens the next readable chapter at its start. At the end
+of the book, a forward swipe stays on the final spread. Its right page can be empty.
+A failed load keeps the
+current chapter and position available for retry. Portrait, narrow windows and body
+heights below 160 points use vertical single-column scrolling.
 
 TextKit ranges refer to the original attributed chapter. Pagination is disposable
 in-memory presentation state; no dependency, engine contract or storage format is
@@ -402,6 +405,11 @@ for unshelved and read-only sessions at nonzero anchors, with SQLite assertions 
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
 
+Select `--only-test testLandscapeEndSwipeWhileManualCacheIsActive` to observe
+manual cache progress around a chapter swipe (#125). A fixture-only control
+starts the existing manual action from the reader. The observation records the
+cache result and stays outside the default UI run.
+
 The chapter-find journeys require a full-size iPad software keyboard with Simplified
 Pinyin and its Roman layout available, using English system accessibility labels.
 They compose the original Chinese queries through visible keys/candidate cells, type
@@ -539,8 +547,9 @@ are overlays; hiding them leaves the text viewport and pagination unchanged. The
 view always starts below the space of the tallest heading, so the heading never covers
 body text. That space stays empty when controls are hidden. The bottom controls still
 overlap the body. The explicit Show/Hide controls button stays at the top right. A central-body tap toggles
-controls; edge taps do not turn pages. Previous/Next chapter labels distinguish chapter
-navigation from horizontal page turns. Returning from another route shows controls.
+controls. Previous and Next open the adjacent catalog entry. A forward swipe from the
+final landscape spread opens the next readable chapter, skipping volume headings
+without their own body. Returning from another route shows controls.
 Loading/cancel, error/retry and save-rejection actions remain outside these overlays
 and visible even when ordinary controls are hidden. Such notices may resize the
 viewport and retain the established paragraph-recovery behavior.

@@ -1097,16 +1097,22 @@ final class ReaderModel: ObservableObject {
         return chapters.firstIndex { $0.id == content.chapter.id && $0.bookId == content.chapter.bookId && $0.sourceId == content.chapter.sourceId }
     }
 
-    private func chapterForTurn(_ delta: Int) -> ChapterSnapshot? {
-        guard let index = chapterPosition, chapters.indices.contains(index + delta) else { return nil }
-        if delta == 1 { return chapters.dropFirst(index + 1).first { !$0.isVolume } }
-        return chapters[index + delta]
+    func moveChapter(_ delta: Int) {
+        guard let index = chapterPosition, chapters.indices.contains(index + delta) else { return }
+        read(chapters[index + delta])
     }
 
-    func canMoveChapter(_ delta: Int) -> Bool { !busy && chapterForTurn(delta) != nil }
+    private var nextReadableChapter: ChapterSnapshot? {
+        guard let index = chapterPosition else { return nil }
+        // Upstream synthesizes chapter URLs from the title for volume headings.
+        // A volume entry with a real URL can have its own readable body.
+        return chapters.dropFirst(index + 1).first { !($0.isVolume && $0.id.hasPrefix($0.title)) }
+    }
 
-    func moveChapter(_ delta: Int) {
-        guard !busy, let chapter = chapterForTurn(delta) else { return }
+    var canAdvanceFromSpread: Bool { !busy && nextReadableChapter != nil }
+
+    func advanceFromSpread() {
+        guard !busy, let chapter = nextReadableChapter else { return }
         read(chapter)
     }
 
