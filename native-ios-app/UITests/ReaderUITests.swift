@@ -1966,6 +1966,73 @@ final class ReaderUITests: XCTestCase {
         capture("end-swipe-local-txt-readable-chapter")
     }
 
+    @MainActor func testLandscapeEndSwipeReadsLocalTxtAcrossBlockBoundary() {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "local-txt-block-boundary"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let body = app.textViews["reader.text"]
+        func assertChapter12() {
+            wait(app) {
+                guard let text = body.value as? String else { return false }
+                return self.state(app).contains("chapter=11;anchor=0;") && self.visiblePage(app, contains: "BODY-TARGET-FIRST")
+                    && text.contains("BODY-TARGET-LAST")
+            }
+            XCTAssertFalse(app.buttons["Retry"].exists)
+        }
+
+        func chapter12Row() -> XCUIElement {
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Chapter 12 Boundary target")).firstMatch
+        }
+
+        for name in ["Cross Block", "Same Block"] {
+            XCUIDevice.shared.orientation = .portrait
+            chooseLocalTxt(app, named: name)
+            let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
+            XCTAssertTrue(book.waitForExistence(timeout: 20)); book.tap()
+            XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
+            app.buttons["reader.contents"].tap()
+            let before = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Chapter 11 Before target")).firstMatch
+            for _ in 0..<6 where !before.exists || !before.isHittable { app.swipeUp() }
+            let target = chapter12Row()
+            wait(app) { target.exists && target.label.contains("Not cached") }
+            XCTAssertTrue(before.isHittable); before.tap()
+            XCUIDevice.shared.orientation = .landscapeLeft
+            wait(app) { self.state(app).contains("chapter=10;anchor=0;") && self.spreadCount(app) == 1
+                && self.visiblePage(app, contains: "BODY-BEFORE-TARGET") }
+
+            app.buttons["reader.next"].tap()
+            assertChapter12()
+            app.buttons["reader.previous"].tap()
+            wait(app) { self.state(app).contains("chapter=10;anchor=0;") && self.visiblePage(app, contains: "BODY-BEFORE-TARGET") }
+            body.swipeLeft()
+            assertChapter12()
+            capture("txt-boundary-\(name)-swipe-to-chapter-12")
+            app.buttons["reader.shelf"].tap()
+            XCTAssertTrue(book.waitForExistence(timeout: 15))
+        }
+
+        app.terminate()
+        app.launchEnvironment["READER_UI_RESET"] = "0"
+        app.launch()
+        let previousImport = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Cross Block")).firstMatch
+        XCTAssertTrue(previousImport.waitForExistence(timeout: 30)); previousImport.tap()
+        assertChapter12()
+        app.buttons["reader.contents"].tap()
+        let target = chapter12Row()
+        for _ in 0..<6 where !target.exists || !target.isHittable { app.swipeUp() }
+        wait(app) { target.label.contains("Available offline") }
+        target.tap()
+        assertChapter12()
+        app.buttons["reader.previous"].tap()
+        wait(app) { self.state(app).contains("chapter=10;anchor=0;") && self.visiblePage(app, contains: "BODY-BEFORE-TARGET") }
+        body.swipeLeft()
+        assertChapter12()
+        capture("txt-boundary-cross-block-reopened")
+    }
+
     @MainActor private func launchEndSwipeReader(scenario: String, orientation: UIDeviceOrientation) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["READER_UI_RESET"] = "1"

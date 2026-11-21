@@ -118,7 +118,9 @@ class ReaderEngine {
     }
 
     fun offlineStatus(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest =
-        request(completion, interruptCache = false) { offlineCache.status(sourceId, bookId) }
+        request(completion, interruptCache = false) {
+            offlineCache.status(sourceId, bookId, chapters[sourceId to bookId])
+        }
 
     fun cacheNextChapters(sourceId: String, bookId: String, afterChapterId: String?,
         prefetch: Boolean, completion: (EngineReply) -> Unit): EngineRequest =
@@ -475,10 +477,19 @@ class ReaderEngine {
     }
 
     private suspend fun acceptShelfEntry(entry: NativeShelfEntry): ShelfEntryReply {
+        val catalog = registerShelfEntry(entry)
+        return ShelfEntryReply(shelfSnapshot(entry.book), catalog.map { snapshot(entry.book.origin, it) })
+    }
+
+    private suspend fun registerShelfEntry(entry: NativeShelfEntry): List<BookChapter> {
         val key = entry.book.origin to entry.book.bookUrl
+        // An admitted TXT is immutable. Reuse its checked catalog for this engine session.
+        val catalog = if (NativeLocalTxt.owns(entry.book)) {
+            chapters[key] ?: LocalTxtImport.readingCatalog(entry)
+        } else entry.chapters
         books[key] = entry.book
-        chapters[key] = entry.chapters
-        return ShelfEntryReply(shelfSnapshot(entry.book), entry.chapters.map { snapshot(entry.book.origin, it) })
+        chapters[key] = catalog
+        return catalog
     }
 
     private suspend fun shelfSnapshot(book: Book): ShelfBookSnapshot =
@@ -637,17 +648,17 @@ class ReaderEngine {
     fun openReading(sourceId: String, bookId: String, cacheOnly: Boolean,
         completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         val entry = shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
-        acceptShelfEntry(entry)
+        val catalog = registerShelfEntry(entry)
         val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.get(bookId)
         val chapter = if (saved != null) {
             if (saved.sourceId != sourceId) throw InvalidInput("Saved source differs from the book")
-            entry.chapters.singleOrNull { it.url == saved.chapterUrl && it.index == saved.chapterIndex }
+            catalog.singleOrNull { it.url == saved.chapterUrl && it.index == saved.chapterIndex }
                 ?: throw MissingEntity("Saved chapter is no longer in the catalog; choose a chapter explicitly")
         } else if (entry.book.durChapterIndex != 0 || entry.book.durChapterPos != 0 || !entry.book.durChapterTitle.isNullOrEmpty()) {
-            entry.chapters.singleOrNull { it.index == entry.book.durChapterIndex && !it.isVolume &&
+            catalog.singleOrNull { it.index == entry.book.durChapterIndex && !it.isVolume &&
                 (entry.book.durChapterTitle.isNullOrEmpty() || it.title == entry.book.durChapterTitle) }
                 ?: throw MissingEntity("Legacy chapter cannot be verified; choose a chapter explicitly")
-        } else entry.chapters.firstOrNull { !it.isVolume } ?: throw MissingEntity("No readable chapter is stored")
+        } else catalog.firstOrNull { !it.isVolume } ?: throw MissingEntity("No readable chapter is stored")
         chapterContent(sourceId, bookId, chapter.url, cacheOnly, true)
     }
 
@@ -694,8 +705,8 @@ class ReaderEngine {
         }
         if (bookmark.textVersion != NativeBodyCoordinates.VERSION) throw UnsupportedOperationException("Bookmark text version is unsupported")
         val entry = database.nativeShelfDao.openBook(sourceId, bookId)
-        if (entry.chapters.none { it.url == bookmark.chapterUrl && !it.isVolume }) throw MissingEntity("Bookmarked chapter is no longer in the catalog")
-        acceptShelfEntry(entry)
+        val catalog = registerShelfEntry(entry)
+        if (catalog.none { it.url == bookmark.chapterUrl && !it.isVolume }) throw MissingEntity("Bookmarked chapter is no longer in the catalog")
         chapterContent(sourceId, bookId, bookmark.chapterUrl, false, false, bookmark)
     }
 
@@ -743,9 +754,7 @@ class ReaderEngine {
         val content = usable ?: run {
             if (NativeLocalTxt.owns(book)) {
                 TextFile.clear()
-                // The owned copy can disappear after verify(); that is unavailable local content.
-                val localBody = try { TextFile.getContent(book, chapter) }
-                    catch (error: okio.IOException) { throw CacheUnavailable("The saved TXT file is missing or has changed") }
+                val localBody = LocalTxtImport.readBody(book, chapter)
                 if (localBody.isEmpty()) throw CacheUnavailable("TXT chapter is empty")
                 validateBookmarkBody(bookmark, localBody)
                 if (searchHit != null && !cachedSearch.matches(searchHit, localBody)) throw CacheUnavailable("Search result no longer matches this chapter")

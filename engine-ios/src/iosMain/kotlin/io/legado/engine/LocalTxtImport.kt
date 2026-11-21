@@ -6,6 +6,7 @@ import io.legado.app.data.dao.NativeLocalTxt
 import io.legado.app.data.dao.NativeShelfException
 import io.legado.app.data.dao.NativeShelfEntry
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.model.fileBook.TextFile
 import io.legado.app.utils.File
 import kotlinx.coroutines.CancellationException
@@ -124,6 +125,30 @@ internal object LocalTxtImport {
         require(NativeLocalTxt.owns(book)) { "Unrecognized local TXT identity" }
         val path = NativeLocalTxt.path(book).toPath()
         if (!matches(path, path.parent!!.name, null)) throw CacheUnavailable("The saved TXT file is missing or has changed")
+    }
+
+    /** Check suspect headings in the owned text without changing the stored catalog. */
+    suspend fun readingCatalog(entry: NativeShelfEntry): List<BookChapter> {
+        if (entry.chapters.none { it.isVolume }) return entry.chapters
+        verify(entry.book)
+        TextFile.clear()
+        try {
+            return entry.chapters.map { chapter ->
+                currentCoroutineContext().ensureActive()
+                if (chapter.isVolume && readBody(entry.book, chapter).isNotBlank()) {
+                    chapter.copy(isVolume = false)
+                } else chapter
+            }
+        } finally {
+            TextFile.clear()
+        }
+    }
+
+    /** The owned copy can disappear after verification. Surface a failed read to the caller. */
+    fun readBody(book: Book, chapter: BookChapter): String = try {
+        TextFile.getContent(book, chapter)
+    } catch (_: IOException) {
+        throw CacheUnavailable("The saved TXT file is missing or has changed")
     }
 
     private fun matches(path: okio.Path, digest: String, expectedSize: Long?): Boolean = try {

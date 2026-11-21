@@ -271,6 +271,18 @@ struct FixtureReaderApp: App {
             }
         }
         model.start(); try await settle()
+        if scenario == "local-txt-block-boundary" {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            for (filename, reduction) in [("Cross Block.txt", 0), ("Same Block.txt", 128)] {
+                let url = documents.appendingPathComponent(filename)
+                if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
+                    try Data(blockBoundaryTXT(prefixReduction: reduction).utf8).write(to: url)
+                } else {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+            model.showShelf(); try await settle(); return
+        }
         if scenario == "local-txt" || scenario == "local-txt-volume" {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let volume = scenario == "local-txt-volume"
@@ -373,6 +385,23 @@ struct FixtureReaderApp: App {
                 model.showShelf(); try await settle()
             }
         }
+    }
+
+    // Keep Chapter 12's text fixed while moving the next heading across byte 512,000.
+    private func blockBoundaryTXT(prefixReduction: Int) -> String {
+        func lines(_ count: Int) -> String {
+            let full = String(repeating: String(repeating: "x", count: 95) + "\n", count: count / 96)
+            let remaining = count % 96
+            return remaining == 0 ? full : full + String(repeating: "x", count: remaining - 1) + "\n"
+        }
+        let prefix = "\n" + (1...10).map { number in
+            "Chapter \(number) Filler\n" + lines(48_000 - (number == 1 ? prefixReduction : 0))
+        }.joined() + "Chapter 11 Before target\nBODY-BEFORE-TARGET\n"
+        let first = "Chapter 12 Boundary target\nBODY-TARGET-FIRST\n"
+        let last = "BODY-TARGET-LAST\n"
+        let padding = 511_968 - (prefix + first + last).utf8.count - prefixReduction
+        return prefix + first + lines(padding) + last + String(repeating: "\n", count: 96)
+            + "Chapter 13 After target\nBODY-AFTER-TARGET\n"
     }
     /// Choose actual visible lettering near the center, never a newline's empty glyph box.
     private func selectionTarget(in page: UITextView, root: AnchoredTextView) -> CGVector? {

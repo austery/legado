@@ -3,6 +3,7 @@ package io.legado.engine
 import io.legado.app.data.AppDatabaseProviders
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.dao.NativeBodyCoordinates
+import io.legado.app.data.dao.NativeLocalTxt
 import io.legado.app.data.dao.NativeShelfEntry
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.BookStorageProviders
@@ -86,8 +87,11 @@ internal class OfflineCache(private val scope: CoroutineScope,
         return entry.chapters.filter { !it.isVolume && it.url !in protected && storage.hasContent(entry.book, it) }
     }
 
-    suspend fun status(source: String, book: String): OfflineStatus {
-        val entry = entry(source, book)
+    suspend fun status(source: String, book: String, readingCatalog: List<BookChapter>?): OfflineStatus {
+        val stored = entry(source, book)
+        val entry = if (readingCatalog != null && NativeLocalTxt.owns(stored.book)) {
+            stored.copy(chapters = readingCatalog)
+        } else stored
         return OfflineStatus(entry.chapters.filterNot { it.isVolume }.map {
             OfflineChapter(it.url, availability(entry, it))
         }, optional(entry).size)
