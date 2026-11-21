@@ -73,7 +73,13 @@ struct ReaderScreen: View {
                         // controls never covers its first line and never changes its viewport.
                         VStack(spacing: 0) {
                             readingHeaderSpace
-                            ReadingText(chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id, text: content.text, style: style, restoration: model.readingRestoration, onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled, isReading: model.route == .reading, onToggleControls: { menu.toggle() }, find: chapterFind.presentation)
+                            ReadingText(
+                                chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id,
+                                text: content.text, style: style, restoration: model.readingRestoration,
+                                onDisplayed: model.readingDisplayed, onParagraphScroll: model.readingScrolled,
+                                isReading: model.route == .reading, onToggleControls: { menu.toggle() },
+                                onForwardAtEnd: chapterEndAction(for: content), find: chapterFind.presentation
+                            )
                         }
                             .opacity(model.route == .reading ? 1 : 0)
                             .allowsHitTesting(model.route == .reading)
@@ -552,6 +558,14 @@ struct ReaderScreen: View {
         .accessibilityLabel(title)
         .accessibilityIdentifier(delta < 0 ? "reader.previous" : "reader.next")
         .disabled(model.busy || model.chapterPosition.map { !model.chapters.indices.contains($0 + delta) } != false)
+    }
+
+    private func chapterEndAction(for content: ContentReply) -> (() -> Void)? {
+        guard model.route == .reading, model.canAdvanceFromSpread else { return nil }
+        return {
+            guard model.route == .reading, model.content === content else { return }
+            model.advanceFromSpread()
+        }
     }
 
     private var typography: some View {

@@ -6,6 +6,7 @@ import io.legado.app.data.dao.NativeLocalTxt
 import io.legado.app.data.dao.NativeShelfException
 import io.legado.app.data.dao.NativeShelfEntry
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.model.fileBook.TextFile
 import io.legado.app.utils.File
 import kotlinx.coroutines.CancellationException
@@ -67,7 +68,7 @@ internal object LocalTxtImport {
             local { fs.createDirectories(target.parent!!) }
             if (local { fs.exists(target) }) {
                 // Never overwrite an owned copy that no longer matches its digest.
-                if (!matches(target, digest, count)) throw CacheUnavailable("The existing TXT copy has changed; import was not applied")
+                if (matchingSize(target, digest, count) == null) throw CacheUnavailable("The existing TXT copy has changed; import was not applied")
             } else {
                 local { fs.atomicMove(staging, target) }
                 created = target
@@ -93,9 +94,11 @@ internal object LocalTxtImport {
             catalog.last().let { last -> if ((last.end ?: 0L) > count) last.end = count }
             candidate.totalChapterNum = catalog.size
             candidate.latestChapterTitle = catalog.last().title
+            val readableIds = readableVolumeIds(candidate, catalog)
+            val verifiedCatalog = catalog.map { if (it.url in readableIds) it.copy(isVolume = false) else it }
             currentCoroutineContext().ensureActive()
             return withContext(NonCancellable) {
-                database { AppDatabaseProviders.get().appDb.nativeShelfDao.admitLocalTxt(candidate, catalog) }
+                database { AppDatabaseProviders.get().appDb.nativeShelfDao.admitLocalTxt(candidate, verifiedCatalog) }
             }
         } finally {
             withContext(NonCancellable) {
@@ -120,18 +123,61 @@ internal object LocalTxtImport {
     }
 
     /** A missing, unreadable or changed owned copy is unavailable local content, never a network failure. */
-    fun verify(book: Book) {
+    fun verify(book: Book): Long {
         require(NativeLocalTxt.owns(book)) { "Unrecognized local TXT identity" }
         val path = NativeLocalTxt.path(book).toPath()
-        if (!matches(path, path.parent!!.name, null)) throw CacheUnavailable("The saved TXT file is missing or has changed")
+        return matchingSize(path, path.parent!!.name, null)
+            ?: throw CacheUnavailable("The saved TXT file is missing or has changed")
     }
 
-    private fun matches(path: okio.Path, digest: String, expectedSize: Long?): Boolean = try {
+    suspend fun repairStoredCatalog(entry: NativeShelfEntry): NativeShelfEntry {
+        val readableIds = readableVolumeIds(entry.book, entry.chapters)
+        if (readableIds.isEmpty()) return entry
+        currentCoroutineContext().ensureActive()
+        return database {
+            AppDatabaseProviders.get().appDb.nativeShelfDao
+                .correctLocalTxtVolumeFlags(entry.book.bookUrl, entry.chapters, readableIds)
+        }
+    }
+
+    // TextFileCore.analyze can classify a whole chapter from its blank suffix after a TOC read boundary.
+    // Check the complete stored range using the same content reader as the reading screen.
+    private suspend fun readableVolumeIds(book: Book, catalog: List<BookChapter>): Set<String> {
+        val volumes = catalog.filter { it.isVolume }
+        if (volumes.isEmpty()) return emptySet()
+        val size = verify(book)
+        TextFile.clear()
+        try {
+            val readable = mutableSetOf<String>()
+            for (chapter in volumes) {
+                currentCoroutineContext().ensureActive()
+                val start = chapter.start
+                val end = chapter.end
+                if (start == null || end == null || start < 0 || end > size || start >= end) {
+                    throw CacheUnavailable("The saved TXT catalog has an unreadable chapter range")
+                }
+                if (readBody(book, chapter).isNotBlank()) readable.add(chapter.url)
+            }
+            if (readable.isNotEmpty()) verify(book)
+            return readable
+        } finally {
+            TextFile.clear()
+        }
+    }
+
+    /** The owned copy can disappear after verification. Surface a failed read to the caller. */
+    fun readBody(book: Book, chapter: BookChapter): String = try {
+        TextFile.getContent(book, chapter)
+    } catch (_: IOException) {
+        throw CacheUnavailable("The saved TXT file is missing or has changed")
+    }
+
+    private fun matchingSize(path: okio.Path, digest: String, expectedSize: Long?): Long? = try {
         val fs = FileSystem.SYSTEM
         val size = fs.metadata(path).size
-        size != null && size in 1..MAX_BYTES && (expectedSize == null || size == expectedSize) &&
-            fs.read(path) { readByteString().sha256().hex() } == digest
-    } catch (_: IOException) { false }
+        if (size != null && size in 1..MAX_BYTES && (expectedSize == null || size == expectedSize) &&
+            fs.read(path) { readByteString().sha256().hex() } == digest) size else null
+    } catch (_: IOException) { null }
 
     /** Owned staging/copy I/O. */
     private inline fun <T> local(action: () -> T): T = try { action() }

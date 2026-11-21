@@ -19,7 +19,7 @@ class CachedChapterResults internal constructor(val hits: List<CachedChapterHit>
     val examinedChapters: Int, val cachedChapters: Int, val totalChapters: Int,
     val truncated: Boolean) : EngineReply()
 
-/** No network or persistence. Cache ownership uses the same authority as offline controls. */
+/** Searches cached bodies without fetching or saving a position. Shares the offline controls' catalog. */
 internal class CachedChapterSearch(private val owner: String,
     private val entry: suspend (String, String) -> NativeShelfEntry) {
     private val generation = atomic(0L)

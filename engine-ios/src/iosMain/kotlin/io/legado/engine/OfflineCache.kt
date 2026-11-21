@@ -39,6 +39,7 @@ internal object OfflineWork {
 
 /** Storage and catalog operations hold EngineHost.gate; network work never holds it. */
 internal class OfflineCache(private val scope: CoroutineScope,
+    private val repairLocalCatalog: suspend (NativeShelfEntry) -> NativeShelfEntry,
     private val protectedChapters: (String, String) -> Set<String>) {
     private data class ClearPlan(val source: String, val book: String, val chapterIds: Set<String>)
     private val clearPlans = mutableMapOf<String, ClearPlan>()
@@ -59,7 +60,7 @@ internal class OfflineCache(private val scope: CoroutineScope,
         if (entry.chapters.map { it.getFileName() }.distinct().size != entry.chapters.size) {
             throw ShelfStorageFailure("Chapter cache ownership is ambiguous")
         }
-        return entry
+        return repairLocalCatalog(entry)
     }
 
     private suspend fun availability(entry: NativeShelfEntry, chapter: BookChapter): OfflineAvailability {
