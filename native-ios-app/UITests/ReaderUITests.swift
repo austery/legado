@@ -8,25 +8,7 @@ final class ReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         defer { app.terminate() }
-        func choose(_ name: String) {
-            let before = app.staticTexts["fixture.shelfCompletion"].value as? String
-            let importButton = app.buttons["shelf.importTxt"]
-            XCTAssertTrue(importButton.waitForExistence(timeout: 40)); importButton.tap()
-            let browse = app.buttons["Browse"]
-            if browse.waitForExistence(timeout: 5) { browse.tap() }
-            let local = app.staticTexts["On My iPad"]
-            if local.waitForExistence(timeout: 5) { local.tap() }
-            let folder = app.staticTexts["Native Reader C2"]
-            if folder.waitForExistence(timeout: 5) { folder.tap() }
-            let file = app.cells[name + ", txt"]
-            XCTAssertTrue(file.waitForExistence(timeout: 10), app.debugDescription)
-            file.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
-            wait(app) {
-                let completion = app.staticTexts["fixture.shelfCompletion"].value as? String
-                return !file.exists && completion != before && completion?.hasSuffix("|false|") == true && importButton.isEnabled
-            }
-        }
-        choose("Local Journey")
+        chooseLocalTxt(app, named: "Local Journey")
         let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 20), app.debugDescription); row.tap()
         waitForStableViewport(app)
@@ -42,7 +24,7 @@ final class ReaderUITests: XCTestCase {
         app.buttons["reader.shelf"].tap()
         wait(app) { (app.staticTexts["fixture.stored"].value as? String) != beforeLeaving }
         let beforeImport = app.staticTexts["fixture.stored"].value as? String
-        choose("Local Journey Again")
+        chooseLocalTxt(app, named: "Local Journey Again")
         XCTAssertTrue(row.waitForExistence(timeout: 20))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).count, 1)
         XCTAssertEqual(app.staticTexts["fixture.stored"].value as? String, beforeImport)
@@ -65,6 +47,25 @@ final class ReaderUITests: XCTestCase {
         XCTAssertEqual(anchor(app), position)
         XCTAssertEqual(readingIdentity(app), identity)
         capture("local-txt-offline-bookmark-restored")
+    }
+
+    @MainActor private func chooseLocalTxt(_ app: XCUIApplication, named name: String) {
+        let before = app.staticTexts["fixture.shelfCompletion"].value as? String
+        let importButton = app.buttons["shelf.importTxt"]
+        XCTAssertTrue(importButton.waitForExistence(timeout: 40)); importButton.tap()
+        let browse = app.buttons["Browse"]
+        if browse.waitForExistence(timeout: 5) { browse.tap() }
+        let local = app.staticTexts["On My iPad"]
+        if local.waitForExistence(timeout: 5) { local.tap() }
+        let folder = app.staticTexts["Native Reader C2"]
+        if folder.waitForExistence(timeout: 5) { folder.tap() }
+        let file = app.cells[name + ", txt"]
+        XCTAssertTrue(file.waitForExistence(timeout: 10), app.debugDescription)
+        file.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        wait(app) {
+            let completion = app.staticTexts["fixture.shelfCompletion"].value as? String
+            return !file.exists && completion != before && completion?.hasSuffix("|false|") == true && importButton.isEnabled
+        }
     }
 
     @MainActor func testCheckAllCancelSummaryAndMarkUntilRead() async throws {
@@ -1942,45 +1943,27 @@ final class ReaderUITests: XCTestCase {
         capture("end-swipe-uncached-chapter-unavailable")
     }
 
-    @MainActor func testLandscapeEndSwipeWhileManualCacheIsActive() async throws {
-        let app = launchEndSwipeReader(scenario: "offline-active-cache", orientation: .landscapeLeft)
+    @MainActor func testLandscapeEndSwipeSkipsBlankLocalTxtHeading() {
+        let app = XCUIApplication()
+        app.launchEnvironment["READER_UI_RESET"] = "1"
+        app.launchEnvironment["READER_UI_SCENARIO"] = "local-txt-volume"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let source = String(try XCTUnwrap(readingIdentity(app).first).dropFirst("source=".count))
-        _ = try await fixtureResponse(source, "/control/hold/offline-chapter-3")
-        app.buttons["fixture.startManualCache"].tap()
-        let entered = try await fixtureResponse(source, "/control/entered/offline-chapter-3")
-        XCTAssertEqual(entered, "entered")
-        wait(app) {
-            let position = self.state(app)
-            return position.contains("chapter=0;anchor=0;") && position.contains("spreads=1;") &&
-                position.contains("cacheRunning=true;") && position.contains("manualCacheRunning=true;")
-        }
-        let before = state(app)
-        capture("end-swipe-manual-cache-before")
-        let atSwipe = state(app)
-        XCTAssertTrue(atSwipe.contains("cacheRunning=true;") && atSwipe.contains("manualCacheRunning=true;"))
+        chooseLocalTxt(app, named: "Local Volume")
+        let book = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "shelf.book.")).firstMatch
+        XCTAssertTrue(book.waitForExistence(timeout: 20)); book.tap()
+        wait(app) { self.state(app).contains("chapter=0;anchor=0;") && app.buttons["reader.contents"].isHittable }
+        app.buttons["reader.contents"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "卷标题")).firstMatch.exists)
+        capture("end-swipe-local-txt-catalog-heading")
+        app.buttons["contents.continue"].tap()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("chapter=0;anchor=0;") && self.spreadCount(app) == 1 && self.visiblePage(app, contains: "TXT-FIRST") }
         app.textViews["reader.text"].swipeLeft()
-        wait(app) { self.state(app).contains("chapter=1;anchor=0;") && self.visiblePage(app, contains: "Chapter 2 start.") }
-        let after = state(app)
-        capture("end-swipe-manual-cache-after")
-        let released = try await fixtureResponse(source, "/control/release/offline-chapter-3")
-        let completed = try await fixtureResponse(source, "/control/completed/offline-chapter-3")
-        let deadline = Date().addingTimeInterval(8)
-        var final = state(app)
-        while final.contains("manualCacheRunning=true;") && Date() < deadline {
-            try await Task.sleep(nanoseconds: 250_000_000)
-            final = state(app)
-        }
-        let requests = try await fixtureResponse(source, "/offline/count")
-        print("""
-        Manual cache observation (#125)
-        Before swipe: \(before)
-        At swipe: \(atSwipe)
-        After swipe: \(after)
-        Gate release/completion: \(released)/\(completed)
-        Final sample: \(final)
-        Requested chapters: \(requests)
-        """)
+        wait(app) { self.state(app).contains("chapter=2;anchor=0;") && self.visiblePage(app, contains: "TXT-THIRD") }
+        XCTAssertFalse(app.buttons["Retry"].exists)
+        capture("end-swipe-local-txt-readable-chapter")
     }
 
     @MainActor private func launchEndSwipeReader(scenario: String, orientation: UIDeviceOrientation) -> XCUIApplication {
@@ -2008,7 +1991,9 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor private func renderedSpreadRanges(_ app: XCUIApplication) -> [NSRange] {
-        guard let rendered = state(app).split(separator: ";").first(where: { $0.hasPrefix("rendered=") }) else { return [] }
+        let position = state(app)
+        guard position.contains("layout=spread;"),
+              let rendered = position.split(separator: ";").first(where: { $0.hasPrefix("rendered=") }) else { return [] }
         return rendered.dropFirst("rendered=".count).split(separator: ",").compactMap { segment in
             let range = segment.split(separator: ":").compactMap { Int($0) }
             return range.count == 2 ? NSRange(location: range[0], length: range[1]) : nil

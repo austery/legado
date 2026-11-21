@@ -89,12 +89,6 @@ struct FixtureReaderApp: App {
                             Button(narrowReader ? "Wide reader" : "Narrow reader") { narrowReader.toggle() }
                                 .accessibilityIdentifier("fixture.readerWidth")
                         }
-                        if scenario == "offline-active-cache" {
-                            // The real cache button lives in Details. Returning from there
-                            // opens a foreground request before a swipe can be observed.
-                            Button("Fixture: Start manual cache") { model.cacheNextChapters() }
-                                .accessibilityIdentifier("fixture.startManualCache")
-                        }
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
                             Task { @MainActor in
                                 guard let base = model.book?.sourceId,
@@ -175,12 +169,6 @@ struct FixtureReaderApp: App {
                 }
                 if let progress = model.cacheProgress {
                     positionStatus += ";cached=\(progress.completed);cacheRunning=\(progress.running);"
-                    if scenario == "offline-active-cache" {
-                        positionStatus += "cacheTarget=\(progress.target);cacheCancelled=\(progress.cancelled);cacheFailure=\(progress.lastFailure);"
-                    }
-                }
-                if scenario == "offline-active-cache" {
-                    positionStatus += ";manualCacheRunning=\(model.manualCacheRunning);cacheNotice=\(model.cacheNotice ?? "");"
                 }
             }.task {
                 guard !prepared else { return }
@@ -283,11 +271,14 @@ struct FixtureReaderApp: App {
             }
         }
         model.start(); try await settle()
-        if scenario == "local-txt" {
+        if scenario == "local-txt" || scenario == "local-txt-volume" {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let files = ["Local Journey.txt", "Local Journey Again.txt"]
+            let volume = scenario == "local-txt-volume"
+            let files = volume ? ["Local Volume.txt"] : ["Local Journey.txt", "Local Journey Again.txt"]
             if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
-                let body = "第一章 开始\n" + (0..<120).map { "Paragraph \($0) — local TXT reading position and bookmark recovery. 中文原文。" }.joined(separator: "\n") + "\n第二章 继续\nFinal local chapter."
+                let body = volume
+                    ? "第一章 开始\nTXT-FIRST: Original opening text.\n第二章 卷标题\n第三章 继续\nTXT-THIRD: Readable text after the blank chapter."
+                    : "第一章 开始\n" + (0..<120).map { "Paragraph \($0) — local TXT reading position and bookmark recovery. 中文原文。" }.joined(separator: "\n") + "\n第二章 继续\nFinal local chapter."
                 for filename in files { try Data(body.utf8).write(to: documents.appendingPathComponent(filename)) }
             } else {
                 for filename in files { try? FileManager.default.removeItem(at: documents.appendingPathComponent(filename)) }
@@ -307,7 +298,7 @@ struct FixtureReaderApp: App {
         let (data, _) = try await URLSession.shared.data(from: URL(string: base + endpoint)!)
         var json = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
-        if scenario == "offline" || scenario == "offline-active-cache" {
+        if scenario == "offline" {
             json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
         }
         if scenario == "chapter-end" {

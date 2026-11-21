@@ -157,16 +157,36 @@ final class ReadingPaginationTests: XCTestCase {
         view.setNeedsLayout()
         view.layoutIfNeeded()
         XCTAssertFalse(view.usesSpreads)
-        let bounds = view.bounds.offsetBy(dx: -view.textContainerInset.left, dy: -view.textContainerInset.top)
-        let glyphs = view.layoutManager.glyphRange(forBoundingRect: bounds, in: view.textContainer)
-        let rendered = view.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-        XCTAssertTrue(NSLocationInRange(visibleOffset, rendered))
+        func renderedScrollRange() -> NSRange {
+            let bounds = view.bounds.offsetBy(dx: -view.textContainerInset.left, dy: -view.textContainerInset.top)
+            let glyphs = view.layoutManager.glyphRange(forBoundingRect: bounds, in: view.textContainer)
+            return view.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        }
+        XCTAssertTrue(NSLocationInRange(visibleOffset, renderedScrollRange()))
         XCTAssertEqual(view.anchor, paragraph)
 
+        view.configure(chapterKey: "chapter", body: body, style: ReadingStyle(),
+                       restoration: ReadingRestoration(identity: "recovery", utf16Offset: paragraph, preservesViewport: true),
+                       onDisplayed: nil, onParagraphScroll: nil)
+        view.layoutIfNeeded()
+        XCTAssertTrue(NSLocationInRange(visibleOffset, renderedScrollRange()), "Recovery renews the token and keeps the previously visible text")
         view.scrollViewWillBeginDragging(view)
         view.setContentOffset(.zero, animated: false)
         view.scrollViewDidEndDragging(view, willDecelerate: false)
         XCTAssertEqual(view.anchor, 0, "Continuing to scroll in the chapter releases the retained offset")
+
+        view.frame.size.height = 660
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        while view.accessibilityScroll(.left) {}
+        try XCTUnwrap(spreads.onForwardAtEnd)()
+        view.configure(chapterKey: "chapter", body: body, style: ReadingStyle(),
+                       restoration: ReadingRestoration(identity: "bookmark", utf16Offset: paragraph),
+                       onDisplayed: nil, onParagraphScroll: nil)
+        view.layoutIfNeeded()
+        let bookmarkedRanges = renderedSpreadRanges(in: view)
+        XCTAssertTrue(bookmarkedRanges.contains { NSLocationInRange(paragraph, $0) })
+        XCTAssertFalse(bookmarkedRanges.contains { NSLocationInRange(visibleOffset, $0) }, "A bookmark in the same paragraph restores its start")
     }
 
     func testAccessibleTurnsSaveOnlyDisplayedActiveToken() async throws {

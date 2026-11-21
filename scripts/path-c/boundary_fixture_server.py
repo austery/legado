@@ -81,8 +81,7 @@ class BoundaryHandler(C2Handler):
             with self.lock:
                 self.chapter_requests.setdefault(run_prefix, []).append(number)
                 unavailable = run_prefix in self.offline_runs or self.failed_chapters.get(run_prefix) == number
-                gate_key = {'2': 'chapter', '3': 'offline-chapter-3'}.get(number)
-                gate = self.gates.get(run_prefix + '/' + gate_key) if gate_key else None
+                gate = self.gates.get(run_prefix + '/chapter') if number == '2' else None
             try:
                 if gate:
                     gate[0].set()

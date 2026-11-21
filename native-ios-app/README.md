@@ -51,12 +51,14 @@ merge is explicitly withheld.
 
 The owner approved [H1](https://github.com/austery/legado/issues/46) on 2026-10-23.
 At 900 points of available reader width, iPad landscape presents consecutive left
-and right pages. Swipe horizontally to turn one spread within a chapter. A forward
-swipe from the final spread opens the next readable chapter at its start. At the end
-of the book, a forward swipe stays on the final spread. Its right page can be empty.
-A failed load keeps the
-current chapter and position available for retry. Portrait, narrow windows and body
-heights below 160 points use vertical single-column scrolling.
+and right pages. Swipe horizontally to turn one spread within a chapter. Portrait,
+narrow windows and body heights below 160 points use vertical single-column scrolling.
+The final spread can have an empty right page.
+
+The approved H1 for [Issue #114](https://github.com/austery/legado/issues/114) adds
+forward swipes that start on the final spread. The reader opens the next readable
+chapter at its start. At the end of the book, it stays on the final spread. A failed
+load keeps the current chapter and position available for retry. Owner H2 is pending.
 
 TextKit ranges refer to the original attributed chapter. Pagination is disposable
 in-memory presentation state; no dependency, engine contract or storage format is
@@ -404,11 +406,6 @@ the changed behavior and risk rather than a historical test count. Both director
 for unshelved and read-only sessions at nonzero anchors, with SQLite assertions for
 no implicit shelf row and unchanged full resume/shared projection respectively. XcodeGen's ordinary
 `project.yml` generation excludes this host and UI test target.
-
-Select `--only-test testLandscapeEndSwipeWhileManualCacheIsActive` to observe
-manual cache progress around a chapter swipe (#125). A fixture-only control
-starts the existing manual action from the reader. The observation records the
-cache result and stays outside the default UI run.
 
 The chapter-find journeys require a full-size iPad software keyboard with Simplified
 Pinyin and its Roman layout available, using English system accessibility labels.

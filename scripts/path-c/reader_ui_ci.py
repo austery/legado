@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--only-test', action='append', default=[], help='ReaderUITests journey or opt-in observation to run')
+    parser.add_argument('--only-test', action='append', default=[], help='ReaderUITests method to run')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -30,9 +30,8 @@ def main() -> None:
         raise RuntimeError('No iPad Pro 11-inch M4 simulator type')
     (output / 'commit.txt').write_text(subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True))
     (output / 'scope.json').write_text(json.dumps({
-        'app': 'io.legado.pathc.ui-fixture', 'expectedTests': 39,
+        'app': 'io.legado.pathc.ui-fixture', 'expectedTests': 40,
         'fixture': 'owned loopback only', 'physicalDevice': False,
-        'optInObservations': ['ReaderUITests/testLandscapeEndSwipeWhileManualCacheIsActive'],
         'suites': ['ReaderUITests/testCachedSearchNavigatesOriginalHitWithoutNetworkAndRestores',
                    'ReaderUITests/testCachedSearchNoMatchesAndDismissKeepsReadingPosition',
                    'ReaderUITests/testShelfSortMenuAndRelaunch',
@@ -57,6 +56,7 @@ def main() -> None:
                    'ReaderUITests/testTwoPageTurnsReflowAndDurableRecovery',
                    'ReaderUITests/testLandscapeEndSwipeSkipsVolumeAndRetainsFinalSpreadOnFailure',
                    'ReaderUITests/testLandscapeEndSwipeUsesCachedChapterOffline',
+                   'ReaderUITests/testLandscapeEndSwipeSkipsBlankLocalTxtHeading',
                    'ReaderUITests/testDiscoveryBrowseDetailsTrialShelfReturnAndRelaunch',
                    'ReaderUITests/testDiscoveryRetryAndCrossEngineDisableEndVisibleLoading',
                    'ReaderUITests/testDiscoveryOptionsEmptyUnsupportedAndVisibilityPersist',
@@ -75,7 +75,7 @@ def main() -> None:
     scope = json.loads((output / 'scope.json').read_text())
     if args.only_test:
         selected = [f'ReaderUITests/{name}' for name in args.only_test]
-        if len(set(selected)) != len(selected) or not set(selected).issubset(scope['suites'] + scope['optInObservations']):
+        if len(set(selected)) != len(selected) or not set(selected).issubset(scope['suites']):
             parser.error('--only-test must name distinct declared ReaderUITests methods')
         scope['suites'] = selected
         scope['expectedTests'] = len(selected)
@@ -93,8 +93,6 @@ def main() -> None:
                        '-resultBundlePath', str(output / 'UI.xcresult'), 'CODE_SIGNING_ALLOWED=NO']
             if args.only_test:
                 command.extend(f'-only-testing:NativeReaderUITests/{suite}' for suite in scope['suites'])
-            else:
-                command.extend(f'-skip-testing:NativeReaderUITests/{suite}' for suite in scope['optInObservations'])
             (output / 'command.json').write_text(json.dumps(command, indent=2))
             run(command, output / 'tests.log', 900)
             summary = subprocess.check_output(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary',

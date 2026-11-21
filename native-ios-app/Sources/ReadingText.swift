@@ -14,6 +14,7 @@ struct ReadingStyle: Equatable, Codable {
 struct ReadingRestoration: Equatable {
     let identity: String
     let utf16Offset: Int
+    var preservesViewport = false
 }
 
 final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
@@ -154,7 +155,6 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         let newIdentity = self.restoration?.identity != restoration?.identity
         let newBody = !text.utf16.elementsEqual(body.utf16)
         let newStyle = self.style != style
-        if newChapter || newBody { retainedSpreadOffset = nil }
         // Keep the original restoration offset for this token even if SwiftUI supplies a later sample.
         if newIdentity || newChapter { self.restoration = restoration }
         guard newChapter || newIdentity || newBody || newStyle else {
@@ -187,6 +187,9 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         if newChapter || newIdentity || newBody {
             let requested = self.restoration?.utf16Offset ?? (newChapter ? 0 : anchor)
             let normalized = paragraphStart(requested)
+            if newChapter || newBody || self.restoration?.preservesViewport != true || normalized != anchor {
+                retainedSpreadOffset = nil
+            }
             validRestoration = normalized != nil
             anchor = normalized ?? 0
         }
