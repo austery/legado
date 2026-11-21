@@ -93,7 +93,7 @@ class ReaderEngine {
     private val preparedSwitches = mutableMapOf<String, PreparedSourceSwitch>()
     private val committedSwitches = mutableMapOf<String, CommittedSourceSwitch>()
     private val sourceManagement = SourceManagement()
-    private val offlineCache = OfflineCache(scope) { source, book ->
+    private val offlineCache = OfflineCache(scope, ::repairLocalCatalog) { source, book ->
         ReadingSessions.tokens.values.filter { it.sourceId == source && it.bookId == book }
             .map { it.chapter.url }.toSet()
     }
@@ -118,9 +118,7 @@ class ReaderEngine {
     }
 
     fun offlineStatus(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest =
-        request(completion, interruptCache = false) {
-            offlineCache.status(sourceId, bookId, chapters[sourceId to bookId])
-        }
+        request(completion, interruptCache = false) { offlineCache.status(sourceId, bookId) }
 
     fun cacheNextChapters(sourceId: String, bookId: String, afterChapterId: String?,
         prefetch: Boolean, completion: (EngineReply) -> Unit): EngineRequest =
@@ -465,7 +463,7 @@ class ReaderEngine {
         acceptShelfEntry(entry)
     }
 
-    /** Opens only persisted metadata and catalog. It performs no source fetch. */
+    /** Opens the stored catalog, checking old local TXT flags against the owned copy when needed. */
     fun openShelfBook(sourceId: String, bookId: String, completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
         acceptShelfEntry(shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) })
     }
@@ -483,13 +481,19 @@ class ReaderEngine {
 
     private suspend fun registerShelfEntry(entry: NativeShelfEntry): List<BookChapter> {
         val key = entry.book.origin to entry.book.bookUrl
-        // An admitted TXT is immutable. Reuse its checked catalog for this engine session.
-        val catalog = if (NativeLocalTxt.owns(entry.book)) {
-            chapters[key] ?: LocalTxtImport.readingCatalog(entry)
-        } else entry.chapters
-        books[key] = entry.book
-        chapters[key] = catalog
-        return catalog
+        val current = repairLocalCatalog(entry)
+        books[key] = current.book
+        chapters[key] = current.chapters
+        return current.chapters
+    }
+
+    private suspend fun repairLocalCatalog(entry: NativeShelfEntry): NativeShelfEntry {
+        val key = entry.book.origin to entry.book.bookUrl
+        // Do not reread genuine headings in an unchanged, already checked catalog this session.
+        if (!NativeLocalTxt.owns(entry.book) || chapters[key] == entry.chapters) return entry
+        val current = LocalTxtImport.repairStoredCatalog(entry)
+        chapters[key] = current.chapters
+        return current
     }
 
     private suspend fun shelfSnapshot(book: Book): ShelfBookSnapshot =

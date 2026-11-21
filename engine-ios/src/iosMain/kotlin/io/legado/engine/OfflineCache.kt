@@ -3,7 +3,6 @@ package io.legado.engine
 import io.legado.app.data.AppDatabaseProviders
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.dao.NativeBodyCoordinates
-import io.legado.app.data.dao.NativeLocalTxt
 import io.legado.app.data.dao.NativeShelfEntry
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.BookStorageProviders
@@ -40,6 +39,7 @@ internal object OfflineWork {
 
 /** Storage and catalog operations hold EngineHost.gate; network work never holds it. */
 internal class OfflineCache(private val scope: CoroutineScope,
+    private val repairLocalCatalog: suspend (NativeShelfEntry) -> NativeShelfEntry,
     private val protectedChapters: (String, String) -> Set<String>) {
     private data class ClearPlan(val source: String, val book: String, val chapterIds: Set<String>)
     private val clearPlans = mutableMapOf<String, ClearPlan>()
@@ -60,7 +60,7 @@ internal class OfflineCache(private val scope: CoroutineScope,
         if (entry.chapters.map { it.getFileName() }.distinct().size != entry.chapters.size) {
             throw ShelfStorageFailure("Chapter cache ownership is ambiguous")
         }
-        return entry
+        return repairLocalCatalog(entry)
     }
 
     private suspend fun availability(entry: NativeShelfEntry, chapter: BookChapter): OfflineAvailability {
@@ -87,11 +87,8 @@ internal class OfflineCache(private val scope: CoroutineScope,
         return entry.chapters.filter { !it.isVolume && it.url !in protected && storage.hasContent(entry.book, it) }
     }
 
-    suspend fun status(source: String, book: String, readingCatalog: List<BookChapter>?): OfflineStatus {
-        val stored = entry(source, book)
-        val entry = if (readingCatalog != null && NativeLocalTxt.owns(stored.book)) {
-            stored.copy(chapters = readingCatalog)
-        } else stored
+    suspend fun status(source: String, book: String): OfflineStatus {
+        val entry = entry(source, book)
         return OfflineStatus(entry.chapters.filterNot { it.isVolume }.map {
             OfflineChapter(it.url, availability(entry, it))
         }, optional(entry).size)

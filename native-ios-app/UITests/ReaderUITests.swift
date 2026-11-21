@@ -2010,6 +2010,7 @@ final class ReaderUITests: XCTestCase {
             body.swipeLeft()
             assertChapter12()
             capture("txt-boundary-\(name)-swipe-to-chapter-12")
+            assertLocalTxtBookmarkSearchAndClear(app, name: name)
             app.buttons["reader.shelf"].tap()
             XCTAssertTrue(book.waitForExistence(timeout: 15))
         }
@@ -2031,6 +2032,78 @@ final class ReaderUITests: XCTestCase {
         body.swipeLeft()
         assertChapter12()
         capture("txt-boundary-cross-block-reopened")
+    }
+
+    @MainActor private func assertLocalTxtBookmarkSearchAndClear(_ app: XCUIApplication, name: String) {
+        XCUIDevice.shared.orientation = .portrait
+        wait(app) { self.state(app).contains("layout=scroll;") }
+        app.textViews["reader.text"].swipeUp()
+        wait(app) { self.anchor(app) > 0 }
+        waitForStableViewport(app)
+        let position = anchor(app)
+        let chapterIdentity = readingIdentity(app)
+        let addBookmark = app.buttons["reader.addBookmark"]
+        wait(app) { addBookmark.isEnabled }
+        addBookmark.tap()
+        wait(app) { app.staticTexts["reader.bookmarkNotice"].label == "Bookmark saved." }
+
+        let next = app.buttons["reader.next"]
+        next.tap()
+        wait(app) { self.state(app).contains("chapter=12;anchor=0;") }
+        app.buttons["reader.bookmarks"].tap()
+        let saved = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bookmarks.open.")).firstMatch
+        XCTAssertTrue(saved.waitForExistence(timeout: 10)); saved.tap()
+        wait(app) { !app.buttons["bookmarks.done"].exists && self.state(app).contains("chapter=11;") }
+        waitForStableViewport(app)
+        XCTAssertEqual(readingIdentity(app), chapterIdentity)
+        XCTAssertEqual(anchor(app), position)
+        capture("txt-boundary-\(name)-bookmark-reopened")
+
+        next.tap()
+        wait(app) { self.state(app).contains("chapter=12;anchor=0;") }
+        app.buttons["reader.cachedSearch"].tap()
+        let query = app.textFields["cachedSearch.query"]
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        enterRomanFindQuery(app, query: query, text: "LAST")
+        let hit = app.buttons["cachedSearch.hit.0"]
+        XCTAssertTrue(hit.waitForExistence(timeout: 10))
+        XCTAssertTrue(hit.label.contains("Chapter 12 Boundary target"))
+        XCTAssertTrue(hit.label.contains("BODY-TARGET-LAST"))
+        hit.tap()
+        wait(app) { self.state(app).contains("chapter=11;") && app.staticTexts["reader.find.status"].label == "1 of 1" }
+        waitForStableViewport(app)
+        XCTAssertEqual(readingIdentity(app), chapterIdentity)
+        XCTAssertGreaterThan(anchor(app), position)
+        capture("txt-boundary-\(name)-cached-hit-opened")
+        next.tap()
+        wait(app) { self.state(app).contains("chapter=12;anchor=0;") }
+        // Leaving the reader waits for Chapter 13's position write before the next status request.
+        app.buttons["reader.contents"].tap()
+        let resume = app.buttons["contents.continue"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 10)); resume.tap()
+        wait(app) { self.state(app).contains("chapter=12;anchor=0;") }
+
+        let cacheResult = app.staticTexts["fixture.localCacheResult"]
+        wait(app) { (cacheResult.value as? String)?.hasPrefix("3|") == true }
+        app.buttons["fixture.clearLocalCache"].tap()
+        let preview = app.alerts["Clear optional cached chapters?"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        XCTAssertTrue(preview.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Remove 3 cached chapters.")).firstMatch.exists)
+        capture("txt-boundary-\(name)-clear-preview")
+        preview.buttons["Clear cached chapters"].tap()
+        wait(app) { cacheResult.value as? String == "0|Removed 3 chapters. 0 could not be removed." }
+        XCTAssertTrue(self.state(app).contains("chapter=12;anchor=0;"))
+
+        app.buttons["reader.contents"].tap()
+        let removed = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Chapter 12 Boundary target")).firstMatch
+        let protected = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Chapter 13 After target")).firstMatch
+        for _ in 0..<6 where !protected.isHittable || !removed.isHittable { app.swipeUp() }
+        wait(app) { removed.label.contains("Not cached") && protected.label.contains("Available offline") }
+        capture("txt-boundary-\(name)-cleared-and-protected")
+        removed.tap()
+        wait(app) { self.state(app).contains("chapter=11;anchor=0;") && app.buttons["reader.next"].isHittable }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        wait(app) { self.state(app).contains("layout=spread;") }
     }
 
     @MainActor private func launchEndSwipeReader(scenario: String, orientation: UIDeviceOrientation) -> XCUIApplication {

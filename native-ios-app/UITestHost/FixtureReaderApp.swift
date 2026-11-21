@@ -110,6 +110,15 @@ struct FixtureReaderApp: App {
                         Text("Copy observation").font(.caption2)
                             .accessibilityIdentifier("fixture.copyObservation").accessibilityValue(copyObservation)
                     }
+                    if scenario == "local-txt-block-boundary", model.book?.isLocal == true {
+                        // The shipped local TXT details hide cache controls. Use the existing model action and app alert.
+                        HStack {
+                            Button("Fixture clear preview") { model.prepareCacheClear() }
+                                .accessibilityIdentifier("fixture.clearLocalCache")
+                            Text("Fixture cache result").accessibilityIdentifier("fixture.localCacheResult")
+                                .accessibilityValue("\(model.offlineStatus?.optionalCount ?? -1)|\(model.cacheNotice ?? "")")
+                        }.font(.caption)
+                    }
                     if scenario == "shelf-mixed" {
                         HStack {
                             Button(rejectingGroupSave ? "Allow group saves" : "Reject group saves") {
