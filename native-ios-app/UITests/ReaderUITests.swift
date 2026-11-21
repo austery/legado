@@ -1891,7 +1891,12 @@ final class ReaderUITests: XCTestCase {
         let app = launchEndSwipeReader(scenario: "offline", orientation: .landscapeLeft)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let source = String(try XCTUnwrap(readingIdentity(app).first).dropFirst("source=".count))
-        startEndSwipeManualCache(app)
+        app.buttons["reader.contents"].tap()
+        app.buttons["contents.details"].tap()
+        let cache = app.buttons["offline.cache"]
+        for _ in 0..<5 where !cache.isHittable { app.swipeUp() }
+        XCTAssertTrue(cache.isHittable)
+        cache.tap()
         wait(app) { app.staticTexts["offline.count"].label == "21 of 26 chapters available offline" }
         let before = try await fixtureResponse(source, "/offline/disable")
         app.buttons["details.read"].tap()
@@ -1917,16 +1922,19 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testLandscapeEndSwipeWhileManualCacheIsActive() async throws {
-        let app = launchEndSwipeReader(scenario: "offline", orientation: .landscapeLeft)
+        let app = launchEndSwipeReader(scenario: "offline-active-cache", orientation: .landscapeLeft)
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let source = String(try XCTUnwrap(readingIdentity(app).first).dropFirst("source=".count))
         _ = try await fixtureResponse(source, "/control/hold/offline-chapter-3")
-        startEndSwipeManualCache(app)
+        app.buttons["fixture.startManualCache"].tap()
         let entered = try await fixtureResponse(source, "/control/entered/offline-chapter-3")
         XCTAssertEqual(entered, "entered")
-        app.buttons["details.read"].tap()
-        wait(app) { self.state(app).contains("chapter=0;anchor=0;") && self.spreadCount(app) == 1 && app.buttons["reader.next"].isHittable }
+        wait(app) {
+            let position = self.state(app)
+            return position.contains("chapter=0;anchor=0;") && position.contains("spreads=1;") && position.contains("cached=1;cacheRunning=true;")
+        }
         let before = state(app)
+        XCTAssertTrue(before.contains("cacheRunning=true;"))
         capture("end-swipe-manual-cache-before")
         app.textViews["reader.text"].swipeLeft()
         wait(app) { self.state(app).contains("chapter=1;anchor=0;") && self.visiblePage(app, contains: "Chapter 2 start.") }
@@ -1934,15 +1942,6 @@ final class ReaderUITests: XCTestCase {
         capture("end-swipe-manual-cache-after")
         _ = try await fixtureResponse(source, "/control/release/offline-chapter-3")
         print("Manual cache observation (#125)\nBefore swipe: \(before)\nAfter swipe: \(after)")
-    }
-
-    @MainActor private func startEndSwipeManualCache(_ app: XCUIApplication) {
-        app.buttons["reader.contents"].tap()
-        app.buttons["contents.details"].tap()
-        let cache = app.buttons["offline.cache"]
-        for _ in 0..<5 where !cache.isHittable { app.swipeUp() }
-        XCTAssertTrue(cache.isHittable)
-        cache.tap()
     }
 
     @MainActor private func launchEndSwipeReader(scenario: String, orientation: UIDeviceOrientation) -> XCUIApplication {

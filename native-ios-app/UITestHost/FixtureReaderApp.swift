@@ -89,6 +89,12 @@ struct FixtureReaderApp: App {
                             Button(narrowReader ? "Wide reader" : "Narrow reader") { narrowReader.toggle() }
                                 .accessibilityIdentifier("fixture.readerWidth")
                         }
+                        if scenario == "offline-active-cache" {
+                            // The real cache button lives in Details. Returning from there
+                            // opens a foreground request before a swipe can be observed.
+                            Button("Fixture: Start manual cache") { model.cacheNextChapters() }
+                                .accessibilityIdentifier("fixture.startManualCache")
+                        }
                         Button(heldChapter ? "Release chapter" : "Hold chapter") {
                             Task { @MainActor in
                                 guard let base = model.book?.sourceId,
@@ -295,7 +301,7 @@ struct FixtureReaderApp: App {
         let (data, _) = try await URLSession.shared.data(from: URL(string: base + endpoint)!)
         var json = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
-        if scenario == "offline" {
+        if scenario == "offline" || scenario == "offline-active-cache" {
             json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
         }
         if scenario == "chapter-end" {
