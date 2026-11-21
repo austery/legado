@@ -136,6 +136,7 @@ struct FixtureReaderApp: App {
                 if let text {
                     let ranges = text.spreadView?.visibleRanges ?? []
                     positionStatus += ";layout=\(text.usesSpreads ? "spread" : "scroll");spread=\(text.spreadView?.spread ?? -1);visible=\(ranges.map { "\($0.location):\($0.length)" }.joined(separator: ","));"
+                    if let pages = text.spreadView?.pagination?.ranges { positionStatus += "spreads=\((pages.count + 1) / 2);" }
                     let rendered = text.spreadView?.subviews.compactMap { $0 as? UITextView }.filter {
                         !$0.isHidden && $0.frame.intersects(text.spreadView!.bounds)
                     }.map { page -> NSRange in
@@ -296,6 +297,10 @@ struct FixtureReaderApp: App {
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
         if scenario == "offline" {
             json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
+        }
+        if scenario == "chapter-end" {
+            json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/chapter-end")
+                .replacingOccurrences(of: "\"chapterUrl\": \"href\"", with: "\"chapterUrl\": \"href\", \"isVolume\": \"data-volume\"")
         }
         if scenario == "sources" {
             let second = json.replacingOccurrences(of: base, with: base + "/second")

@@ -69,12 +69,20 @@ class BoundaryHandler(C2Handler):
             self.reply(''.join(f'<a class="chapter" href="{run_prefix}/chapter/offline/{n}">Chapter {n}</a>'
                                for n in range(1, 27)))
             return
+        if route == '/toc/chapter-end':
+            self.reply(f'<a class="chapter" href="{run_prefix}/chapter/1">Chapter 1</a>'
+                       '<a class="chapter" data-volume="true">Volume Two</a>'
+                       f'<a class="chapter" href="{run_prefix}/chapter/2">Chapter 2</a>'
+                       f'<a class="chapter" href="{run_prefix}/chapter/3">Chapter 3</a>'
+                       '<a class="chapter" data-volume="true">End of Volume Two</a>')
+            return
         if route.startswith('/chapter/offline/'):
             number = route.rsplit('/', 1)[1]
             with self.lock:
                 self.chapter_requests.setdefault(run_prefix, []).append(number)
                 unavailable = run_prefix in self.offline_runs or self.failed_chapters.get(run_prefix) == number
-                gate = self.gates.get(run_prefix + '/chapter') if number == '2' else None
+                gate_key = {'2': 'chapter', '3': 'offline-chapter-3'}.get(number)
+                gate = self.gates.get(run_prefix + '/' + gate_key) if gate_key else None
             try:
                 if gate:
                     gate[0].set()
@@ -140,7 +148,8 @@ class BoundaryHandler(C2Handler):
             return
         parts = path.split('/')
         prefix = '/'.join(parts[:3])
-        key = {'/search': 'search', '/book/1': 'detail', '/toc/1': 'toc', '/chapter/2': 'chapter'}.get(path[len(prefix):])
+        key = {'/search': 'search', '/book/1': 'detail', '/toc/1': 'toc',
+               '/chapter/2': 'chapter', '/chapter/3': 'chapter-3'}.get(path[len(prefix):])
         with self.lock:
             gate = self.gates.get(prefix + '/' + str(key))
         try:

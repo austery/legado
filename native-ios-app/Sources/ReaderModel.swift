@@ -1097,9 +1097,17 @@ final class ReaderModel: ObservableObject {
         return chapters.firstIndex { $0.id == content.chapter.id && $0.bookId == content.chapter.bookId && $0.sourceId == content.chapter.sourceId }
     }
 
+    private func chapterForTurn(_ delta: Int) -> ChapterSnapshot? {
+        guard let index = chapterPosition, chapters.indices.contains(index + delta) else { return nil }
+        if delta == 1 { return chapters.dropFirst(index + 1).first { !$0.isVolume } }
+        return chapters[index + delta]
+    }
+
+    func canMoveChapter(_ delta: Int) -> Bool { !busy && chapterForTurn(delta) != nil }
+
     func moveChapter(_ delta: Int) {
-        guard let index = chapterPosition, chapters.indices.contains(index + delta) else { return }
-        read(chapters[index + delta])
+        guard !busy, let chapter = chapterForTurn(delta) else { return }
+        read(chapter)
     }
 
     /// Directory return uses the retained view for session-only text. Reopening
