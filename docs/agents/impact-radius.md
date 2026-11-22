@@ -587,9 +587,9 @@ Treat these as **Unknown**. The missing evidence is stated for each:
   not restore the rows or files.
 - Renaming the chapter cache layout or changing the bundle identifier (Structure
   above): the old files are left behind.
-- Writes to `master`, the upstream mirror. `sync-upstream-mirror.yml` runs daily
-  with `contents: write` and fast-forwards it
-  (`scripts/ci/sync-upstream-mirror.sh --apply`).
+- Writes to `master`, the upstream mirror. `sync-upstream-mirror.yml` runs weekly
+  (Monday 11:17 UTC) and on manual dispatch, with `contents: write`, and
+  fast-forwards it (`scripts/ci/sync-upstream-mirror.sh --apply`).
 - Releases:
   - `ios.yml` runs on manual dispatch only, with no repository or secret guard.
     With stage `ipa` or `simulator` it publishes the `multiplatform-test`
@@ -599,7 +599,10 @@ Treat these as **Unknown**. The missing evidence is stated for each:
     `_publish.yml`. On 2026-11-08 `test.yml` skips in `austery/legado`
     (`test.yml:38`), and `release.yml` skips without the `RELEASE_KEY_STORE`
     secret; `gh secret list` showed no repository secrets. Adding that secret or
-    changing these guards turns publishing on.
+    changing these guards turns publishing on. Since 2026-11-21 the `Test Build`
+    workflow (`test.yml`) is also disabled in the repository's Actions settings,
+    to cut fork Actions usage after GitHub paused Actions on this fork.
+    Re-enabling it does not turn publishing on while the `test.yml:38` guard holds.
 - `delete_actions.yml` (manual dispatch) permanently deletes workflow-run
   history, which is the CI evidence trail.
 - `sync-quickjs-ng.yml` (`contents: write`) overwrites the vendored QuickJS and

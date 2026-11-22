@@ -2,7 +2,9 @@ name: Sync upstream master
 
 on:
   schedule:
-    - cron: '17 11 * * *'
+    # Weekly (Monday 11:17 UTC) to keep fork Actions usage low; GitHub paused Actions on
+    # this fork for usage on 2026-11-21. Run it by hand when a fresher mirror is needed.
+    - cron: '17 11 * * 1'
   workflow_dispatch:
 
 permissions:
