@@ -25,8 +25,8 @@ Base every task branch on `native-reader`, the product branch. `master` only mir
 upstream. In a checkout based on the wrong branch, `native-ios-app/` is missing; stop
 and create the task branch from `origin/native-reader`.
 
-Use `master` for one purpose in feature work: before you design a feature, find
-upstream changes that overlap it. `master` has no `native-ios-app/` or `engine-ios/`,
+Before designing a new feature or changing the UI, check `master` for
+upstream changes that overlap the work. `master` has no `native-ios-app/` or `engine-ios/`,
 so pass the upstream paths from the trace below, such as paths under `ui/`, `data/` or
 `core/`. No output means no unintegrated upstream commit touches those paths:
 `git fetch origin master native-reader && git log origin/native-reader..origin/master -- <paths>`.
@@ -35,11 +35,13 @@ Release dry-runs, when to integrate upstream, and merge and upgrade principles a
 
 ## Upstream-first features
 
-Before designing a feature, storage change or engine export, trace how the
+Before designing a feature, UI change, storage change or engine export, trace how the
 integrated KMP upstream already does it. Shared `data`/`core` helpers and the
 original Compose UI under `ui/` are the reference implementation. Record the
-upstream path:line, or the search that found none, in the H1. Build the slice
-as a narrow export over that path. A new table, schema migration or parallel
+upstream path:line, or the search that found none, in the H1. When the change
+affects backend behavior, match upstream behavior and reuse its implementation
+through a narrow export where needed. For layout-only changes, follow native
+iOS layout conventions. A new table, schema migration or parallel
 implementation of an upstream capability needs Lei's explicit decision, stating
 why the upstream path cannot serve. Do not contradict upstream's documented
 interface contracts (for example, a provider documented to throw on failure must
