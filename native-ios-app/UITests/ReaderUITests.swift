@@ -985,6 +985,10 @@ final class ReaderUITests: XCTestCase {
         discoveryBook(app).tap()
         XCTAssertTrue(app.buttons["details.add"].waitForExistence(timeout: 15)); app.buttons["details.add"].tap()
         XCTAssertTrue(app.staticTexts["Added to shelf."].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["On shelf"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["On shelf"].exists)
+        XCTAssertFalse(app.buttons["details.add"].exists)
+        capture("discovery-details-after-admission")
         app.buttons["details.read"].tap()
         XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
         capture("discovery-shelved-reading")
@@ -995,12 +999,20 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         let book = app.buttons[shelfBookIdentifier]
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
         capture("discovery-shelf-reopened")
+        app.buttons["reader.contents"].tap()
+        let details = app.buttons["contents.details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 10)); details.tap()
+        XCTAssertTrue(app.staticTexts["已在书架"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["已在书架"].exists)
+        XCTAssertFalse(app.buttons["details.add"].exists)
+        capture("discovery-reopened-details-zh-Hans")
         app.terminate()
     }
 
