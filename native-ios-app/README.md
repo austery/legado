@@ -540,12 +540,16 @@ Rule editing, source login/browser verification and discovery browsing remain la
 
 ## Reading controls (Issue 48)
 
-Reading starts with controls visible. The heading, shelf action and bottom controls
-are overlays; hiding them leaves the text viewport and pagination unchanged. The text
-view always starts below the space of the tallest heading, so the heading never covers
-body text. That space stays empty when controls are hidden. The bottom controls still
-overlap the body. The explicit Show/Hide controls button stays at the top right. A central-body tap toggles
-controls. Previous and Next open the adjacent catalog entry. A forward swipe from the
+Reading starts with controls visible. The header fits the current book and chapter
+titles or the 44-point buttons, whichever needs more height. It keeps that height
+when the titles and Shelf action are hidden. The first body line stays clear and
+the viewport and pagination stay fixed when the controls toggle. The title can
+wrap to two lines at larger system text sizes. Accessibility and Contents expose
+the full chapter title. [Issue #92](https://github.com/austery/legado/issues/92)
+
+The bottom controls overlay the body. Show/Hide controls stays at the top right.
+A central-body tap also toggles controls. Previous and Next open the adjacent
+catalog entry. A forward swipe from the
 final landscape spread opens the next readable chapter, skipping volume headings
 without their own body. Returning from another route shows controls.
 Loading/cancel, error/retry and save-rejection actions remain outside these overlays
