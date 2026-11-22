@@ -30,6 +30,9 @@ extension ReaderUITests {
             let book = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Path C Book")).firstMatch
             XCTAssertTrue(book.waitForExistence(timeout: 40))
             book.tap()
+            if !largeTitle {
+                XCTAssertTrue(app.buttons["reader.next"].waitForExistence(timeout: 20))
+            }
 
             for layout in ["scroll", "spread"] {
                 if layout == "spread" { XCUIDevice.shared.orientation = .landscapeLeft }
@@ -57,7 +60,7 @@ extension ReaderUITests {
                     : body
                 XCTAssertTrue(firstPage.waitForExistence(timeout: 10))
                 let firstPageFrame = firstPage.frame
-                XCTAssertGreaterThanOrEqual(firstPageFrame.minY, title.frame.maxY - 0.5)
+                XCTAssertGreaterThanOrEqual(firstPageFrame.minY, title.frame.maxY)
                 let size = largeTitle ? "large" : "standard"
                 captureHeader("header-\(size)-\(layout)-shown")
 
