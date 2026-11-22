@@ -53,7 +53,8 @@ The owner approved [H1](https://github.com/austery/legado/issues/46) on 2026-10-
 At 900 points of available reader width, iPad landscape presents consecutive left
 and right pages. Swipe horizontally to turn one spread within a chapter. Portrait,
 narrow windows and body heights below 160 points use vertical single-column scrolling.
-The final spread can have an empty right page.
+The final spread can have an empty right page. Each landscape page keeps 12 points
+above and below the text. Paragraph spacing and pagination can leave more space.
 
 The approved H1 for [Issue #114](https://github.com/austery/legado/issues/114) adds
 forward swipes that start on the final spread. The reader opens the next readable
