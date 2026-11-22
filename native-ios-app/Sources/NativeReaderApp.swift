@@ -438,26 +438,27 @@ struct ReaderScreen: View {
 
     private var readingHeader: some View {
         HStack(spacing: 12) {
-            Button { model.showShelf() } label: {
-                Label("Shelf", systemImage: "chevron.left")
-                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            if menu {
+                Button { model.showShelf() } label: {
+                    Label("Shelf", systemImage: "chevron.left")
+                        .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                }
+                .accessibilityIdentifier("reader.shelf")
+                .disabled(model.busy)
+            } else {
+                Color.clear.frame(width: 44, height: 44).allowsHitTesting(false)
             }
-            .accessibilityIdentifier("reader.shelf")
-            .disabled(model.busy)
-            .opacity(menu ? 1 : 0)
-            .allowsHitTesting(menu)
-            .accessibilityHidden(!menu)
 
-            VStack(spacing: 2) {
-                Text(model.book?.title ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Text(model.content?.chapter.title ?? "").font(.headline).lineLimit(2)
+            Group {
+                if menu {
+                    readingHeaderTitles
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("reader.headerTitle")
+                } else {
+                    readingHeaderTitles.hidden().accessibilityHidden(true)
+                }
             }
-            .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("reader.headerTitle")
-            .opacity(menu ? 1 : 0)
-            .accessibilityHidden(!menu)
 
             Button { menu.toggle() } label: {
                 Label(menu ? "Hide controls" : "Show controls", systemImage: menu ? "ellipsis.circle.fill" : "ellipsis.circle")
@@ -468,6 +469,14 @@ struct ReaderScreen: View {
         }
         .padding(.horizontal, 16)
         .background { if menu { paper.opacity(0.97) } }
+    }
+
+    private var readingHeaderTitles: some View {
+        VStack(spacing: 2) {
+            Text(model.book?.title ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(model.content?.chapter.title ?? "").font(.headline).lineLimit(2)
+        }
+        .multilineTextAlignment(.center)
     }
 
     private var readingControls: some View {
