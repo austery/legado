@@ -326,8 +326,13 @@ struct ReaderScreen: View {
                     }.disabled(model.busy || model.chapters.isEmpty).accessibilityIdentifier("details.read")
                     Button { model.navigate(.contents) } label: { Label("Contents", systemImage: "list.bullet") }
                         .disabled(model.busy).accessibilityIdentifier("details.contents")
-                    Button { model.addCurrentBook() } label: { Label("Add to shelf", systemImage: "plus.circle") }
-                        .disabled(model.busy || model.chapters.isEmpty).accessibilityIdentifier("details.add")
+                    if model.isShelved {
+                        Label("On shelf", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button { model.addCurrentBook() } label: { Label("Add to shelf", systemImage: "plus.circle") }
+                            .disabled(model.busy || model.chapters.isEmpty).accessibilityIdentifier("details.add")
+                    }
                     if model.canChangeSource {
                         Button("Change source") { model.beginSourceSwitch() }.disabled(model.book?.isLocal == true)
                             .disabled(model.busy).accessibilityIdentifier("details.changeSource")

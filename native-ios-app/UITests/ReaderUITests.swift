@@ -933,8 +933,12 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor private func launchDiscovery(_ scenario: String = "discovery") -> XCUIApplication {
+    @MainActor private func launchDiscovery(
+        _ scenario: String = "discovery",
+        launchArguments: [String] = []
+    ) -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments = launchArguments
         app.launchEnvironment["READER_UI_RESET"] = "1"
         app.launchEnvironment["READER_UI_SCENARIO"] = scenario
         XCUIDevice.shared.orientation = .portrait
@@ -953,7 +957,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testDiscoveryBrowseDetailsTrialShelfReturnAndRelaunch() throws {
-        let app = launchDiscovery()
+        let app = launchDiscovery(launchArguments: ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"])
         app.buttons["discovery.groupFilter"].tap()
         XCTAssertTrue(app.buttons["Discovery"].waitForExistence(timeout: 5)); app.buttons["Discovery"].tap()
         let filter = app.textFields["discovery.sourceFilter"]
@@ -985,6 +989,10 @@ final class ReaderUITests: XCTestCase {
         discoveryBook(app).tap()
         XCTAssertTrue(app.buttons["details.add"].waitForExistence(timeout: 15)); app.buttons["details.add"].tap()
         XCTAssertTrue(app.staticTexts["Added to shelf."].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["On shelf"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["On shelf"].exists)
+        XCTAssertFalse(app.buttons["details.add"].exists)
+        capture("discovery-details-after-admission")
         app.buttons["details.read"].tap()
         XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
         capture("discovery-shelved-reading")
@@ -995,12 +1003,20 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
         app.launchEnvironment["READER_UI_RESET"] = "0"
         app.launchEnvironment["READER_UI_SCENARIO"] = "shelf"
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         let book = app.buttons[shelfBookIdentifier]
         XCTAssertTrue(book.waitForExistence(timeout: 40)); book.tap()
         XCTAssertTrue(app.buttons["reader.contents"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.staticTexts["fixture.failure"].exists)
         capture("discovery-shelf-reopened")
+        app.buttons["reader.contents"].tap()
+        let details = app.buttons["contents.details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 10)); details.tap()
+        XCTAssertTrue(app.staticTexts["已在书架"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["已在书架"].exists)
+        XCTAssertFalse(app.buttons["details.add"].exists)
+        capture("discovery-reopened-details-zh-Hans")
         app.terminate()
     }
 
@@ -1570,6 +1586,7 @@ final class ReaderUITests: XCTestCase {
 
     @MainActor func testSearchDetailsCatalogAndGlobalPreferences() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launchEnvironment["READER_UI_RESET"] = "1"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
@@ -1588,7 +1605,9 @@ final class ReaderUITests: XCTestCase {
         capture("everyday-expanded-search")
         candidate.tap()
         XCTAssertTrue(app.buttons["details.read"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["details.add"].isHittable)
+        XCTAssertTrue(app.staticTexts["On shelf"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["On shelf"].exists)
+        XCTAssertFalse(app.buttons["details.add"].exists)
         capture("everyday-details")
         app.buttons["navigation.searchResults"].tap()
         XCTAssertTrue(candidate.waitForExistence(timeout: 10), "Returning to search keeps the expanded candidate")
