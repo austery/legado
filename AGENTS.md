@@ -25,25 +25,30 @@ Base every task branch on `native-reader`, the product branch. `master` only mir
 upstream. In a checkout based on the wrong branch, `native-ios-app/` is missing; stop
 and create the task branch from `origin/native-reader`.
 
-Before designing a new feature or changing the UI, check `master` for
-upstream changes that overlap the work. `master` has no `native-ios-app/` or `engine-ios/`,
-so pass the upstream paths from the trace below, such as paths under `ui/`, `data/` or
-`core/`. No output means no unintegrated upstream commit touches those paths:
+Before designing a feature or changing the UI, check `master` for overlapping
+upstream changes. When the trace below finds relevant upstream paths, pass them
+to the comparison. For example, use paths under `ui/`, `data/` or `core/`.
 `git fetch origin master native-reader && git log origin/native-reader..origin/master -- <paths>`.
+No output means no unintegrated upstream commit touches those paths.
 Release dry-runs, when to integrate upstream, and merge and upgrade principles are in
 [ADR-005](docs/architecture/decisions/ADR-005-upstream-integration-cadence.md).
 
 ## Upstream-first features
 
-Before designing a feature, UI change, storage change or engine export, trace how the
-integrated KMP upstream already does it. Shared `data`/`core` helpers and the
-original Compose UI under `ui/` are the reference implementation. Record the
-upstream path:line, or the search that found none, in the H1. When the change
-affects backend behavior, match upstream behavior and reuse its implementation
-through a narrow export where needed. For layout-only changes, follow native
-iOS layout conventions. A new table, schema migration or parallel
-implementation of an upstream capability needs Lei's explicit decision, stating
-why the upstream path cannot serve. Do not contradict upstream's documented
+Before designing a feature, UI change, storage change or engine export, trace
+the integrated KMP upstream behavior. Use shared `data`/`core` helpers and the
+original Compose UI under `ui/` as references. Record the upstream path and line,
+or the search that found none, in the H1 when the H1/H2 Issue contract applies.
+For layout-only changes, check upstream, record the trace in the PR, and follow
+native iOS layout conventions. Layout-only changes do not need a separate issue.
+
+For engine, runtime and shared storage behavior, follow upstream by default.
+Reuse existing upstream capabilities through narrow exports where needed.
+Preserve the approved native rules for shelf identity, cross-source work
+grouping and saved reading position in [ADR-002](docs/architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost).
+A new table, schema migration or parallel implementation of an upstream
+capability needs Lei's explicit decision, stating why the upstream path cannot
+serve. Do not contradict upstream's documented
 interface contracts (for example, a provider documented to throw on failure must
 not return a silent default). Edit upstream-owned code only under an approved H1,
 so upgrades stay mechanical.
