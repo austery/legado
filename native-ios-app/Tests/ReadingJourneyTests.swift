@@ -118,12 +118,28 @@ final class ReadingJourneyTests: XCTestCase {
         return json
     }
 
-    func testConflictingTargetKeepsItsCacheAndIsNeverReportedAsSuccessfulSwitch() async throws {
-        // Observes the prepared reply so the test proves the commit, not preparation, rejected the switch.
-        final class Observer { var onPrepared: (() -> Void)?; var prepared = 0 }
+    func testKnownSourceSwitchConflictSkipsTheBodyAndPreservesTheOtherBook() async throws {
+        try await checkConflictingTarget(arrivesAfterPreparation: false)
+    }
+
+    func testSourceSwitchCommitRejectsAConflictAddedAfterPreparation() async throws {
+        try await checkConflictingTarget(arrivesAfterPreparation: true)
+    }
+
+    private func checkConflictingTarget(arrivesAfterPreparation: Bool) async throws {
+        final class Observer {
+            var prepared: SourceSwitchPrepared?
+            var deliver: (() -> Void)?
+        }
         let observer = Observer()
         let model = ReaderModel(deliverReply: { _, reply, apply in
-            if reply is SourceSwitchPrepared { observer.prepared += 1; observer.onPrepared?() }
+            if let prepared = reply as? SourceSwitchPrepared {
+                observer.prepared = prepared
+                if arrivesAfterPreparation {
+                    observer.deliver = { apply(reply) }
+                    return
+                }
+            }
             apply(reply)
         })
         model.start(); try await settle(model)
@@ -131,7 +147,19 @@ final class ReadingJourneyTests: XCTestCase {
         let second = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         let title = UUID().uuidString
         try await importFixture(model, base: first, titleSuffix: title)
-        try await importFixture(model, base: second, titleSuffix: title)
+        let fixture = try await fixtureJSON(base: second, titleSuffix: title)
+        var rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(fixture.utf8)) as? [[String: Any]])
+        var contentRule = try XCTUnwrap(rules.first?["ruleContent"] as? [String: Any])
+        // Extraction from the body would rename a matching stored chapter before commit.
+        let bodyTitle = "Title from the replacement body"
+        contentRule["title"] = "tag.h1@text##^Chapter 1$##" + bodyTitle
+        rules[0]["ruleContent"] = contentRule
+        let candidateFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        try JSONSerialization.data(withJSONObject: rules).write(to: candidateFile)
+        model.importFile(candidateFile); try await settle(model)
+        model.confirmFixtureImport(); try await settle(model)
+        XCTAssertNil(model.message)
+
         model.searchScope = .selected; model.selectedSourceIDs = [first, second]
         model.query = "Path"; model.search(); try await settle(model)
         let old = try XCTUnwrap(model.results.first { $0.sourceId == first })
@@ -139,58 +167,109 @@ final class ReadingJourneyTests: XCTestCase {
         model.select(old); try await settle(model)
         model.addCurrentBook(); try await settle(model)
         model.read(try XCTUnwrap(model.chapters.first)); try await settle(model)
-        // The one-step switch locates the fixture's first chapter (index 0, "Chapter 1").
-        let chapter = (id: second + "/chapter/1", title: "Chapter 1")
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        var db: OpaquePointer?
-        XCTAssertEqual(sqlite3_open(documents.appendingPathComponent("legado.db").path, &db), SQLITE_OK)
-        defer { sqlite3_close(db) }
-        func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "''") + "'" }
-        let insert = """
-        INSERT INTO books(bookUrl,origin,name,author,type) VALUES(\(quoted(target.id)),\(quoted(second)),\(quoted(target.title)),'Different author',8);
-        INSERT INTO chapters(bookUrl,url,title,`index`,isVolume,isVip,isPay) VALUES(\(quoted(target.id)),\(quoted(chapter.id)),\(quoted(chapter.title)),0,0,0,0);
-        """
-        guard sqlite3_exec(db, insert, nil, nil, nil) == SQLITE_OK else {
-            throw NSError(domain: "SwitchFixture", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
-        }
-        func shortHash(_ value: String) -> String {
-            let hash = Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
-            return String(hash.dropFirst(8).prefix(16))
-        }
-        let cache = documents.appendingPathComponent("book_cache")
-            .appendingPathComponent(String(target.title.prefix(9)) + shortHash(target.id))
-            .appendingPathComponent("00000-" + shortHash(chapter.title) + ".nb")
-        try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let originalBody = "unrelated\npreserve this offline paragraph"
-        try Data(originalBody.utf8).write(to: cache)
+
         let other = ReaderEngine()
         defer { other.close() }
         func call(_ action: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
             await withCheckedContinuation { continuation in _ = action { continuation.resume(returning: $0) } }
         }
         _ = await call { other.initialize(completion: $0) }
-        let opened = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
-        let token = try XCTUnwrap((opened as? ContentReply)?.reading?.token)
-        let saved: EngineReply = await withCheckedContinuation { continuation in
-            other.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: 10) { continuation.resume(returning: $0) }
+        _ = await call { other.search(sourceId: second, query: "Path", page: 1, completion: $0) }
+        _ = await call { other.loadBook(sourceId: second, bookId: target.id, completion: $0) }
+        let catalog = await call { other.loadToc(sourceId: second, bookId: target.id, completion: $0) }
+        // Use the parser's stored key, which can be relative to the source URL.
+        let chapter = try XCTUnwrap((catalog as? TocReply)?.chapters.first)
+        XCTAssertEqual(chapter.title, "Chapter 1")
+
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "''") + "'" }
+        func shortHash(_ value: String) -> String {
+            let hash = Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+            return String(hash.dropFirst(8).prefix(16))
         }
-        XCTAssertTrue(saved is ReadingSaved)
-        var cacheAtPreparation: String?
-        observer.onPrepared = { cacheAtPreparation = try? String(contentsOf: cache, encoding: .utf8) }
+        let cacheDirectory = documents.appendingPathComponent("book_cache")
+            .appendingPathComponent(String(target.title.prefix(9)) + shortHash(target.id))
+        let cache = cacheDirectory.appendingPathComponent("00000-" + shortHash(chapter.title) + ".nb")
+        let originalBody = "unrelated\npreserve this offline paragraph"
+        let savedOffset: Int32 = 10
+
+        func seedConflictingTarget() async throws -> ReadingSaved {
+            var db: OpaquePointer?
+            XCTAssertEqual(sqlite3_open(documents.appendingPathComponent("legado.db").path, &db), SQLITE_OK)
+            defer { sqlite3_close(db) }
+            let insert = """
+            INSERT INTO books(bookUrl,origin,name,author,type) VALUES(\(quoted(target.id)),\(quoted(second)),\(quoted(target.title)),'Different author',8);
+            INSERT INTO chapters(bookUrl,url,title,`index`,isVolume,isVip,isPay) VALUES(\(quoted(target.id)),\(quoted(chapter.id)),\(quoted(chapter.title)),0,0,0,0);
+            """
+            guard sqlite3_exec(db, insert, nil, nil, nil) == SQLITE_OK else {
+                throw NSError(domain: "SwitchFixture", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+            }
+            try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(originalBody.utf8).write(to: cache)
+            let opened = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
+            let token = try XCTUnwrap((opened as? ContentReply)?.reading?.token)
+            let saved: EngineReply = await withCheckedContinuation { continuation in
+                other.saveReadingPosition(token: token, eventSequence: 1, utf16Offset: savedOffset) {
+                    continuation.resume(returning: $0)
+                }
+            }
+            return try XCTUnwrap(saved as? ReadingSaved)
+        }
+
+        let requestURL = try XCTUnwrap(URL(string: second + "/control/requests"))
+        func bodyRequests() async throws -> [String] {
+            let (data, _) = try await URLSession.shared.data(from: requestURL)
+            return try JSONDecoder().decode([String].self, from: data).filter { $0.hasPrefix("/chapter/") }
+        }
+
         model.beginSourceSwitch(); try await settle(model)
-        model.select(target); try await settle(model)
-        XCTAssertEqual(observer.prepared, 1, "Preparation must succeed so the commit performs the ownership check")
-        XCTAssertEqual(cacheAtPreparation, originalBody, "Preparation must not overwrite the conflicting book's cache")
+        let before = try await bodyRequests()
+        XCTAssertEqual(before, [])
+        let saved: ReadingSaved
+        if arrivesAfterPreparation {
+            model.select(target)
+            let deadline = Date().addingTimeInterval(20)
+            while observer.deliver == nil && model.busy && Date() < deadline {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            // Delivering this reply starts commit, so insert the conflict while the reply is held.
+            let deliver = try XCTUnwrap(observer.deliver)
+            XCTAssertEqual(observer.prepared?.chapter.id, chapter.id)
+            XCTAssertEqual(observer.prepared?.chapter.title, bodyTitle)
+            if FileManager.default.fileExists(atPath: cacheDirectory.path) {
+                let files = try FileManager.default.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)
+                XCTAssertFalse(files.contains { $0.pathExtension == "nb" }, "Preparation must hold the body in memory")
+            }
+            saved = try await seedConflictingTarget()
+            deliver()
+        } else {
+            saved = try await seedConflictingTarget()
+            model.select(target)
+        }
+        try await settle(model)
+
+        let requests = try await bodyRequests()
+        if arrivesAfterPreparation {
+            XCTAssertEqual(requests, ["/chapter/1", "/chapter/1/part2"])
+        } else {
+            XCTAssertNil(observer.prepared)
+            XCTAssertEqual(requests, [], "A known conflict must be rejected before fetching chapter text")
+        }
         XCTAssertTrue(model.message?.hasPrefix("Could not switch to ") == true, model.message ?? "no message")
         XCTAssertTrue(model.message?.contains("conflict") == true, model.message ?? "no message")
         XCTAssertNotNil(model.switchingFrom)
         XCTAssertNil(model.switchCandidate)
         XCTAssertEqual(model.book?.sourceId, first)
+
         XCTAssertEqual(try String(contentsOf: cache, encoding: .utf8), originalBody)
-        let recovered = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
-        XCTAssertEqual((recovered as? ContentReply)?.text, originalBody)
-        XCTAssertEqual((recovered as? ContentReply)?.reading?.paragraphUtf16Offset, 10)
+        let reopened = await call { other.openReading(sourceId: second, bookId: target.id, cacheOnly: true, completion: $0) }
+        let content = try XCTUnwrap(reopened as? ContentReply, "\(reopened)")
+        XCTAssertEqual(content.chapter.id, chapter.id)
+        XCTAssertEqual(content.chapter.title, chapter.title)
+        XCTAssertEqual(content.text, originalBody)
+        XCTAssertEqual(content.reading?.revision, saved.revision)
+        XCTAssertEqual(content.reading?.paragraphUtf16Offset, savedOffset)
     }
 
     func testBookmarkFailureKeepsReadingAndRetryAfterSheetDismissal() async throws {

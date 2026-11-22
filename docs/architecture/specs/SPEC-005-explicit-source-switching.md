@@ -4,7 +4,7 @@ title: Explicit Active-Book Source Switching
 status: Ready for Implementation
 priority: P1 - Core Feature
 creationDate: 2026-10-20
-lastUpdateDate: 2026-11-21
+lastUpdateDate: 2026-11-22
 owner: User (AI-Assisted)
 relatedSpecs:
   - PLAN-005
@@ -37,6 +37,8 @@ The Swift UI remains a client of the KMP engine. Room remains the book, catalog,
 > **Amended 2026-11-17 by [Issue #108](https://github.com/austery/legado/issues/108).** Journey steps 3 to 6 below are replaced. Selecting a candidate now switches in one step, as Android Legado does: the engine locates the replacement chapter with upstream `BookHelpChapterLocator.getDurChapter` (title similarity within ±10 chapters, then the "第N章" number, then the old chapter index as a fallback), prepares and verifies it, and commits. There is no chapter-selection page and no confirm step. Reason: follow upstream behavior under the upstream-first rule in `AGENTS.md`; on the physical iPad the explicit steps made the feature hard to use, because exact title matches were rare (owner retest, 2026-11-17). Unchanged: equivalence (step 2), prepare-then-commit atomicity, offset-zero start, and the rule from step 6 that cancellation and failures keep the old source. If `getDurChapter` returns a volume heading, which the native reader cannot open, the next readable chapter is used, else the previous one; Lei decides whether to keep this adaptation (PR #110). Struck-through text below is superseded. Lei approved H1 on #108 on 2026-11-17.
 >
 > **Amended 2026-11-21 by [Issue #119](https://github.com/austery/legado/issues/119).** Upstream returns index zero before it compares titles. When starting from index zero with a known title, the native engine prefers one readable replacement chapter with the same trimmed title. Target catalogs can place side stories before that chapter. A missing title, no readable match, or duplicate readable matches still use upstream position zero and the existing volume-heading fallback. Later positions still use upstream matching. The reader shows the chapter that opens. A separate match or fallback indicator is outside this amendment. See the [owner-approved H1](https://github.com/austery/legado/issues/119#issuecomment-7072950126).
+>
+> **Amended 2026-11-22 by [Issue #111](https://github.com/austery/legado/issues/111).** Check the candidate book URL before fetching the chapter body. The commit transaction checks ownership again. At upstream revision `52519722`, parsing the body can write a chapter title even when body caching is off.
 
 ### User journey
 
@@ -53,6 +55,7 @@ The old reader remains recoverable throughout preparation. Flush pending reading
 
 - Add an engine-owned prepared-switch token bound to the current shelf identity, old source, resume revision, shared progress projection, target catalog, selected chapter, and verified body fingerprint.
 - Keep preparation separate from durable shelf admission. Keep the fetched body in immutable memory until ~~confirmation~~ the commit (#108); preparation must not overwrite an existing listing's cache or create another shelf entry.
+- Reject a known replacement book URL conflict before fetching the chapter body. The upstream parser can write a chapter title during preparation. [Issue #111 H1](https://github.com/austery/legado/issues/111#issuecomment-7084006162).
 - Commit replacement book identity, catalog, and native resume in one Room transaction. Preserve existing user-owned shelf metadata; take source-owned metadata from the replacement. Explicitly enumerate the field ownership during implementation and review.
 - Validate the expected old source, revision, shared projection, candidate identity, target source availability, and target URL conflicts at commit. Reject stale or conflicting requests without partial mutation.
 - Acquire the database write lock before publishing the target cache, verify its readback, and then commit the replacement. A cache publication failure rolls back the transaction; the old source's cache is never touched.
@@ -121,6 +124,7 @@ Whole-book downloads, fuzzy body alignment, missing-author equivalence, source h
 | 2026-10-20 | Ready for Implementation | Owner approved the proposed switching rules, simulator implementation and acceptance, and continuous goal execution. |
 | 2026-11-17 | Amended | Issue #108: one-step switch with the upstream chapter locator replaces explicit chapter selection and confirmation (steps 3 to 6). |
 | 2026-11-21 | Amended | Issue #119: prefer a unique readable exact title match at index zero. Keep upstream fallback when the title cannot identify one chapter. [Owner-approved H1](https://github.com/austery/legado/issues/119#issuecomment-7072950126). |
+| 2026-11-22 | Amended | Issue #111: check a replacement book URL before fetching its body and again in the commit transaction. [Owner-approved H1](https://github.com/austery/legado/issues/111#issuecomment-7084006162). |
 
 ## 7. Related
 

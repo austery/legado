@@ -152,7 +152,8 @@ class ReaderEngine {
         bookId: String, chapterId: String?, readingChapterId: String? = null): EngineReply {
         preparedSwitches.clear()
         committedSwitches.clear()
-        val dao = AppDatabaseProviders.get().appDb.nativeShelfDao
+        val database = AppDatabaseProviders.get().appDb
+        val dao = database.nativeShelfDao
         val originalEntry = dao.openBook(oldSourceId, oldBookId)
         val original = originalEntry.book.copy()
         require(!NativeLocalTxt.owns(original)) { "Local TXT books cannot switch network sources" }
@@ -161,6 +162,10 @@ class ReaderEngine {
         if (candidate.name.trim().isEmpty() || candidate.name.trim() != original.name.trim() ||
             !matchesSwitchAuthor(original.author, candidate.author) ||
             bookId == oldBookId) throw InvalidInput("Select another listing with the same known title and author")
+        // At upstream 52519722, parsing can save a chapter title even with needSave=false (#111).
+        if (shelfOperation { database.bookDao.getBook(candidate.bookUrl) } != null) {
+            throw NativeShelfException(NativeShelfFailure.IDENTITY_CONFLICT, "Replacement identity conflicts with the shelf")
+        }
         // Cache directories include the title; use the preserved work identity before writing.
         candidate.name = original.name
         candidate.author = original.author
