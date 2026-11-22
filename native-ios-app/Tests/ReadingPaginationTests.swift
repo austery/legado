@@ -45,6 +45,8 @@ final class ReadingPaginationTests: XCTestCase {
                 spreads.restore(anchor: ranges[index].location)
                 for page in spreads.subviews.compactMap({ $0 as? ReadingPageTextView }) where page.frame.intersects(spreads.bounds) {
                     page.layoutIfNeeded()
+                    XCTAssertEqual(page.frame.minY, 12)
+                    XCTAssertEqual(spreads.bounds.maxY - page.frame.maxY, 12)
                     page.layoutManager.ensureLayout(for: page.textContainer)
                     XCTAssertTrue(page.isSelectable, "Each visible page must support native selection")
                     XCTAssertEqual(page.text, (body as NSString).substring(with: page.originalRange))

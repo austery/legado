@@ -40,6 +40,7 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate, UIGestureReco
     private(set) var spread = 0
     private var pages: [Int: UITextView] = [:]
     private var pageSize = CGSize.zero
+    private let verticalPageInset: CGFloat = 12
     private var margin: CGFloat = 28
     private var reflowing = false
     private var dragStartSpread: Int?
@@ -88,7 +89,8 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate, UIGestureReco
         pages.removeAll()
         self.margin = margin
         backgroundColor = paper
-        pageSize = CGSize(width: (bounds.width - 2 * margin - 40) / 2, height: bounds.height - 48)
+        pageSize = CGSize(width: (bounds.width - 2 * margin - 40) / 2,
+                          height: bounds.height - 2 * verticalPageInset)
         pagination = ReadingPagination(text: text, pageSize: pageSize)
         let count = max(1, ((pagination?.ranges.count ?? 0) + 1) / 2)
         contentSize = CGSize(width: CGFloat(count) * bounds.width, height: bounds.height)
@@ -143,7 +145,7 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate, UIGestureReco
             }
             view.textContainer.size = pageSize
             view.frame = CGRect(x: CGFloat(index / 2) * bounds.width + margin + CGFloat(index % 2) * (pageSize.width + 40),
-                                y: 24, width: pageSize.width, height: pageSize.height)
+                                y: verticalPageInset, width: pageSize.width, height: pageSize.height)
             view.accessibilityElementsHidden = index / 2 != spread
         }
     }

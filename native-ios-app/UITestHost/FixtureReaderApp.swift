@@ -47,11 +47,19 @@ struct FixtureReaderApp: App {
     private var observesCopy: Bool { ProcessInfo.processInfo.environment["READER_UI_OBSERVE_COPY"] == "1" }
     private var scenario: String { ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] ?? "shelf" }
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
+    @ViewBuilder private var fixtureReader: some View {
+        if scenario == "reader-header-long-title" {
+            ReaderScreen(model: model).dynamicTypeSize(.accessibility3)
+        } else {
+            ReaderScreen(model: model)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             VStack(spacing: 0) {
                 if prepared {
-                    ReaderScreen(model: model)
+                    fixtureReader
                         .frame(maxWidth: narrowReader ? 850 : .infinity)
                     HStack {
                         Text("SYNTHETIC UI HOST").font(.caption2)
@@ -319,6 +327,10 @@ struct FixtureReaderApp: App {
         let (data, _) = try await URLSession.shared.data(from: URL(string: base + endpoint)!)
         var json = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
+        if scenario == "reader-header-long-title" {
+            json = json.replacingOccurrences(of: "\"chapterName\": \"text\"",
+                with: "\"chapterName\": \"text##$## — The first lantern at the river crossing and the old house above the valley\"")
+        }
         if scenario == "offline" {
             json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
         }

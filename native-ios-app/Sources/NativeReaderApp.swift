@@ -69,10 +69,9 @@ struct ReaderScreen: View {
                 if model.route == .reading && chapterFind.isPresented { ChapterFindPanel(session: chapterFind) }
                 ZStack {
                     if let content = model.content {
-                        // The body stays below the tallest header in every state, so showing
-                        // controls never covers its first line and never changes its viewport.
+                        // Keep the measured header in the body layout when its controls are hidden.
                         VStack(spacing: 0) {
-                            readingHeaderSpace
+                            readingHeader
                             ReadingText(
                                 chapterKey: content.chapter.sourceId + "\u{0}" + content.chapter.bookId + "\u{0}" + content.chapter.id,
                                 text: content.text, style: style, restoration: model.readingRestoration,
@@ -91,9 +90,6 @@ struct ReaderScreen: View {
                     if model.route == .sources { sources }
                     if model.route == .details { details }
                     if model.route == .contents { contents }
-                }
-                .overlay(alignment: .top) {
-                    if model.route == .reading { readingHeader }
                 }
                 .overlay(alignment: .bottom) {
                     if model.route == .reading && menu { readingControls }
@@ -441,7 +437,7 @@ struct ReaderScreen: View {
     }
 
     private var readingHeader: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(spacing: 12) {
             if menu {
                 Button { model.showShelf() } label: {
                     Label("Shelf", systemImage: "chevron.left")
@@ -452,13 +448,18 @@ struct ReaderScreen: View {
             } else {
                 Color.clear.frame(width: 44, height: 44).allowsHitTesting(false)
             }
-            Spacer(minLength: 0)
-            if menu {
-                readingHeaderTitles(book: model.book?.title ?? "", chapter: model.content?.chapter.title ?? "")
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("reader.headerTitle")
+
+            Group {
+                if menu {
+                    readingHeaderTitles
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("reader.headerTitle")
+                } else {
+                    readingHeaderTitles.hidden().accessibilityHidden(true)
+                }
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity)
+
             Button { menu.toggle() } label: {
                 Label(menu ? "Hide controls" : "Show controls", systemImage: menu ? "ellipsis.circle.fill" : "ellipsis.circle")
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
@@ -466,27 +467,16 @@ struct ReaderScreen: View {
             }
             .accessibilityIdentifier("reader.controls")
         }
-        .padding(.horizontal, 16).padding(.vertical, readingHeaderVerticalPadding)
+        .padding(.horizontal, 16)
         .background { if menu { paper.opacity(0.97) } }
     }
 
-    private let readingHeaderVerticalPadding: CGFloat = 4
-
-    private func readingHeaderTitles(book: String, chapter: String) -> some View {
-        VStack(spacing: 4) {
-            Text(book).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            Text(chapter).font(.headline).lineLimit(2)
+    private var readingHeaderTitles: some View {
+        VStack(spacing: 2) {
+            Text(model.book?.title ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(model.content?.chapter.title ?? "").font(.headline).lineLimit(2)
         }
-        .padding(.vertical, 8)
-    }
-
-    /// Sized by the header's own text styles with its longest title, so it follows Dynamic Type.
-    private var readingHeaderSpace: some View {
-        readingHeaderTitles(book: " ", chapter: " \n ")
-            .frame(minHeight: 44)
-            .padding(.vertical, readingHeaderVerticalPadding)
-            .frame(maxWidth: .infinity)
-            .hidden()
+        .multilineTextAlignment(.center)
     }
 
     private var readingControls: some View {
