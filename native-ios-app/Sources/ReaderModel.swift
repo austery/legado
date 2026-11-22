@@ -39,7 +39,7 @@ struct ShelfCheckSummary: Equatable {
 
 @MainActor
 final class ReaderModel: ObservableObject {
-    enum ReplyStage { case operation, detail, contents, sourceSwitch, cachedSearch }
+    enum ReplyStage { case operation, detail, contents, sourceSwitch, cachedSearch, cache }
     typealias ReplyDelivery = (ReplyStage, EngineReply, @escaping (EngineReply) -> Void) -> Void
     private let deliverReply: ReplyDelivery
 
@@ -291,23 +291,28 @@ final class ReaderModel: ObservableObject {
         }
     }
     func cacheNextChapters(prefetch: Bool = false) {
-        guard isShelved, let book, !book.isLocal, foregroundActive, !busy,
-              !prefetch || (prefetchEnabled && content != nil && !manualCacheRunning) else { return }
+        guard isShelved, let book, !book.isLocal, foregroundActive, !busy, !manualCacheRunning,
+              !prefetch || (prefetchEnabled && content != nil) else { return }
         cancelCaching()
         cacheNotice = nil
         manualCacheRunning = !prefetch
         let generation = UUID(); cacheGeneration = generation
         cacheRequest = engine.cacheNextChapters(sourceId: book.sourceId, bookId: book.id,
             afterChapterId: content?.chapter.id, prefetch: prefetch) { [weak self] reply in
-            guard let self, self.cacheGeneration == generation,
-                  self.book?.id == book.id, self.book?.sourceId == book.sourceId else { return }
-            // A finished run keeps its result on screen; read-ahead waits for the next displayed chapter.
-            if let progress = reply as? CacheProgress {
-                self.cacheProgress = progress
-                if !progress.running { self.cacheRequest = nil; self.manualCacheRunning = false; self.refreshOfflineStatus() }
-            } else if let failure = reply as? EngineFailure {
-                self.cacheNotice = failure.message; self.cacheRequest = nil; self.manualCacheRunning = false
-                self.refreshOfflineStatus()
+            guard let self else { return }
+            self.deliverReply(.cache, reply) { [weak self] reply in
+                guard let self, self.cacheGeneration == generation,
+                      self.book?.id == book.id, self.book?.sourceId == book.sourceId else { return }
+                // A finished batch keeps its result on screen until the next automatic run.
+                if let progress = reply as? CacheProgress {
+                    self.cacheProgress = progress
+                    if !progress.running {
+                        self.cacheRequest = nil; self.manualCacheRunning = false; self.refreshOfflineStatus()
+                    }
+                } else if let failure = reply as? EngineFailure {
+                    self.cacheNotice = failure.message; self.cacheRequest = nil; self.manualCacheRunning = false
+                    self.refreshOfflineStatus()
+                }
             }
         }
     }
@@ -496,7 +501,17 @@ final class ReaderModel: ObservableObject {
     @Published private(set) var searchCommandPending = false
     @Published private(set) var searchSessionID: String?
     var results: [BookSnapshot] { searchWorks.flatMap { $0.candidates.map(\.book) } }
-    @Published var book: BookSnapshot?
+    @Published var book: BookSnapshot? {
+        didSet {
+            guard let previous = oldValue,
+                  previous.id != book?.id || previous.sourceId != book?.sourceId else { return }
+            // A reply for the old book may still arrive after the new book is visible.
+            cacheGeneration = UUID()
+            statusGeneration = UUID()
+            cancelCaching()
+            cacheProgress = nil; cacheNotice = nil; cacheClearPlan = nil; offlineStatus = nil
+        }
+    }
     @Published var chapters: [ChapterSnapshot] = []
     @Published var content: ContentReply?
     @Published var route: ReaderRoute = .shelf
@@ -1154,7 +1169,9 @@ final class ReaderModel: ObservableObject {
         resumeNotice = reply.reading?.restoreNotice.isEmpty == false ? reply.reading?.restoreNotice : nil
         refreshOfflineStatus()
         // Deliver content first; automatic work is bounded and never restores a prior batch.
-        if allowPrefetch { Task { [weak self] in self?.cacheNextChapters(prefetch: true) } }
+        if allowPrefetch && !manualCacheRunning {
+            Task { [weak self] in self?.cacheNextChapters(prefetch: true) }
+        }
     }
 
     var readingRestoration: ReadingRestoration? {

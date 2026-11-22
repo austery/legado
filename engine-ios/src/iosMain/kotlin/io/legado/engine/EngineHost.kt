@@ -51,8 +51,9 @@ internal object EngineHost {
 
     /** Process-wide leases include legacy requests and independent engine sessions. */
     suspend fun <T> withSourceRequest(sourceId: String, background: Boolean = false,
-        reserveForeground: Boolean = true, action: suspend () -> T): T {
-        if (!background) OfflineWork.cancel()
+        reserveForeground: Boolean = true, readingChapter: Boolean = false, action: suspend () -> T): T {
+        if (readingChapter) OfflineWork.yieldTransfer()
+        else if (!background) OfflineWork.cancel()
         val (permits, lease) = networkRegistryMutex.withLock {
             val permits = networkPermits ?: Semaphore(
                 AppConfigProviders.get().threadCount.coerceIn(1, AppConst.MAX_THREAD)

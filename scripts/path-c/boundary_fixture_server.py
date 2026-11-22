@@ -79,9 +79,14 @@ class BoundaryHandler(C2Handler):
         if route.startswith('/chapter/offline/'):
             number = route.rsplit('/', 1)[1]
             with self.lock:
-                self.chapter_requests.setdefault(run_prefix, []).append(number)
+                requests = self.chapter_requests.setdefault(run_prefix, [])
+                requests.append(number)
                 unavailable = run_prefix in self.offline_runs or self.failed_chapters.get(run_prefix) == number
-                gate = self.gates.get(run_prefix + '/chapter') if number == '2' else None
+                gate = self.gates.get(run_prefix + '/offline-chapter-' + number)
+                if gate is None and requests.count(number) == 1:
+                    gate = self.gates.get(run_prefix + '/offline-first-chapter-' + number)
+                if gate is None and number == '2':
+                    gate = self.gates.get(run_prefix + '/chapter')
             try:
                 if gate:
                     gate[0].set()

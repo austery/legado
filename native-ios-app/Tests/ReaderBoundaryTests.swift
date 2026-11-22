@@ -838,6 +838,163 @@ final class ReaderBoundaryTests: XCTestCase {
         XCTAssertNil(model.message)
     }
 
+    func testManualCacheContinuesThroughResumeAndCachedChapterTurns() async throws {
+        let model = ReaderModel()
+        defer { model.cancelCaching(); model.cancel() }
+        let (base, chapters) = try await readAheadBook(model)
+        model.read(chapters[1]); try await settle(model)
+        model.read(chapters[0]); try await settle(model)
+        try await control(base, "hold", "offline-chapter-3")
+        model.cacheNextChapters()
+        try await control(base, "entered", "offline-chapter-3")
+        XCTAssertTrue(model.manualCacheRunning)
+        XCTAssertEqual(model.cacheProgress?.completed, 1)
+        XCTAssertEqual(model.cacheProgress?.target, 20)
+
+        model.navigate(.details); try await settle(model)
+        model.returnToCurrentReading(); try await settle(model)
+        XCTAssertTrue(model.manualCacheRunning, "Resuming a cached chapter retired the manual batch")
+        model.setPrefetchEnabled(true)
+        model.navigate(.contents); try await settle(model)
+        model.read(chapters[1]); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.id, chapters[1].id)
+        XCTAssertTrue(model.content?.text.contains("Offline verified body 2.") == true)
+        XCTAssertTrue(model.manualCacheRunning, "Opening a cached next chapter retired the manual batch")
+        XCTAssertEqual(model.cacheProgress?.completed, 1)
+        XCTAssertEqual(model.cacheProgress?.target, 20)
+
+        try await control(base, "release", "offline-chapter-3")
+        try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+        XCTAssertEqual(model.cacheProgress?.completed, 20)
+        XCTAssertEqual(model.cacheProgress?.target, 20)
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+        XCTAssertEqual(model.cacheProgress?.failedChapterIds, [])
+        let requested = try await offline(base, "count")
+        XCTAssertEqual(requested.sorted(), Array(1...21), "Only the original range should be requested")
+    }
+
+    func testManualCacheYieldsAnInFlightTransferToAnUncachedChapter() async throws {
+        let model = ReaderModel()
+        defer { model.cancelCaching(); model.cancel() }
+        let (base, chapters) = try await readAheadBook(model)
+        try await control(base, "hold", "offline-chapter-2")
+        model.cacheNextChapters()
+        try await control(base, "entered", "offline-chapter-2")
+        XCTAssertTrue(model.manualCacheRunning)
+
+        model.read(chapters[2]); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.id, chapters[2].id)
+        XCTAssertTrue(model.content?.text.contains("Offline verified body 3.") == true)
+        XCTAssertTrue(model.manualCacheRunning, "Foreground network work retired the manual batch")
+        XCTAssertEqual(model.cacheProgress?.completed, 0)
+        XCTAssertEqual(model.cacheProgress?.target, 20)
+        // Only the original transfer is retried; the later chapter was saved by the reader.
+        try await control(base, "release", "offline-chapter-2")
+        try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+        XCTAssertEqual(model.cacheProgress?.completed, 20)
+        XCTAssertEqual(model.cacheProgress?.target, 20)
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+        XCTAssertEqual(model.cacheProgress?.failedChapterIds, [])
+        let requested = try await offline(base, "count")
+        XCTAssertEqual(requested, [1, 2, 3, 2] + Array(4...21))
+    }
+
+    func testManualCacheUsesTheBodySavedByTheForegroundForTheSameChapter() async throws {
+        let model = ReaderModel()
+        defer { model.cancelCaching(); model.cancel() }
+        let (base, chapters) = try await readAheadBook(model)
+        try await control(base, "hold", "offline-first-chapter-2")
+        try await control(base, "hold", "offline-chapter-3")
+        model.cacheNextChapters()
+        try await control(base, "entered", "offline-first-chapter-2")
+        XCTAssertTrue(model.manualCacheRunning)
+
+        model.read(chapters[1]); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.id, chapters[1].id)
+        XCTAssertTrue(model.content?.text.contains("Offline verified body 2.") == true)
+        try await control(base, "entered", "offline-chapter-3")
+        XCTAssertEqual(model.cacheProgress?.completed, 1)
+        XCTAssertTrue(model.manualCacheRunning)
+        try await control(base, "release", "offline-first-chapter-2")
+        try await control(base, "release", "offline-chapter-3")
+        try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+        XCTAssertEqual(model.cacheProgress?.completed, 20)
+        XCTAssertEqual(model.cacheProgress?.target, 20)
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+        XCTAssertEqual(model.cacheProgress?.failedChapterIds, [])
+        let requested = try await offline(base, "count")
+        XCTAssertEqual(requested, [1, 2, 2] + Array(3...21),
+                       "Only the interrupted transfer and its foreground replacement may request chapter 2")
+    }
+
+    func testLateManualCacheCompletionDoesNotAffectTheNewBook() async throws {
+        var holdOldCompletion = false
+        var delayedOldCompletion: (() -> Void)?
+        let model = ReaderModel(deliverReply: { stage, reply, apply in
+            if holdOldCompletion && stage == .cache, let progress = reply as? CacheProgress, !progress.running {
+                delayedOldCompletion = { apply(reply) }
+                holdOldCompletion = false
+            } else {
+                apply(reply)
+            }
+        })
+        defer { model.cancelCaching(); model.cancel() }
+        let (oldBase, _) = try await readAheadBook(model)
+        let oldBook = try XCTUnwrap(model.shelf.first { $0.book.id == model.book?.id })
+        let (newBase, _) = try await readAheadBook(model)
+        let newBook = try XCTUnwrap(model.shelf.first { $0.book.id == model.book?.id })
+        model.openShelfBook(oldBook); try await settle(model)
+        try await control(oldBase, "hold", "offline-chapter-2")
+        model.cacheNextChapters()
+        try await control(oldBase, "entered", "offline-chapter-2")
+        XCTAssertTrue(model.manualCacheRunning)
+
+        holdOldCompletion = true
+        model.openShelfBook(newBook); try await settle(model)
+        XCTAssertEqual(model.book?.id, newBook.book.id)
+        XCTAssertFalse(model.manualCacheRunning, "The previous book cannot block caching for this book")
+        let oldCompletion = try XCTUnwrap(delayedOldCompletion)
+        try await control(newBase, "hold", "offline-chapter-2")
+        model.cacheNextChapters()
+        try await control(newBase, "entered", "offline-chapter-2")
+        oldCompletion()
+        XCTAssertTrue(model.manualCacheRunning, "The old terminal reply cannot stop the new batch")
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+
+        try await control(oldBase, "release", "offline-chapter-2")
+        try await control(newBase, "release", "offline-chapter-2")
+        try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+        XCTAssertEqual(model.cacheProgress?.completed, 20)
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+    }
+
+    func testManualCacheStillStopsOnBackgroundClearAndSourceSwitch() async throws {
+        for transition in ["background", "clear", "source switch"] {
+            let model = ReaderModel()
+            defer { model.cancelCaching(); model.cancel() }
+            let (base, _) = try await readAheadBook(model)
+            try await control(base, "hold", "offline-chapter-2")
+            model.cacheNextChapters()
+            try await control(base, "entered", "offline-chapter-2")
+            XCTAssertTrue(model.manualCacheRunning)
+
+            switch transition {
+            case "background": model.setForegroundActive(false)
+            case "clear": model.prepareCacheClear()
+            default: model.beginSourceSwitch()
+            }
+            try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+            XCTAssertEqual(model.cacheProgress?.cancelled, true, transition)
+            XCTAssertEqual(model.cacheProgress?.failedChapterIds, [], transition)
+            try await control(base, "release", "offline-chapter-2")
+            try await control(base, "completed", "offline-chapter-2")
+            model.refreshOfflineStatus()
+            try await wait { self.availableOffline(model) == 1 }
+            let requested = try await offline(base, "count")
+            XCTAssertEqual(requested, [1, 2], transition)
+        }
+    }
+
     func testTurningReadAheadOffStopsItAndTheNextChapterStartsNothing() async throws {
         let model = ReaderModel(); defer { model.cancel() }
         let (base, chapters) = try await readAheadBook(model)
