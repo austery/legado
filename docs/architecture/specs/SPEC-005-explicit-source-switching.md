@@ -4,7 +4,7 @@ title: Explicit Active-Book Source Switching
 status: Ready for Implementation
 priority: P1 - Core Feature
 creationDate: 2026-10-20
-lastUpdateDate: 2026-11-17
+lastUpdateDate: 2026-11-21
 owner: User (AI-Assisted)
 relatedSpecs:
   - PLAN-005
@@ -32,11 +32,11 @@ The Swift UI remains a client of the KMP engine. Room remains the book, catalog,
 
 ## 3. Proposed Design Decision
 
-**Owner-approved approach (2026-10-20, superseded in part by #108):** ~~prepare a replacement chapter before an explicit commit; recommend only an unambiguous matching chapter~~ and start the replacement at its beginning. Since #108: prepare the chapter that upstream `getDurChapter` locates, then commit without a separate confirmation.
+**Owner-approved approach.** Selecting a source prepares and verifies the located chapter, commits the replacement in one step, and starts at that chapter's beginning. Chapter selection follows the upstream locator approved in #108 and the first-chapter exception approved in #119.
 
 > **Amended 2026-11-17 by [Issue #108](https://github.com/austery/legado/issues/108).** Journey steps 3 to 6 below are replaced. Selecting a candidate now switches in one step, as Android Legado does: the engine locates the replacement chapter with upstream `BookHelpChapterLocator.getDurChapter` (title similarity within ±10 chapters, then the "第N章" number, then the old chapter index as a fallback), prepares and verifies it, and commits. There is no chapter-selection page and no confirm step. Reason: follow upstream behavior under the upstream-first rule in `AGENTS.md`; on the physical iPad the explicit steps made the feature hard to use, because exact title matches were rare (owner retest, 2026-11-17). Unchanged: equivalence (step 2), prepare-then-commit atomicity, offset-zero start, and the rule from step 6 that cancellation and failures keep the old source. If `getDurChapter` returns a volume heading, which the native reader cannot open, the next readable chapter is used, else the previous one; Lei decides whether to keep this adaptation (PR #110). Struck-through text below is superseded. Lei approved H1 on #108 on 2026-11-17.
 >
-> **First-chapter exception, [Issue #119](https://github.com/austery/legado/issues/119).** Upstream returns index zero before it compares titles. When starting from index zero with a known title, the native engine prefers one readable replacement chapter with the same trimmed title. Target catalogs can place side stories before that chapter. A missing title, no readable match, or duplicate readable matches still use upstream position zero and the existing volume-heading fallback. Later positions still use upstream matching. The reader shows the chapter that opens. It does not display a separate match or fallback status.
+> **Amended 2026-11-21 by [Issue #119](https://github.com/austery/legado/issues/119).** Upstream returns index zero before it compares titles. When starting from index zero with a known title, the native engine prefers one readable replacement chapter with the same trimmed title. Target catalogs can place side stories before that chapter. A missing title, no readable match, or duplicate readable matches still use upstream position zero and the existing volume-heading fallback. Later positions still use upstream matching. The reader shows the chapter that opens. A separate match or fallback indicator is outside this amendment. See the [owner-approved H1](https://github.com/austery/legado/issues/119#issuecomment-7072950126).
 
 ### User journey
 
@@ -65,7 +65,7 @@ The old reader remains recoverable throughout preparation. Flush pending reading
 | Alternative | Benefit | Limitation | Proposed disposition |
 | --- | --- | --- | --- |
 | Prepare, confirm, and begin selected chapter | Predictable position with recoverable failures | Reader may reread part of a chapter | ~~Recommended~~ Superseded by #108 |
-| Locate, prepare, and commit in one step with upstream `getDurChapter` and the first-chapter exception (#108, #119) | One tap; a unique exact first-chapter match can follow side stories | A fallback opens the selected chapter at its start; the reader can correct it from the catalog | Selected 2026-11-17 |
+| Locate, prepare, and commit in one step with upstream `getDurChapter` and the first-chapter exception (#108, #119) | One tap can find a unique exact first-chapter match after side stories | A fallback opens the selected chapter at its start. The reader can correct it from the catalog. | Selected 2026-11-17. First-chapter exception approved 2026-11-21. |
 | Copy chapter index and character offset | Fewer interactions | Different catalogs and bodies make the position misleading | Reject |
 | Fuzzy text alignment across sources | Potentially closer resume | Requires a separate confidence and ambiguity contract | Defer |
 | Reuse ordinary shelf admission or raw book replacement | Small implementation | Does not satisfy source/catalog/resume atomicity | Reject |
@@ -120,6 +120,7 @@ Whole-book downloads, fuzzy body alignment, missing-author equivalence, source h
 | 2026-10-20 | Draft | Prepared after PR #30 merge; source equivalence and chapter-start policy await owner confirmation. |
 | 2026-10-20 | Ready for Implementation | Owner approved the proposed switching rules, simulator implementation and acceptance, and continuous goal execution. |
 | 2026-11-17 | Amended | Issue #108: one-step switch with the upstream chapter locator replaces explicit chapter selection and confirmation (steps 3 to 6). |
+| 2026-11-21 | Amended | Issue #119: prefer a unique readable exact title match at index zero. Keep upstream fallback when the title cannot identify one chapter. [Owner-approved H1](https://github.com/austery/legado/issues/119#issuecomment-7072950126). |
 
 ## 7. Related
 

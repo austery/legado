@@ -200,10 +200,10 @@ class ReaderEngine {
     }
 
     /**
-     * Upstream locator over the old chapter. Upstream passes the live reading position; here
-     * that is the chapter on screen. Without it, use the shelf book's chapter, which resume
-     * saves project into durChapterIndex/durChapterTitle. The locator works on list positions;
-     * a volume heading is not readable, so take the next readable chapter, else the previous one.
+     * Start from the chapter on screen, or use the saved shelf chapter when no chapter is open.
+     * At index zero, prefer one readable chapter with the same trimmed title (#119). Otherwise
+     * use the upstream locator. If it returns a volume heading, take the next readable chapter
+     * or the previous one if no readable chapter follows it.
      */
     private fun locatedChapter(original: Book, oldCatalog: List<BookChapter>, readingChapterId: String?,
         catalog: List<BookChapter>): BookChapter {
