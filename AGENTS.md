@@ -26,10 +26,12 @@ upstream. In a checkout based on the wrong branch, `native-ios-app/` is missing;
 and create the task branch from `origin/native-reader`.
 
 Before designing a feature or changing the UI, check `master` for overlapping
-upstream changes. When the trace below finds relevant upstream paths, pass them
-to the comparison. For example, use paths under `ui/`, `data/` or `core/`.
+upstream changes. Pass upstream paths from the trace below, such as paths under
+`ui/`, `data/` or `core/`. `master` has no `native-ios-app/` or `engine-ios/`.
 `git fetch origin master native-reader && git log origin/native-reader..origin/master -- <paths>`.
-No output means no unintegrated upstream commit touches those paths.
+No output means no unintegrated upstream commit touches those paths. If the
+trace finds no direct match, search the closest relevant upstream area and
+record where you searched.
 Release dry-runs, when to integrate upstream, and merge and upgrade principles are in
 [ADR-005](docs/architecture/decisions/ADR-005-upstream-integration-cadence.md).
 
@@ -38,14 +40,19 @@ Release dry-runs, when to integrate upstream, and merge and upgrade principles a
 Before designing a feature, UI change, storage change or engine export, trace
 the integrated KMP upstream behavior. Use shared `data`/`core` helpers and the
 original Compose UI under `ui/` as references. Record the upstream path and line,
-or the search that found none, in the H1 when the H1/H2 Issue contract applies.
-For layout-only changes, check upstream, record the trace in the PR, and follow
-native iOS layout conventions. Layout-only changes do not need a separate issue.
+or the search that found none, in the H1 if the change requires one. Otherwise,
+record the trace in the PR.
+
+Layout-only work keeps model calls, selection, pagination rules and persistence
+behavior, including saved-position computation, intact. Check upstream and use
+native iOS layout conventions for this work. A separate issue is optional unless
+the [impact radius map](docs/agents/impact-radius.md#review-depth) or another
+existing rule requires an H1.
 
 For engine, runtime and shared storage behavior, follow upstream by default.
 Reuse existing upstream capabilities through narrow exports where needed.
-Preserve the approved native rules for shelf identity, cross-source work
-grouping and saved reading position in [ADR-002](docs/architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost).
+Preserve the approved native rules for shelf reuse and deduplication,
+cross-source work grouping and reading position in [ADR-002](docs/architecture/decisions/ADR-002-engine-boundaries-and-upstream-validation.md#actual-reuse-boundary-and-maintenance-cost).
 A new table, schema migration or parallel implementation of an upstream
 capability needs Lei's explicit decision, stating why the upstream path cannot
 serve. Do not contradict upstream's documented
