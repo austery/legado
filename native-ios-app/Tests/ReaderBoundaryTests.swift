@@ -899,6 +899,75 @@ final class ReaderBoundaryTests: XCTestCase {
         XCTAssertEqual(requested, [1, 2, 3, 2] + Array(4...21))
     }
 
+    func testManualCacheUsesTheBodySavedByTheForegroundForTheSameChapter() async throws {
+        let model = ReaderModel()
+        defer { model.cancelCaching(); model.cancel() }
+        let (base, chapters) = try await readAheadBook(model)
+        try await control(base, "hold", "offline-first-chapter-2")
+        try await control(base, "hold", "offline-chapter-3")
+        model.cacheNextChapters()
+        try await control(base, "entered", "offline-first-chapter-2")
+        XCTAssertTrue(model.manualCacheRunning)
+
+        model.read(chapters[1]); try await settle(model)
+        XCTAssertEqual(model.content?.chapter.id, chapters[1].id)
+        XCTAssertTrue(model.content?.text.contains("Offline verified body 2.") == true)
+        try await control(base, "entered", "offline-chapter-3")
+        XCTAssertEqual(model.cacheProgress?.completed, 1)
+        XCTAssertTrue(model.manualCacheRunning)
+        try await control(base, "release", "offline-first-chapter-2")
+        try await control(base, "release", "offline-chapter-3")
+        try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+        XCTAssertEqual(model.cacheProgress?.completed, 20)
+        XCTAssertEqual(model.cacheProgress?.target, 20)
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+        XCTAssertEqual(model.cacheProgress?.failedChapterIds, [])
+        let requested = try await offline(base, "count")
+        XCTAssertEqual(requested, [1, 2, 2] + Array(3...21),
+                       "Only the interrupted transfer and its foreground replacement may request chapter 2")
+    }
+
+    func testLateManualCacheCompletionDoesNotAffectTheNewBook() async throws {
+        var holdOldCompletion = false
+        var delayedOldCompletion: (() -> Void)?
+        let model = ReaderModel(deliverReply: { stage, reply, apply in
+            if holdOldCompletion && stage == .cache, let progress = reply as? CacheProgress, !progress.running {
+                delayedOldCompletion = { apply(reply) }
+                holdOldCompletion = false
+            } else {
+                apply(reply)
+            }
+        })
+        defer { model.cancelCaching(); model.cancel() }
+        let (oldBase, _) = try await readAheadBook(model)
+        let oldBook = try XCTUnwrap(model.shelf.first { $0.book.id == model.book?.id })
+        let (newBase, _) = try await readAheadBook(model)
+        let newBook = try XCTUnwrap(model.shelf.first { $0.book.id == model.book?.id })
+        model.openShelfBook(oldBook); try await settle(model)
+        try await control(oldBase, "hold", "offline-chapter-2")
+        model.cacheNextChapters()
+        try await control(oldBase, "entered", "offline-chapter-2")
+        XCTAssertTrue(model.manualCacheRunning)
+
+        holdOldCompletion = true
+        model.openShelfBook(newBook); try await settle(model)
+        XCTAssertEqual(model.book?.id, newBook.book.id)
+        XCTAssertFalse(model.manualCacheRunning, "The previous book cannot block caching for this book")
+        let oldCompletion = try XCTUnwrap(delayedOldCompletion)
+        try await control(newBase, "hold", "offline-chapter-2")
+        model.cacheNextChapters()
+        try await control(newBase, "entered", "offline-chapter-2")
+        oldCompletion()
+        XCTAssertTrue(model.manualCacheRunning, "The old terminal reply cannot stop the new batch")
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+
+        try await control(oldBase, "release", "offline-chapter-2")
+        try await control(newBase, "release", "offline-chapter-2")
+        try await wait { !model.manualCacheRunning && model.cacheProgress?.running == false }
+        XCTAssertEqual(model.cacheProgress?.completed, 20)
+        XCTAssertEqual(model.cacheProgress?.cancelled, false)
+    }
+
     func testManualCacheStillStopsOnBackgroundClearAndSourceSwitch() async throws {
         for transition in ["background", "clear", "source switch"] {
             let model = ReaderModel()
