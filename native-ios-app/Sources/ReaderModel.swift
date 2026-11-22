@@ -1085,7 +1085,7 @@ final class ReaderModel: ObservableObject {
             guard let self, self.generation == token else { return }
             self.busy = false; self.request = nil
             if let restored = reply as? ContentReply {
-                self.acceptContent(restored, allowPrefetch: allowPrefetch)
+                self.acceptContent(restored, allowPrefetch: allowPrefetch, preservingViewport: true)
             } else {
                 self.resumeNotice = "Previous text remains visible, but its saved position could not be reopened. Retry before continuing."
             }
@@ -1100,6 +1100,23 @@ final class ReaderModel: ObservableObject {
     func moveChapter(_ delta: Int) {
         guard let index = chapterPosition, chapters.indices.contains(index + delta) else { return }
         read(chapters[index + delta])
+    }
+
+    private var nextReadableChapter: ChapterSnapshot? {
+        guard let index = chapterPosition else { return nil }
+        let isLocalText = book?.isLocal == true
+        // A local TXT volume marks a blank section. Web volume entries can have
+        // a body unless upstream synthesized the ID from the heading title.
+        return chapters.dropFirst(index + 1).first { chapter in
+            !chapter.isVolume || (!isLocalText && !chapter.id.hasPrefix(chapter.title))
+        }
+    }
+
+    var canAdvanceFromSpread: Bool { !busy && nextReadableChapter != nil }
+
+    func advanceFromSpread() {
+        guard !busy, let chapter = nextReadableChapter else { return }
+        read(chapter)
     }
 
     /// Directory return uses the retained view for session-only text. Reopening
@@ -1123,11 +1140,14 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    private func acceptContent(_ reply: ContentReply, allowPrefetch: Bool = true) {
+    private var preservesRestoredViewport = false
+
+    private func acceptContent(_ reply: ContentReply, allowPrefetch: Bool = true, preservingViewport: Bool = false) {
         cachedSearchSelection = nil
         bookmarkOffset = nil
         bookmarkPositionAvailable = false
         bookmarkBusy = false
+        preservesRestoredViewport = preservingViewport
         content = reply; route = .reading
         saveNotice = reply.storageNotice.isEmpty ? nil : reply.storageNotice
         activeReadingToken = reply.reading?.token
@@ -1139,7 +1159,8 @@ final class ReaderModel: ObservableObject {
 
     var readingRestoration: ReadingRestoration? {
         guard let reading = content?.reading else { return nil }
-        return ReadingRestoration(identity: reading.token, utf16Offset: Int(reading.paragraphUtf16Offset))
+        return ReadingRestoration(identity: reading.token, utf16Offset: Int(reading.paragraphUtf16Offset),
+                                  preservesViewport: preservesRestoredViewport)
     }
 
     func readingDisplayed(_ token: String, _ offset: Int) {

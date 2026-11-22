@@ -14,6 +14,7 @@ struct ReadingStyle: Equatable, Codable {
 struct ReadingRestoration: Equatable {
     let identity: String
     let utf16Offset: Int
+    var preservesViewport = false
 }
 
 final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
@@ -38,10 +39,12 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     private var findHighlightGeneration = -1
     private var findRevealOffset: Int?
     private var preservingFindAnchor = false
+    private var retainedSpreadOffset: Int?
     private var onDisplayed: ((String, Int) -> Void)?
     private var onParagraphScroll: ((String, Int) -> Void)?
 
     var onToggleControls: (() -> Void)?
+    var onForwardAtEnd: (() -> Void)? { didSet { updateEndSwipe() } }
     private var controlsTouchStarted: TimeInterval = 0
     private var controlsTouchHadSelection = false
     private weak var controlsTouchPage: UITextView?
@@ -142,6 +145,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         if readingIsActive != isReading {
             readingIsActive = isReading
             userScrolling = false
+            if !isReading { retainedSpreadOffset = nil }
             needsAnchorRestoration = true
             setNeedsLayout()
         }
@@ -183,6 +187,9 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         if newChapter || newIdentity || newBody {
             let requested = self.restoration?.utf16Offset ?? (newChapter ? 0 : anchor)
             let normalized = paragraphStart(requested)
+            if newChapter || newBody || self.restoration?.preservesViewport != true || normalized != anchor {
+                retainedSpreadOffset = nil
+            }
             validRestoration = normalized != nil
             anchor = normalized ?? 0
         }
@@ -193,6 +200,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         userScrolling = true
+        retainedSpreadOffset = nil
         preservingFindAnchor = false
         findRevealOffset = nil
     }
@@ -202,7 +210,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { userScrolling = false }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !usesSpreads, readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty,
+        guard !usesSpreads, readingIsActive, !restoring, !needsAnchorRestoration, !text.isEmpty, retainedSpreadOffset == nil,
               !preservingFindAnchor || userScrolling else { return }
         let point = CGPoint(x: textContainerInset.left + 1, y: contentOffset.y + textContainerInset.top + 1)
         guard let position = closestPosition(to: point),
@@ -218,14 +226,13 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
         let wasRestoring = restoring
         restoring = true
         defer { restoring = wasRestoring }
-        let displayOffset = findRevealOffset ?? anchor
         if usesSpreads {
-            spreadView?.restore(anchor: displayOffset)
+            spreadView?.restore(anchor: displayRestorationOffset)
             needsAnchorRestoration = false
             return
         }
         layoutManager.ensureLayout(for: textContainer)
-        if let position = position(from: beginningOfDocument, offset: displayOffset) {
+        if let position = position(from: beginningOfDocument, offset: displayRestorationOffset) {
             // caretRect also represents the empty last paragraph after a trailing delimiter.
             let rect = caretRect(for: position)
             let maximum = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
@@ -267,6 +274,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
             pages.onTurn = { [weak self] offset in self?.acceptPageTurn(offset) }
             controlsTap.require(toFail: pages.panGestureRecognizer)
             spreadView = pages
+            updateEndSwipe()
             addSubview(pages)
         }
         spreadView?.isHidden = !wantsSpreads
@@ -280,7 +288,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
             pages.frame = CGRect(origin: .zero, size: bounds.size)
             bringSubviewToFront(pages)
             if changed || modeChanged || spreadNeedsReflow {
-                pages.reflow(text: attributedText, margin: style.margin, anchor: anchor,
+                pages.reflow(text: attributedText, margin: style.margin, anchor: displayRestorationOffset,
                              paper: backgroundColor ?? .systemBackground)
                 spreadNeedsReflow = false
             }
@@ -294,6 +302,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
 
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
         if usesSpreads { return spreadView?.accessibilityScroll(direction) ?? false }
+        retainedSpreadOffset = nil
         preservingFindAnchor = false
         findRevealOffset = nil
         return super.accessibilityScroll(direction)
@@ -304,9 +313,25 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
               let normalized = paragraphStart(offset) else { return }
         findRevealOffset = nil
         preservingFindAnchor = false
+        retainedSpreadOffset = nil
         anchor = normalized
         guard let identity = restoration?.identity, displayedIdentity == identity, validRestoration else { return }
         onParagraphScroll?(identity, anchor)
+    }
+
+    private var displayRestorationOffset: Int { retainedSpreadOffset ?? findRevealOffset ?? anchor }
+
+    private func updateEndSwipe() {
+        spreadView?.onForwardAtEnd = onForwardAtEnd.map { action in
+            { [weak self] in
+                guard let self, self.usesSpreads, let spread = self.spreadView, self.readingIsActive, self.bodyIsVisible,
+                      !self.restoring, !self.needsAnchorRestoration else { return }
+                // Loading and failure banners can resize the viewport or switch to scroll layout.
+                // Restore the first visible character without replacing the saved paragraph anchor.
+                self.retainedSpreadOffset = spread.firstVisibleOffset
+                action()
+            }
+        }
     }
 
     func applyFind(_ candidate: ChapterFindPresentation?) {
@@ -353,6 +378,7 @@ final class AnchoredTextView: UITextView, UITextViewDelegate, UIGestureRecognize
                   readingIdentity: restoration?.identity, text: text),
               let offset = paragraphStart(request.range.location) else { return }
         lastFindRequest = request.id
+        retainedSpreadOffset = nil
         anchor = offset
         findRevealOffset = request.range.location
         preservingFindAnchor = true
@@ -410,6 +436,7 @@ struct ReadingText: UIViewRepresentable {
     var onParagraphScroll: ((String, Int) -> Void)? = nil
     var isReading = true
     var onToggleControls: (() -> Void)? = nil
+    var onForwardAtEnd: (() -> Void)? = nil
     var find: ChapterFindPresentation? = nil
 
     func makeUIView(context: Context) -> AnchoredTextView {
@@ -428,6 +455,7 @@ struct ReadingText: UIViewRepresentable {
 
     func updateUIView(_ view: AnchoredTextView, context: Context) {
         view.onToggleControls = onToggleControls
+        view.onForwardAtEnd = onForwardAtEnd
         view.configure(chapterKey: chapterKey, body: text, style: style, restoration: restoration,
                        onDisplayed: onDisplayed, onParagraphScroll: onParagraphScroll, isReading: isReading)
         view.applyFind(find)

@@ -2,8 +2,11 @@ package io.legado.engine
 
 import androidx.room3.Room
 import androidx.sqlite.driver.NativeSQLiteDriver
+import androidx.sqlite.execSQL
 import io.legado.app.data.*
+import io.legado.app.data.dao.NativeLocalTxt
 import io.legado.app.data.dao.NativeShelfEntry
+import io.legado.app.data.dao.NativeShelfException
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.help.book.LocalBookLocator
@@ -105,5 +108,53 @@ class LocalTxtCatalogNativeTest {
     @Test
     fun titleOnlyVolumeDoesNotBlockReading() = withImporter { import ->
         assertEveryChapterOpens(import("volume.txt", "第一卷 启程\n第一章 开始\n第一章正文。\n第二章 继续\n第二章正文。\n"))
+    }
+
+    @Test
+    fun oldVolumeFlagsRepairAtomicallyFromTheOwnedCopy() = withImporter { import ->
+        val admitted = import("legacy.txt", "第一章 开始\nFirst body.\n第二卷 空卷\n\n第三章 继续\nThird body.\n第四章 结束\nFourth body.\n")
+        val database = AppDatabaseProviders.get().appDb
+        val dao = database.nativeShelfDao
+        val identity = admitted.book.bookUrl
+        val blank = admitted.chapters.single { it.title == "第二卷 空卷" }
+        val readable = admitted.chapters.filter { it.title == "第一章 开始" || it.title == "第三章 继续" }
+        assertTrue(blank.isVolume)
+        assertEquals(2, readable.size)
+        assertTrue(readable.none { it.isVolume })
+        database.bookChapterDao.update(*readable.map { it.copy(isVolume = true) }.toTypedArray())
+        val legacy = dao.openBook(identity, identity)
+        assertEquals(3, legacy.chapters.count { it.isVolume })
+
+        val fs = FileSystem.SYSTEM
+        val owned = NativeLocalTxt.path(legacy.book).toPath()
+        val held = owned.parent!! / "temporarily-held.txt"
+        fs.atomicMove(owned, held)
+        try {
+            assertFailsWith<CacheUnavailable> { LocalTxtImport.repairStoredCatalog(legacy) }
+            assertEquals(legacy.chapters, dao.openBook(identity, identity).chapters)
+        } finally {
+            fs.atomicMove(held, owned)
+        }
+
+        assertFailsWith<NativeShelfException> {
+            val stale = legacy.chapters.map { if (it.url == readable.first().url) it.copy(start = -1) else it }
+            dao.correctLocalTxtVolumeFlags(identity, stale, readable.map { it.url }.toSet())
+        }
+        val path = (AppFilesDirs.get().filesDir.toPath() / "test.db").toString()
+        NativeSQLiteDriver().open(path).use {
+            it.execSQL("CREATE TRIGGER reject_second_repair BEFORE UPDATE OF isVolume ON chapters " +
+                "WHEN NEW.title = '第三章 继续' BEGIN SELECT RAISE(ABORT, 'Synthetic repair failure'); END")
+        }
+        try {
+            assertFailsWith<ShelfStorageFailure> { LocalTxtImport.repairStoredCatalog(legacy) }
+            assertEquals(legacy.chapters, dao.openBook(identity, identity).chapters)
+        } finally {
+            NativeSQLiteDriver().open(path).use { it.execSQL("DROP TRIGGER reject_second_repair") }
+        }
+
+        val corrected = LocalTxtImport.repairStoredCatalog(legacy)
+        assertEquals(admitted.chapters, corrected.chapters)
+        assertEquals(corrected.chapters, dao.openBook(identity, identity).chapters)
+        assertEquals(corrected.chapters, LocalTxtImport.repairStoredCatalog(corrected).chapters)
     }
 }

@@ -110,6 +110,15 @@ struct FixtureReaderApp: App {
                         Text("Copy observation").font(.caption2)
                             .accessibilityIdentifier("fixture.copyObservation").accessibilityValue(copyObservation)
                     }
+                    if scenario == "local-txt-block-boundary", model.book?.isLocal == true {
+                        // The shipped local TXT details hide cache controls. Use the existing model action and app alert.
+                        HStack {
+                            Button("Fixture clear preview") { model.prepareCacheClear() }
+                                .accessibilityIdentifier("fixture.clearLocalCache")
+                            Text("Fixture cache result").accessibilityIdentifier("fixture.localCacheResult")
+                                .accessibilityValue("\(model.offlineStatus?.optionalCount ?? -1)|\(model.cacheNotice ?? "")")
+                        }.font(.caption)
+                    }
                     if scenario == "shelf-mixed" {
                         HStack {
                             Button(rejectingGroupSave ? "Allow group saves" : "Reject group saves") {
@@ -136,6 +145,7 @@ struct FixtureReaderApp: App {
                 if let text {
                     let ranges = text.spreadView?.visibleRanges ?? []
                     positionStatus += ";layout=\(text.usesSpreads ? "spread" : "scroll");spread=\(text.spreadView?.spread ?? -1);visible=\(ranges.map { "\($0.location):\($0.length)" }.joined(separator: ","));"
+                    if let pages = text.spreadView?.pagination?.ranges { positionStatus += "spreads=\((pages.count + 1) / 2);" }
                     let rendered = text.spreadView?.subviews.compactMap { $0 as? UITextView }.filter {
                         !$0.isHidden && $0.frame.intersects(text.spreadView!.bounds)
                     }.map { page -> NSRange in
@@ -270,11 +280,26 @@ struct FixtureReaderApp: App {
             }
         }
         model.start(); try await settle()
-        if scenario == "local-txt" {
+        if scenario == "local-txt-block-boundary" {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let files = ["Local Journey.txt", "Local Journey Again.txt"]
+            for (filename, reduction) in [("Cross Block.txt", 0), ("Same Block.txt", 128)] {
+                let url = documents.appendingPathComponent(filename)
+                if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
+                    try Data(blockBoundaryTXT(prefixReduction: reduction).utf8).write(to: url)
+                } else {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+            model.showShelf(); try await settle(); return
+        }
+        if scenario == "local-txt" || scenario == "local-txt-volume" {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let volume = scenario == "local-txt-volume"
+            let files = volume ? ["Local Volume.txt"] : ["Local Journey.txt", "Local Journey Again.txt"]
             if ProcessInfo.processInfo.environment["READER_UI_RESET"] == "1" {
-                let body = "第一章 开始\n" + (0..<120).map { "Paragraph \($0) — local TXT reading position and bookmark recovery. 中文原文。" }.joined(separator: "\n") + "\n第二章 继续\nFinal local chapter."
+                let body = volume
+                    ? "第一章 开始\nTXT-FIRST: Original opening text.\n第二章 卷标题\n第三章 继续\nTXT-THIRD: Readable text after the blank chapter."
+                    : "第一章 开始\n" + (0..<120).map { "Paragraph \($0) — local TXT reading position and bookmark recovery. 中文原文。" }.joined(separator: "\n") + "\n第二章 继续\nFinal local chapter."
                 for filename in files { try Data(body.utf8).write(to: documents.appendingPathComponent(filename)) }
             } else {
                 for filename in files { try? FileManager.default.removeItem(at: documents.appendingPathComponent(filename)) }
@@ -296,6 +321,10 @@ struct FixtureReaderApp: App {
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
         if scenario == "offline" {
             json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
+        }
+        if scenario == "chapter-end" {
+            json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/chapter-end")
+                .replacingOccurrences(of: "\"chapterUrl\": \"href\"", with: "\"chapterUrl\": \"href\", \"isVolume\": \"data-volume\"")
         }
         if scenario == "sources" {
             let second = json.replacingOccurrences(of: base, with: base + "/second")
@@ -365,6 +394,23 @@ struct FixtureReaderApp: App {
                 model.showShelf(); try await settle()
             }
         }
+    }
+
+    // Keep Chapter 12's text fixed while moving the next heading across byte 512,000.
+    private func blockBoundaryTXT(prefixReduction: Int) -> String {
+        func lines(_ count: Int) -> String {
+            let full = String(repeating: String(repeating: "x", count: 95) + "\n", count: count / 96)
+            let remaining = count % 96
+            return remaining == 0 ? full : full + String(repeating: "x", count: remaining - 1) + "\n"
+        }
+        let prefix = "\n" + (1...10).map { number in
+            "Chapter \(number) Filler\n" + lines(48_000 - (number == 1 ? prefixReduction : 0))
+        }.joined() + "Chapter 11 Before target\nBODY-BEFORE-TARGET\n"
+        let first = "Chapter 12 Boundary target\nBODY-TARGET-FIRST\n"
+        let last = "BODY-TARGET-LAST\n"
+        let padding = 511_968 - (prefix + first + last).utf8.count - prefixReduction
+        return prefix + first + lines(padding) + last + String(repeating: "\n", count: 96)
+            + "Chapter 13 After target\nBODY-AFTER-TARGET\n"
     }
     /// Choose actual visible lettering near the center, never a newline's empty glyph box.
     private func selectionTarget(in page: UITextView, root: AnchoredTextView) -> CGVector? {

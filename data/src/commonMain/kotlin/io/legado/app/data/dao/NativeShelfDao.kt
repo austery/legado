@@ -298,6 +298,25 @@ abstract class NativeShelfDao {
         return NativeShelfEntry(candidate, chapters(candidate.bookUrl))
     }
 
+    @Query("UPDATE chapters SET isVolume = 0 WHERE bookUrl = :bookUrl AND url = :url AND isVolume = 1")
+    protected abstract suspend fun markLocalChapterReadable(bookUrl: String, url: String): Int
+
+    /** The native reader has verified these ranges against the exact app-owned TXT copy. */
+    @Transaction
+    open suspend fun correctLocalTxtVolumeFlags(bookUrl: String, observed: List<BookChapter>,
+        readableIds: Set<String>): NativeShelfEntry {
+        val current = openBook(bookUrl, bookUrl)
+        require(NativeLocalTxt.owns(current.book)) { "Only an app-owned TXT catalog can be corrected" }
+        val flagged = current.chapters.filter { it.isVolume && it.url in readableIds }
+        if (current.chapters != observed || flagged.size != readableIds.size) {
+            throw NativeShelfException(NativeShelfFailure.INVALID_INPUT, "Stored TXT catalog changed; open the book again")
+        }
+        flagged.forEach { chapter ->
+            check(markLocalChapterReadable(bookUrl, chapter.url) == 1) { "Stored TXT chapter changed" }
+        }
+        return current.copy(chapters = chapters(bookUrl))
+    }
+
     @Query("UPDATE books SET type = type | ${BookType.notShelf}, `group` = 0 WHERE bookUrl = :bookUrl")
     protected abstract suspend fun markRemoved(bookUrl: String)
 

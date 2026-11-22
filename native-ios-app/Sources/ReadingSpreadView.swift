@@ -35,21 +35,35 @@ final class ReadingPagination {
 /// Original-text pagination is independent of selectable, disposable page views.
 /// Only the visible spread and its neighbors own text views; chapter layout is in memory.
 @MainActor
-final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
+final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private(set) var pagination: ReadingPagination?
     private(set) var spread = 0
     private var pages: [Int: UITextView] = [:]
     private var pageSize = CGSize.zero
     private var margin: CGFloat = 28
     private var reflowing = false
-    private var userPaging = false
+    private var dragStartSpread: Int?
+    private var touchStartedAtEnd = false
     private var findMatches: [NSRange] = []
     private var selectedFindRange: NSRange?
     var onTurn: ((Int) -> Void)?
+    var onForwardAtEnd: (() -> Void)? {
+        didSet { if onForwardAtEnd == nil { touchStartedAtEnd = false } }
+    }
+    private lazy var endSwipe: UIPanGestureRecognizer = {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(finishEndSwipe(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = self
+        return pan
+    }()
     var firstVisibleOffset: Int { pagination?.ranges[spread * 2].location ?? 0 }
     var visibleRanges: [NSRange] {
         guard let pagination else { return [] }
         return Array(pagination.ranges.dropFirst(spread * 2).prefix(2))
+    }
+    private var atFinalSpread: Bool {
+        guard let pagination else { return false }
+        return spread == (pagination.ranges.count - 1) / 2 && abs(contentOffset.x - CGFloat(spread) * bounds.width) < 1
     }
 
     override init(frame: CGRect) {
@@ -61,6 +75,8 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
         showsVerticalScrollIndicator = false
         contentInsetAdjustmentBehavior = .never
         accessibilityIdentifier = "reader.spreads"
+        // The stock scroll pan may not drag at all when the chapter fits on one spread.
+        addGestureRecognizer(endSwipe)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -68,7 +84,6 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
     func reflow(text: NSAttributedString, margin: CGFloat, anchor: Int, paper: UIColor) {
         reflowing = true
         defer { reflowing = false }
-        userPaging = false
         pages.values.forEach { $0.removeFromSuperview() }
         pages.removeAll()
         self.margin = margin
@@ -83,6 +98,8 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
     func restore(anchor: Int) {
         reflowing = true
         defer { reflowing = false }
+        dragStartSpread = nil
+        touchStartedAtEnd = false
         spread = (pagination?.page(containing: anchor) ?? 0) / 2
         setContentOffset(CGPoint(x: CGFloat(spread) * bounds.width, y: 0), animated: false)
         renderNeighbors()
@@ -131,7 +148,7 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
         }
     }
 
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { userPaging = true }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { dragStartSpread = spread }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !reflowing, bounds.width > 0, let pagination else { return }
         spread = min(max(0, Int((contentOffset.x / bounds.width).rounded())), (pagination.ranges.count - 1) / 2)
@@ -152,7 +169,7 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
         }
         let target = spread + delta
         guard target >= 0, target < (pagination.ranges.count + 1) / 2 else { return false }
-        userPaging = true
+        dragStartSpread = spread
         setContentOffset(CGPoint(x: CGFloat(target) * bounds.width, y: 0), animated: false)
         scrollViewDidScroll(self)
         finishTurn()
@@ -162,9 +179,37 @@ final class ReadingSpreadView: UIScrollView, UIScrollViewDelegate {
     }
 
     private func finishTurn() {
-        guard userPaging, !reflowing else { return }
-        userPaging = false
+        guard let start = dragStartSpread, !reflowing else { return }
+        dragStartSpread = nil
+        guard start != spread else { return }
         onTurn?(firstVisibleOffset)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === endSwipe else { return true }
+        touchStartedAtEnd = onForwardAtEnd != nil && atFinalSpread && !reflowing && !isDragging && !isDecelerating &&
+            !(spread * 2...spread * 2 + 1).contains { (pages[$0]?.selectedRange.length ?? 0) > 0 }
+        return touchStartedAtEnd
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === endSwipe else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
+        let velocity = endSwipe.velocity(in: self)
+        return touchStartedAtEnd && -velocity.x > abs(velocity.y)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === endSwipe && otherGestureRecognizer === panGestureRecognizer
+    }
+
+    @objc private func finishEndSwipe(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .cancelled { touchStartedAtEnd = false }
+        guard gesture.state == .ended, touchStartedAtEnd else { return }
+        touchStartedAtEnd = false
+        let movement = gesture.translation(in: self)
+        guard atFinalSpread, -movement.x >= bounds.width * 0.08, -movement.x > abs(movement.y) else { return }
+        onForwardAtEnd?()
     }
 }
 
