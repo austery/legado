@@ -279,18 +279,11 @@ Earlier 2026-10-12 local candidate checks:
   changing product navigation code. The original timing cause was not independently
   instrumented; this is not evidence of a repaired product navigation defect.
 
-Reproduce the app tests on a dedicated simulator with this fixture running:
+Run the [automatic native product gate](#automatic-native-product-gate) to
+reproduce the reading journey tests on a dedicated simulator. Its reading
+fixture provides request counts for the source-switch conflict cases.
 
-```sh
-python3 scripts/path-c/c2_fixture_server.py
-# In another terminal, after generating the project:
-xcodebuild -project native-ios-app/NativeReader.xcodeproj -scheme NativeReader \
-  -destination 'platform=iOS Simulator,id=<dedicated simulator UUID>' \
-  -derivedDataPath native-ios-app/build CODE_SIGNING_ALLOWED=NO \
-  -only-testing:NativeReaderTests/ReadingJourneyTests test
-```
-
-For the four SPEC-004 hosted cases, also run
+To run the four SPEC-004 hosted cases outside that gate, start
 `python3 engine-ios/fixtures/search_fixture_server.py`. It binds an OS-assigned
 loopback port and prints its base URL. Generate the test runner with
 `build-for-testing`, then set `EnvironmentVariables.SPEC004_FIXTURE_BASE` in the
@@ -302,10 +295,9 @@ Use a dedicated task app/simulator containing only controlled fixture imports:
 default-all intentionally searches every enabled text source. Per-test UUID
 namespaces isolate responses, and teardown releases held fixture responses.
 
-The C2 fixture binds loopback port 18769; the third chapter fails once per unique
-URL namespace to exercise retry, and the second contains long original Chinese
-text. Never terminate another process to take that port. C1 uses its existing
-fixture ports and separate runner script.
+The reading fixture binds loopback port 18769. The third chapter fails once per
+unique URL namespace to exercise retry, and the second contains long original
+Chinese text. Never terminate another process to take that port.
 
 The owner confirmed physical installation and successful search with a visible book.
 Two complete live community-source journeys on the iPad, actual split-view
@@ -483,7 +475,7 @@ recorded separately; adding tests is not a claim that they passed.
 A separate two-source UI journey verifies catalog-filter reset and global settings
 across source entries, without changing the original shelf entry.
 
-## Explicit source switching (SPEC-005, amended by Issues #108 and #119)
+## Explicit source switching (SPEC-005, amended by Issues #108, #119 and #111)
 
 Change source is available for shelved books with a known title and author. Search
 retains exact candidates; only another listing with the same trimmed title and
@@ -497,8 +489,9 @@ If the located entry is a volume heading, the engine uses the next readable
 chapter or the previous readable chapter when there is no next one. The reader
 shows the chapter title. Use Contents to choose another chapter after a fallback.
 
-The replacement chapter is fetched into immutable in-memory preparation, then
-committed without a separate confirmation. The commit validates URL ownership under the database write
+The engine rejects a known replacement book URL conflict before fetching the
+chapter body (#111). It holds the fetched body in memory and commits without a
+separate confirmation. The commit validates URL ownership under the database write
 transaction, then publishes and verifies the body cache before committing the
 shelf record, catalog, and native resume,
 preserving user shelf metadata. Reading starts at offset zero. Existing progress,
