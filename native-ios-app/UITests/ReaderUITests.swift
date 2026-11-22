@@ -933,8 +933,12 @@ final class ReaderUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor private func launchDiscovery(_ scenario: String = "discovery") -> XCUIApplication {
+    @MainActor private func launchDiscovery(
+        _ scenario: String = "discovery",
+        launchArguments: [String] = []
+    ) -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments = launchArguments
         app.launchEnvironment["READER_UI_RESET"] = "1"
         app.launchEnvironment["READER_UI_SCENARIO"] = scenario
         XCUIDevice.shared.orientation = .portrait
@@ -953,7 +957,7 @@ final class ReaderUITests: XCTestCase {
     }
 
     @MainActor func testDiscoveryBrowseDetailsTrialShelfReturnAndRelaunch() throws {
-        let app = launchDiscovery()
+        let app = launchDiscovery(launchArguments: ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"])
         app.buttons["discovery.groupFilter"].tap()
         XCTAssertTrue(app.buttons["Discovery"].waitForExistence(timeout: 5)); app.buttons["Discovery"].tap()
         let filter = app.textFields["discovery.sourceFilter"]
@@ -1582,6 +1586,7 @@ final class ReaderUITests: XCTestCase {
 
     @MainActor func testSearchDetailsCatalogAndGlobalPreferences() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launchEnvironment["READER_UI_RESET"] = "1"
         XCUIDevice.shared.orientation = .portrait
         app.launch()
