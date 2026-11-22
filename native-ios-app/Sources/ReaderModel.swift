@@ -291,8 +291,8 @@ final class ReaderModel: ObservableObject {
         }
     }
     func cacheNextChapters(prefetch: Bool = false) {
-        guard isShelved, let book, !book.isLocal, foregroundActive, !busy,
-              !prefetch || (prefetchEnabled && content != nil && !manualCacheRunning) else { return }
+        guard isShelved, let book, !book.isLocal, foregroundActive, !busy, !manualCacheRunning,
+              !prefetch || (prefetchEnabled && content != nil) else { return }
         cancelCaching()
         cacheNotice = nil
         manualCacheRunning = !prefetch
@@ -1154,7 +1154,9 @@ final class ReaderModel: ObservableObject {
         resumeNotice = reply.reading?.restoreNotice.isEmpty == false ? reply.reading?.restoreNotice : nil
         refreshOfflineStatus()
         // Deliver content first; automatic work is bounded and never restores a prior batch.
-        if allowPrefetch { Task { [weak self] in self?.cacheNextChapters(prefetch: true) } }
+        if allowPrefetch && !manualCacheRunning {
+            Task { [weak self] in self?.cacheNextChapters(prefetch: true) }
+        }
     }
 
     var readingRestoration: ReadingRestoration? {

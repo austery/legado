@@ -27,14 +27,43 @@ class CacheProgress internal constructor(val completed: Int, val target: Int,
 class CacheClearPrepared internal constructor(val token: String, val count: Int) : EngineReply()
 class CacheCleared internal constructor(val deleted: Int, val failed: Int) : EngineReply()
 
-/** One process-wide background owner. Foreground operations retire and join it before taking the gate. */
+private class YieldToReading : CancellationException("Foreground chapter takes priority")
+
+/** One process-wide background batch and at most one in-flight chapter transfer. */
 internal object OfflineWork {
-    private val active = atomic<Job?>(null)
+    private class Batch(val job: Job, val manualBook: Pair<String, String>?)
+    private val active = atomic<Batch?>(null)
+    private val transfer = atomic<Job?>(null)
     val lane = Mutex()
     val deliveryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    fun replace(job: Job) { active.getAndSet(job)?.cancel() }
-    fun cancel() { active.getAndSet(null)?.cancel() }
-    suspend fun retire() { active.getAndSet(null)?.cancelAndJoin() }
+
+    fun replace(job: Job, manualBook: Pair<String, String>?) {
+        active.getAndSet(Batch(job, manualBook))?.job?.cancel()
+    }
+
+    fun cancel() { active.getAndSet(null)?.job?.cancel() }
+
+    suspend fun retire(keepManualBook: Pair<String, String>? = null) {
+        while (true) {
+            val batch = active.value ?: return
+            if (keepManualBook != null && batch.manualBook == keepManualBook) return
+            if (active.compareAndSet(batch, null)) {
+                batch.job.cancelAndJoin()
+                return
+            }
+        }
+    }
+
+    fun trackTransfer(job: Job) { transfer.value = job }
+    fun finishTransfer(job: Job) { transfer.compareAndSet(job, null) }
+
+    // Called while holding EngineHost.gate. Transfers register under that gate and
+    // do only network work, so joining one cannot wait for cache publication.
+    suspend fun yieldTransfer() {
+        val job = transfer.value ?: return
+        job.cancel(YieldToReading())
+        job.join()
+    }
 }
 
 /** Storage and catalog operations hold EngineHost.gate; network work never holds it. */
@@ -150,44 +179,10 @@ internal class OfflineCache(private val scope: CoroutineScope,
                     for (chapter in selected) {
                         currentCoroutineContext().ensureActive()
                         try {
-                            val shouldFetch = EngineHost.gate.withLock {
-                                val current = entry(sourceId, bookId)
-                                check(sameCatalog(initial, current)) { "Stored catalog changed" }
-                                if (availability(current, chapter) == OfflineAvailability.AVAILABLE) false
-                                else {
-                                    check(chapter.url !in protected(current)) { "Protected chapter cannot be replaced by caching" }
-                                    true
-                                }
-                            }
-                            if (shouldFetch) {
-                                val source = EngineHost.gate.withLock {
-                                    AppDbProviders.get().bookSourceDao.getBookSource(sourceId)?.also {
-                                        check(it.enabled && it.bookSourceType == 0) { "Source is unavailable" }
-                                    } ?: error("Source is missing")
-                                }
-                                val body = withContext(WebBookResponsePolicy { response ->
-                                    check(response.isSuccessful()) { "HTTP ${response.code()}" }
-                                }) {
-                                    EngineHost.withOperation {
-                                        EngineHost.withSourceRequest(sourceId, background = true, reserveForeground = prefetch) {
-                                            WebBook.getContentAwait(source, initial.book.copy(), chapter.copy(),
-                                                nextChapterUrl = initial.chapters.getOrNull(initial.chapters.indexOf(chapter) + 1)?.url,
-                                                needSave = false)
-                                        }.also { EngineHost.interactionFailure()?.let { failure -> error(failure.message) } }
-                                    }
-                                }
+                            // A foreground miss yields one network transfer. Keep the selected
+                            // range and recheck storage before retrying the same chapter.
+                            while (!cacheChapter(initial, chapter, sourceId, bookId, prefetch)) {
                                 currentCoroutineContext().ensureActive()
-                                check(body.isNotBlank()) { "Empty chapter response" }
-                                EngineHost.gate.withLock {
-                                    currentCoroutineContext().ensureActive()
-                                    val current = entry(sourceId, bookId)
-                                    check(sameCatalog(initial, current) &&
-                                        AppDbProviders.get().bookSourceDao.getBookSource(sourceId) == source) { "Source or catalog changed" }
-                                    check(chapter.url !in protected(current)) { "Chapter became protected" }
-                                    // Atomic writer plus readback: no suspension between publish and verification.
-                                    BookHelpProviders.get().saveContent(source, current.book, chapter, body)
-                                    check(storage.getContent(current.book, chapter) == body) { "Cache write could not be verified" }
-                                }
                             }
                             completed++
                         } catch (cancelled: CancellationException) { throw cancelled }
@@ -216,10 +211,61 @@ internal class OfflineCache(private val scope: CoroutineScope,
                 }
             }
         }
-        OfflineWork.replace(job)
+        OfflineWork.replace(job, if (prefetch) null else sourceId to bookId)
         ownedJob.getAndSet(job)?.cancel()
         job.start()
         return EngineRequest(job)
+    }
+
+    private suspend fun cacheChapter(initial: NativeShelfEntry, chapter: BookChapter,
+        sourceId: String, bookId: String, prefetch: Boolean): Boolean = supervisorScope {
+        val (source, transfer) = EngineHost.gate.withLock {
+            val current = entry(sourceId, bookId)
+            check(sameCatalog(initial, current)) { "Stored catalog changed" }
+            if (availability(current, chapter) == OfflineAvailability.AVAILABLE) return@supervisorScope true
+            check(chapter.url !in protected(current)) { "Protected chapter cannot be replaced by caching" }
+            val source = AppDbProviders.get().bookSourceDao.getBookSource(sourceId)?.also {
+                check(it.enabled && it.bookSourceType == 0) { "Source is unavailable" }
+            } ?: error("Source is missing")
+            val transfer = async(start = CoroutineStart.LAZY) {
+                withContext(WebBookResponsePolicy { response ->
+                    check(response.isSuccessful()) { "HTTP ${response.code()}" }
+                }) {
+                    EngineHost.withOperation {
+                        EngineHost.withSourceRequest(sourceId, background = true, reserveForeground = prefetch) {
+                            WebBook.getContentAwait(source, initial.book.copy(), chapter.copy(),
+                                nextChapterUrl = initial.chapters.getOrNull(initial.chapters.indexOf(chapter) + 1)?.url,
+                                needSave = false)
+                        }.also { EngineHost.interactionFailure()?.let { failure -> error(failure.message) } }
+                    }
+                }
+            }
+            OfflineWork.trackTransfer(transfer)
+            source to transfer
+        }
+        val body = try {
+            transfer.await()
+        } catch (interrupted: YieldToReading) {
+            currentCoroutineContext().ensureActive()
+            return@supervisorScope false
+        } finally {
+            OfflineWork.finishTransfer(transfer)
+        }
+        currentCoroutineContext().ensureActive()
+        check(body.isNotBlank()) { "Empty chapter response" }
+        EngineHost.gate.withLock {
+            val current = entry(sourceId, bookId)
+            check(sameCatalog(initial, current) &&
+                AppDbProviders.get().bookSourceDao.getBookSource(sourceId) == source) { "Source or catalog changed" }
+            // The reader may have saved this body while publication waited for the gate.
+            if (availability(current, chapter) != OfflineAvailability.AVAILABLE) {
+                check(chapter.url !in protected(current)) { "Chapter became protected" }
+                currentCoroutineContext().ensureActive()
+                BookHelpProviders.get().saveContent(source, current.book, chapter, body)
+                check(storage.getContent(current.book, chapter) == body) { "Cache write could not be verified" }
+            }
+        }
+        true
     }
 
     private fun sameCatalog(first: NativeShelfEntry, second: NativeShelfEntry): Boolean =

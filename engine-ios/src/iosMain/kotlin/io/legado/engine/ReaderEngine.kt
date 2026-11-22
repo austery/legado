@@ -668,7 +668,7 @@ class ReaderEngine {
     }
 
     fun openReading(sourceId: String, bookId: String, cacheOnly: Boolean,
-        completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion, keepManualBook = sourceId to bookId) {
         val entry = shelfOperation { AppDatabaseProviders.get().appDb.nativeShelfDao.openBook(sourceId, bookId) }
         val catalog = registerShelfEntry(entry)
         val saved = AppDatabaseProviders.get().appDb.nativeResumeDao.get(bookId)
@@ -749,7 +749,7 @@ class ReaderEngine {
     }
 
     fun loadChapter(sourceId: String, bookId: String, chapterId: String, cacheOnly: Boolean,
-        completion: (EngineReply) -> Unit): EngineRequest = request(completion) {
+        completion: (EngineReply) -> Unit): EngineRequest = request(completion, keepManualBook = sourceId to bookId) {
         chapterContent(sourceId, bookId, chapterId, cacheOnly, false)
     }
 
@@ -798,7 +798,7 @@ class ReaderEngine {
             } catch (error: Exception) {
                 throw CacheUnavailable("Verified cache unavailable; source cannot fetch: ${error.message}")
             }
-            val downloaded = EngineHost.withSourceRequest(sourceId) {
+            val downloaded = EngineHost.withSourceRequest(sourceId, readingChapter = true) {
                 WebBook.getContentAwait(source, book, chapter,
                     nextChapterUrl = toc.getOrNull(position + 1)?.url, needSave = false)
             }
@@ -942,12 +942,13 @@ class ReaderEngine {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun request(completion: (EngineReply) -> Unit, requiresReady: Boolean = true, interruptCache: Boolean = true,
-        serialized: Boolean = true, action: suspend () -> EngineReply): EngineRequest {
+        serialized: Boolean = true, keepManualBook: Pair<String, String>? = null,
+        action: suspend () -> EngineReply): EngineRequest {
         val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val operationJob = currentCoroutineContext().job
             var createdReadingToken: String? = null
             val reply = try {
-                if (interruptCache) OfflineWork.retire()
+                if (interruptCache) OfflineWork.retire(keepManualBook)
                 withContext(Dispatchers.Default + WebBookResponsePolicy { response ->
                     if (!response.isSuccessful()) throw HttpFailure(response.code())
                 }) {
