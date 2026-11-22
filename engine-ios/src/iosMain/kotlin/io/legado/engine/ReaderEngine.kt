@@ -139,8 +139,8 @@ class ReaderEngine {
     }
 
     /**
-     * Prepare the chapter that upstream [BookHelpChapterLocator.getDurChapter] locates in the
-     * loaded replacement catalog, as Android Legado does when it changes source (Issue #108).
+     * Prepare the chapter in the loaded replacement catalog using the upstream locator (#108)
+     * and the native first-chapter exact match (#119).
      * [readingChapterId] is the old-source chapter on screen; without it the shelf book's
      * saved chapter is used.
      */
@@ -200,10 +200,10 @@ class ReaderEngine {
     }
 
     /**
-     * Upstream locator over the old chapter. Upstream passes the live reading position; here
-     * that is the chapter on screen. Without it, use the shelf book's chapter, which resume
-     * saves project into durChapterIndex/durChapterTitle. The locator works on list positions;
-     * a volume heading is not readable, so take the next readable chapter, else the previous one.
+     * Start from the chapter on screen, or use the saved shelf chapter when no chapter is open.
+     * At index zero, prefer one readable chapter with the same trimmed title (#119). Otherwise
+     * use the upstream locator. If it returns a volume heading, take the next readable chapter
+     * or the previous one if no readable chapter follows it.
      */
     private fun locatedChapter(original: Book, oldCatalog: List<BookChapter>, readingChapterId: String?,
         catalog: List<BookChapter>): BookChapter {
@@ -211,6 +211,11 @@ class ReaderEngine {
         val reading = readingChapterId?.let { id -> oldCatalog.indexOfFirst { it.url == id } }?.takeIf { it >= 0 }
         val oldIndex = reading ?: original.durChapterIndex
         val oldTitle = reading?.let { oldCatalog[it].title } ?: original.durChapterTitle
+        val firstChapterTitle = oldTitle?.trim()
+        if (oldIndex == 0 && !firstChapterTitle.isNullOrEmpty()) {
+            // Upstream returns zero before inspecting titles. A target can put side stories first.
+            catalog.singleOrNull { !it.isVolume && it.title.trim() == firstChapterTitle }?.let { return it }
+        }
         val located = BookHelpChapterLocator.getDurChapter(oldIndex, oldTitle, catalog, oldCatalog.size)
             .coerceIn(0, catalog.lastIndex)
         return catalog.drop(located).firstOrNull { !it.isVolume }

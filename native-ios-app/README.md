@@ -5,7 +5,7 @@ An independent SwiftUI/TextKit client of ReaderEngine, with bundle ID
 or the C1 harness. The app covers source import, incremental multi-source search,
 contents, adaptive scrolling/two-page text, chapter navigation, typography, an explicit bookshelf
 and durable reading positions with cached reopening. Source switching
-locates the replacement chapter with the upstream locator, verifies its text, and
+locates the replacement chapter, verifies its text, and
 switches in one step, starting that chapter at its beginning.
 
 ## Deliberate UI defaults
@@ -482,18 +482,19 @@ recorded separately; adding tests is not a claim that they passed.
 A separate two-source UI journey verifies catalog-filter reset and global settings
 across source entries, without changing the original shelf entry.
 
-## Explicit source switching (SPEC-005, amended by Issue #108)
+## Explicit source switching (SPEC-005, amended by Issues #108 and #119)
 
 Change source is available for shelved books with a known title and author. Search
 retains exact candidates; only another listing with the same trimmed title and
-author is eligible. Selecting a candidate switches in one step, as Android Legado
-does: the engine locates the chapter with upstream
-`BookHelpChapterLocator.getDurChapter`, starting from the chapter on screen when
-Change source began, as upstream starts from the live reading position. Without an
-open chapter it uses the shelf book's saved chapter (`durChapterIndex` and
-`durChapterTitle`, which resume saves keep current). If the located
-entry is a volume heading, the next readable chapter is used, else the previous one. A wrong match is
-corrected from the catalog in the reader, as upstream does.
+author is eligible. Selecting a candidate switches in one step. The engine starts
+from the chapter on screen or the shelf book's saved chapter. At index zero it
+uses a unique readable match for the same trimmed title when available. This
+keeps the first chapter when a target catalog puts side stories before it (#119).
+An unknown title, missing match, or duplicate matches keep the upstream index-zero
+fallback. Other positions use upstream `BookHelpChapterLocator.getDurChapter`.
+If the located entry is a volume heading, the engine uses the next readable
+chapter or the previous readable chapter when there is no next one. The reader
+shows the chapter title. Use Contents to choose another chapter after a fallback.
 
 The replacement chapter is fetched into immutable in-memory preparation, then
 committed without a separate confirmation. The commit validates URL ownership under the database write

@@ -2,9 +2,8 @@ import XCTest
 import ReaderEngine
 @testable import NativeReader
 
-/// Issue #108: the one-step switch prepares the chapter that upstream
-/// BookHelpChapterLocator.getDurChapter locates. Each case renames fixture chapters through the
-/// source's own chapterName replacement rule, so the located index differs from the old index.
+/// Exercises upstream chapter matching and the first-chapter exception (#108, #119).
+/// The cases rename fixture chapters through the source's own chapter name rule.
 @MainActor
 final class SourceSwitchLocatorTests: XCTestCase {
     private func call(_ start: (@escaping (EngineReply) -> Void) -> EngineRequest) async -> EngineReply {
@@ -13,7 +12,8 @@ final class SourceSwitchLocatorTests: XCTestCase {
 
     /// Imports the fixture source at a fresh base with an optional chapterName replacement.
     private func source(_ engine: ReaderEngine, _ base: String, suffix: String, chapterName: String?,
-                        emptyContent: Bool = false, detailAuthor: String? = nil) async throws {
+                        emptyContent: Bool = false, detailAuthor: String? = nil,
+                        volumeCatalog: Bool = false) async throws {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
         var json = try XCTUnwrap(String(data: data, encoding: .utf8))
             .replacingOccurrences(of: "class.name@text", with: "class.name@text##$## " + suffix)
@@ -21,6 +21,10 @@ final class SourceSwitchLocatorTests: XCTestCase {
         if emptyContent { json = json.replacingOccurrences(of: "\"content\": \"id.content@text\"", with: "\"content\": \"\"") }
         if let chapterName {
             json = json.replacingOccurrences(of: "\"chapterName\": \"text\"", with: "\"chapterName\": \"text##\(chapterName)\"")
+        }
+        if volumeCatalog {
+            json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/chapter-end")
+                .replacingOccurrences(of: "\"chapterUrl\": \"href\"", with: "\"chapterUrl\": \"href\", \"isVolume\": \"data-volume\"")
         }
         if let detailAuthor {
             var rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
@@ -42,9 +46,9 @@ final class SourceSwitchLocatorTests: XCTestCase {
         return (book, try XCTUnwrap((toc as? TocReply)?.chapters, "\(toc)"))
     }
 
-    /// Shelves the old listing, then prepares a located switch from its chapter at index 1.
-    /// Returns the replacement catalog titles and the prepared chapter index.
-    private func locate(old oldRule: String?, new newRule: String?) async throws -> (titles: [String], located: Int32) {
+    /// Shelves the old listing and prepares a switch from the specified reading chapter.
+    private func locate(old oldRule: String?, new newRule: String?, readingIndex: Int = 1,
+                        volumeCatalog: Bool = false) async throws -> (titles: [String], volumeTitles: [String], located: Int32) {
         let engine = ReaderEngine()
         defer { engine.close() }
         let ready = await call { engine.initialize(completion: $0) }
@@ -53,7 +57,7 @@ final class SourceSwitchLocatorTests: XCTestCase {
         let old = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         let new = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
         try await source(engine, old, suffix: suffix, chapterName: oldRule)
-        try await source(engine, new, suffix: suffix, chapterName: newRule)
+        try await source(engine, new, suffix: suffix, chapterName: newRule, volumeCatalog: volumeCatalog)
         let (oldBook, oldChapters) = try await catalog(engine, old)
         let added = await call { engine.addToShelf(sourceId: old, bookId: oldBook.id, completion: $0) }
         XCTAssertTrue(added is ShelfEntryReply, "\(added)")
@@ -61,11 +65,35 @@ final class SourceSwitchLocatorTests: XCTestCase {
         // The reading fixture fails chapter 3 once per run on purpose; consume that failure first.
         _ = try? await URLSession.shared.data(from: XCTUnwrap(URL(string: new + "/chapter/3")))
         let prepared = await call { engine.prepareLocatedSourceSwitch(oldSourceId: old, oldBookId: oldBook.id,
-            sourceId: new, bookId: candidate.id, readingChapterId: oldChapters[1].id, completion: $0) }
+            sourceId: new, bookId: candidate.id, readingChapterId: oldChapters[readingIndex].id, completion: $0) }
         let plan = try XCTUnwrap(prepared as? SourceSwitchPrepared, "\(prepared)")
         XCTAssertEqual(plan.chapter.sourceId, new)
         _ = await call { engine.cancelSourceSwitch(completion: $0) }
-        return (newChapters.map(\.title), plan.chapter.index)
+        return (newChapters.map(\.title), newChapters.filter(\.isVolume).map(\.title), plan.chapter.index)
+    }
+
+    func testFirstChapterLocatesOneExactMatchAfterSideStories() async throws {
+        let result = try await locate(old: "Chapter 1##第一章 狐女", new: "Chapter 3##第一章 狐女", readingIndex: 0)
+        XCTAssertEqual(result.titles, ["Chapter 1", "Chapter 2", "第一章 狐女"])
+        XCTAssertEqual(result.located, 2)
+    }
+
+    func testFirstChapterKeepsFallbackForDuplicateExactTitles() async throws {
+        let result = try await locate(old: "Chapter 1##第一章 狐女", new: "Chapter [23]##第一章 狐女", readingIndex: 0)
+        XCTAssertEqual(result.titles, ["Chapter 1", "第一章 狐女", "第一章 狐女"])
+        XCTAssertEqual(result.located, 0)
+    }
+
+    func testFirstChapterKeepsFallbackWithoutAnExactTitle() async throws {
+        let result = try await locate(old: "Chapter 1##第一章 狐女", new: "Chapter 2##第一章 其他", readingIndex: 0)
+        XCTAssertEqual(result.titles, ["Chapter 1", "第一章 其他", "Chapter 3"])
+        XCTAssertEqual(result.located, 0)
+    }
+
+    func testFirstChapterDoesNotMatchAVolumeHeading() async throws {
+        let result = try await locate(old: "Chapter 1##第一章 狐女", new: "Chapter 2##第一章 狐女", readingIndex: 0, volumeCatalog: true)
+        XCTAssertTrue(result.volumeTitles.contains("第一章 狐女"))
+        XCTAssertEqual(result.located, 0)
     }
 
     func testChineseAndArabicNumeralsWithDifferentPositionMatchByTitle() async throws {
