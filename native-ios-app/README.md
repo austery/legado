@@ -497,8 +497,9 @@ If the located entry is a volume heading, the engine uses the next readable
 chapter or the previous readable chapter when there is no next one. The reader
 shows the chapter title. Use Contents to choose another chapter after a fallback.
 
-The replacement chapter is fetched into immutable in-memory preparation, then
-committed without a separate confirmation. The commit validates URL ownership under the database write
+The engine rejects a known replacement book URL conflict before fetching the
+chapter body (#111). It holds the fetched body in memory and commits without a
+separate confirmation. The commit validates URL ownership under the database write
 transaction, then publishes and verifies the body cache before committing the
 shelf record, catalog, and native resume,
 preserving user shelf metadata. Reading starts at offset zero. Existing progress,
