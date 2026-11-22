@@ -29,6 +29,7 @@ struct FixtureReaderApp: App {
         }
         apply(reply)
     })
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var searchFixtureBase: String?
     @State private var prepared = false
     @State private var narrowReader = false
@@ -52,6 +53,7 @@ struct FixtureReaderApp: App {
             VStack(spacing: 0) {
                 if prepared {
                     ReaderScreen(model: model)
+                        .dynamicTypeSize(scenario == "reader-header-long-title" ? .accessibility3 : dynamicTypeSize)
                         .frame(maxWidth: narrowReader ? 850 : .infinity)
                     HStack {
                         Text("SYNTHETIC UI HOST").font(.caption2)
@@ -319,6 +321,10 @@ struct FixtureReaderApp: App {
         let (data, _) = try await URLSession.shared.data(from: URL(string: base + endpoint)!)
         var json = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "id.content@text", with: "id.content@text##第##\\n第")
+        if scenario == "reader-header-long-title" {
+            json = json.replacingOccurrences(of: "\"chapterName\": \"text\"",
+                with: "\"chapterName\": \"text##$## — The first lantern at the river crossing and the old house above the valley\"")
+        }
         if scenario == "offline" {
             json = json.replacingOccurrences(of: "class.toc@href", with: "class.toc@href##/toc/1##/toc/offline")
         }
