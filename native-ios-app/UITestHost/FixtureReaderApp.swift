@@ -29,7 +29,6 @@ struct FixtureReaderApp: App {
         }
         apply(reply)
     })
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var searchFixtureBase: String?
     @State private var prepared = false
     @State private var narrowReader = false
@@ -48,12 +47,19 @@ struct FixtureReaderApp: App {
     private var observesCopy: Bool { ProcessInfo.processInfo.environment["READER_UI_OBSERVE_COPY"] == "1" }
     private var scenario: String { ProcessInfo.processInfo.environment["READER_UI_SCENARIO"] ?? "shelf" }
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
+    @ViewBuilder private var fixtureReader: some View {
+        if scenario == "reader-header-long-title" {
+            ReaderScreen(model: model).dynamicTypeSize(.accessibility3)
+        } else {
+            ReaderScreen(model: model)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             VStack(spacing: 0) {
                 if prepared {
-                    ReaderScreen(model: model)
-                        .dynamicTypeSize(scenario == "reader-header-long-title" ? .accessibility3 : dynamicTypeSize)
+                    fixtureReader
                         .frame(maxWidth: narrowReader ? 850 : .infinity)
                     HStack {
                         Text("SYNTHETIC UI HOST").font(.caption2)
