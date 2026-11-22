@@ -187,9 +187,9 @@ final class ReadingJourneyTests: XCTestCase {
             let hash = Insecure.MD5.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
             return String(hash.dropFirst(8).prefix(16))
         }
-        let cache = documents.appendingPathComponent("book_cache")
+        let cacheDirectory = documents.appendingPathComponent("book_cache")
             .appendingPathComponent(String(target.title.prefix(9)) + shortHash(target.id))
-            .appendingPathComponent("00000-" + shortHash(chapter.title) + ".nb")
+        let cache = cacheDirectory.appendingPathComponent("00000-" + shortHash(chapter.title) + ".nb")
         let originalBody = "unrelated\npreserve this offline paragraph"
         let savedOffset: Int32 = 10
 
@@ -237,6 +237,10 @@ final class ReadingJourneyTests: XCTestCase {
             let deliver = try XCTUnwrap(observer.deliver)
             XCTAssertEqual(observer.prepared?.chapter.id, chapter.id)
             XCTAssertEqual(observer.prepared?.chapter.title, bodyTitle)
+            if FileManager.default.fileExists(atPath: cacheDirectory.path) {
+                let files = try FileManager.default.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)
+                XCTAssertFalse(files.contains { $0.pathExtension == "nb" }, "Preparation must hold the body in memory")
+            }
             saved = try await seedConflictingTarget()
             deliver()
         } else {

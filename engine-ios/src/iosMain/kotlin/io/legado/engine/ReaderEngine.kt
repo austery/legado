@@ -162,7 +162,7 @@ class ReaderEngine {
         if (candidate.name.trim().isEmpty() || candidate.name.trim() != original.name.trim() ||
             !matchesSwitchAuthor(original.author, candidate.author) ||
             bookId == oldBookId) throw InvalidInput("Select another listing with the same known title and author")
-        // Upstream can write a chapter title while parsing its body, even with needSave=false.
+        // At upstream 52519722, parsing can save a chapter title even with needSave=false (#111).
         if (shelfOperation { database.bookDao.getBook(candidate.bookUrl) } != null) {
             throw NativeShelfException(NativeShelfFailure.IDENTITY_CONFLICT, "Replacement identity conflicts with the shelf")
         }
