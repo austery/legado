@@ -139,8 +139,8 @@ class ReaderEngine {
     }
 
     /**
-     * Prepare the chapter that upstream [BookHelpChapterLocator.getDurChapter] locates in the
-     * loaded replacement catalog, as Android Legado does when it changes source (Issue #108).
+     * Prepare the chapter in the loaded replacement catalog using the upstream locator (#108)
+     * and the native first-chapter exact match (#119).
      * [readingChapterId] is the old-source chapter on screen; without it the shelf book's
      * saved chapter is used.
      */
@@ -211,6 +211,11 @@ class ReaderEngine {
         val reading = readingChapterId?.let { id -> oldCatalog.indexOfFirst { it.url == id } }?.takeIf { it >= 0 }
         val oldIndex = reading ?: original.durChapterIndex
         val oldTitle = reading?.let { oldCatalog[it].title } ?: original.durChapterTitle
+        val firstChapterTitle = oldTitle?.trim()
+        if (oldIndex == 0 && !firstChapterTitle.isNullOrEmpty()) {
+            // Upstream returns zero before inspecting titles. A target can put side stories first.
+            catalog.singleOrNull { !it.isVolume && it.title.trim() == firstChapterTitle }?.let { return it }
+        }
         val located = BookHelpChapterLocator.getDurChapter(oldIndex, oldTitle, catalog, oldCatalog.size)
             .coerceIn(0, catalog.lastIndex)
         return catalog.drop(located).firstOrNull { !it.isVolume }

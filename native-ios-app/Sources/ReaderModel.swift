@@ -384,8 +384,8 @@ final class ReaderModel: ObservableObject {
         switchingFrom = nil; switchCandidate = nil; preparedSwitch = nil
         if content != nil { returnToCurrentReading() } else { route = .details }
     }
-    /// One-step switch, as in Android Legado (Issue #108): the engine locates the replacement
-    /// chapter with upstream getDurChapter, downloads and verifies it, then the switch commits.
+    /// One-step switch (#108): the engine locates, downloads and verifies the replacement chapter,
+    /// then the switch commits. The engine also handles the first-chapter exact match (#119).
     /// Any failure keeps the original source and leaves the candidate list open.
     private func switchToLocatedChapter(_ candidate: BookSnapshot) {
         guard let original = switchingFrom else { return }
