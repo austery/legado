@@ -1,5 +1,6 @@
 package io.legado.engine
 
+import io.legado.app.constant.AppPattern
 import io.legado.app.data.AppDatabaseProviders
 import io.legado.app.data.dao.NativeLocalTxt
 import io.legado.app.model.fileBook.TextFile
@@ -157,8 +158,8 @@ class ReaderEngine {
         require(!NativeLocalTxt.owns(original)) { "Local TXT books cannot switch network sources" }
         val revision = dao.resume(oldBookId)?.revision ?: 0L
         val candidate = book(sourceId, bookId).copy()
-        if (candidate.name.trim().isEmpty() || candidate.author.trim().isEmpty() ||
-            candidate.name.trim() != original.name.trim() || candidate.author.trim() != original.author.trim() ||
+        if (candidate.name.trim().isEmpty() || candidate.name.trim() != original.name.trim() ||
+            !matchesSwitchAuthor(original.author, candidate.author) ||
             bookId == oldBookId) throw InvalidInput("Select another listing with the same known title and author")
         // Cache directories include the title; use the preserved work identity before writing.
         candidate.name = original.name
@@ -184,6 +185,18 @@ class ReaderEngine {
         preparedSwitches[token] = PreparedSourceSwitch(original, revision,
             NativeChapterProjection.from(original), candidate, catalog, chapter, body, targetSource)
         return SourceSwitchPrepared(token, snapshot(sourceId, chapter), snapshot(original), snapshot(candidate))
+    }
+
+    private fun matchesSwitchAuthor(original: String, replacement: String): Boolean {
+        val known = original.trim()
+        if (known.isEmpty()) return false
+        val author = replacement.trim()
+        if (author == known) return true
+        // Detail rules can leave the leading Chinese author label in the field (#115).
+        // Use only the prefix through its first colon. Never remove part of a pen name.
+        val label = AppPattern.authorRegex.matchAt(author, 0) ?: return false
+        val colon = label.value.indexOfFirst { it == ':' || it == '：' }
+        return colon >= 0 && author.substring(colon + 1).trim() == known
     }
 
     /**

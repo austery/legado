@@ -12,7 +12,8 @@ final class SourceSwitchLocatorTests: XCTestCase {
     }
 
     /// Imports the fixture source at a fresh base with an optional chapterName replacement.
-    private func source(_ engine: ReaderEngine, _ base: String, suffix: String, chapterName: String?, emptyContent: Bool = false) async throws {
+    private func source(_ engine: ReaderEngine, _ base: String, suffix: String, chapterName: String?,
+                        emptyContent: Bool = false, detailAuthor: String? = nil) async throws {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: base + "/sources.json")))
         var json = try XCTUnwrap(String(data: data, encoding: .utf8))
             .replacingOccurrences(of: "class.name@text", with: "class.name@text##$## " + suffix)
@@ -20,6 +21,13 @@ final class SourceSwitchLocatorTests: XCTestCase {
         if emptyContent { json = json.replacingOccurrences(of: "\"content\": \"id.content@text\"", with: "\"content\": \"\"") }
         if let chapterName {
             json = json.replacingOccurrences(of: "\"chapterName\": \"text\"", with: "\"chapterName\": \"text##\(chapterName)\"")
+        }
+        if let detailAuthor {
+            var rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+            var detail = try XCTUnwrap(rules.first?["ruleBookInfo"] as? [String: Any])
+            detail["author"] = "class.author@text##Fixture Author##" + detailAuthor
+            rules[0]["ruleBookInfo"] = detail
+            json = String(decoding: try JSONSerialization.data(withJSONObject: rules), as: UTF8.self)
         }
         let imported = await call { engine.importSources(json: json, completion: $0) }
         XCTAssertTrue(imported is SourcesReply, "\(imported)")
@@ -115,5 +123,41 @@ final class SourceSwitchLocatorTests: XCTestCase {
         let result = try await locate(old: "Chapter 2##第五章 甲", new: "Chapter ([0-9]+)##乙丙$1")
         XCTAssertEqual(result.titles, ["乙丙1", "乙丙2", "乙丙3"])
         XCTAssertEqual(result.located, 1)
+    }
+
+    func testSourceSwitchChecksTheExactDetailAuthorAfterAnAuthorLabel() async throws {
+        let engine = ReaderEngine()
+        defer { engine.close() }
+        _ = await call { engine.initialize(completion: $0) }
+        let suffix = UUID().uuidString
+        let original = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+        try await source(engine, original, suffix: suffix, chapterName: nil)
+        let (oldBook, oldChapters) = try await catalog(engine, original)
+        let added = await call { engine.addToShelf(sourceId: original, bookId: oldBook.id, completion: $0) }
+        XCTAssertTrue(added is ShelfEntryReply)
+
+        let cases = [("作 者：Fixture Author", true), ("作者： Fixture Author", true),
+                     ("作\u{00A0}者: Fixture Author", true), ("作者：Another Author", false),
+                     ("作者：", false), ("作者 Fixture Author", false),
+                     ("作者：Fixture 著 Author", false), ("作者：：Fixture Author", false)]
+        for (author, accepted) in cases {
+            let replacement = "http://127.0.0.1:18769/runs/\(UUID().uuidString)"
+            try await source(engine, replacement, suffix: suffix, chapterName: nil, detailAuthor: author)
+            let (listing, _) = try await catalog(engine, replacement)
+            XCTAssertEqual(listing.author, oldBook.author)
+            let detail = await call { engine.loadBook(sourceId: replacement, bookId: listing.id, completion: $0) }
+            XCTAssertEqual((detail as? BookReply)?.book.author, author)
+
+            let prepared = await call { engine.prepareLocatedSourceSwitch(oldSourceId: original, oldBookId: oldBook.id,
+                sourceId: replacement, bookId: listing.id, readingChapterId: oldChapters[1].id, completion: $0) }
+            if accepted {
+                let plan = try XCTUnwrap(prepared as? SourceSwitchPrepared, (prepared as? EngineFailure)?.message ?? author)
+                XCTAssertEqual(plan.chapter.index, 1, author)
+                XCTAssertEqual(plan.replacementBook.title, oldBook.title)
+                XCTAssertEqual(plan.replacementBook.author, oldBook.author)
+            } else {
+                XCTAssertEqual((prepared as? EngineFailure)?.message, "Select another listing with the same known title and author", author)
+            }
+        }
     }
 }
