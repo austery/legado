@@ -516,7 +516,15 @@ final class ReaderModel: ObservableObject {
     @Published var content: ContentReply?
     @Published var route: ReaderRoute = .shelf
     @Published var busy = false
-    @Published var message: String?
+    @Published private var activeMessage: (text: String, fromSearch: Bool)?
+    var message: String? {
+        get { activeMessage?.text }
+        set { activeMessage = newValue.map { (text: $0, fromSearch: false) } }
+    }
+    private(set) var searchMessage: String? {
+        get { activeMessage?.fromSearch == true ? activeMessage?.text : nil }
+        set { activeMessage = newValue.map { (text: $0, fromSearch: true) } }
+    }
     @Published var importNotice: String?
     @Published private(set) var importDetails: String?
     @Published var hasSearched = false
@@ -995,7 +1003,7 @@ final class ReaderModel: ObservableObject {
                 guard let self, self.searchGeneration == searchToken else { return }
                 if let error = reply as? EngineFailure {
                     self.searchRunning = false; self.searchIncomplete = true; self.searchRequest = nil
-                    if error.code != .cancelled { self.message = "\(error.code.name): \(error.message)" }
+                    if error.code != .cancelled { self.searchMessage = "\(error.code.name): \(error.message)" }
                     return
                 }
                 guard let update = reply as? SearchUpdate,
@@ -1008,7 +1016,7 @@ final class ReaderModel: ObservableObject {
                     guard let failure = source.failure else { return nil }
                     return "\(source.name): \(failure.code.name): \(failure.message)"
                 }
-                self.message = failures.isEmpty ? nil : failures.joined(separator: "\n")
+                self.searchMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
                 if update.phase == .cancelled { self.retireSearch() }
                 // IDLE retains the subscription for pagination, retry and restart updates.
             }
@@ -1043,7 +1051,7 @@ final class ReaderModel: ObservableObject {
             guard let self, self.searchGeneration == token, self.searchSessionID == sessionID else { return }
             self.searchCommandPending = false; self.searchCommandRequest = nil
             if let failure = reply as? EngineFailure, failure.code != .cancelled {
-                self.message = "\(failure.code.name): \(failure.message)"
+                self.searchMessage = "\(failure.code.name): \(failure.message)"
             }
             if stopping { self.retireSearch(); self.searchIncomplete = true }
         }

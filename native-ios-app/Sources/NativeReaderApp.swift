@@ -32,13 +32,8 @@ struct ReaderScreen: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let message = model.message {
-                    HStack {
-                        Text(message).font(.callout)
-                        Spacer()
-                        if model.canRetry { Button("Retry") { model.retry() } }
-                        Button("Dismiss") { model.message = nil }
-                    }.padding().background(.regularMaterial)
+                if let message = model.message, !isChoosingSource || model.searchMessage == nil {
+                    messageRow(message).padding().background(.regularMaterial)
                 }
                 if let notice = model.saveNotice ?? model.resumeNotice {
                     VStack(alignment: .leading, spacing: 12) {
@@ -213,6 +208,22 @@ struct ReaderScreen: View {
         SourceManagementView(model: model, importFile: { importing = true })
     }
 
+    private var isChoosingSource: Bool { model.route == .search && model.switchingFrom != nil }
+
+    private func messageRow(_ message: String) -> some View {
+        HStack {
+            Text(message).font(.callout)
+            Spacer()
+            if model.canRetry { Button("Retry") { model.retry() } }
+            Button("Dismiss") { model.message = nil }
+        }
+    }
+
+    private var incompleteSearchNote: some View {
+        Text("Results may be incomplete. A discovered candidate does not guarantee readable chapters.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
     private var search: some View {
         List {
             Section("Search scope") {
@@ -254,7 +265,7 @@ struct ReaderScreen: View {
                         Spacer()
                         if model.searchRunning { Button("Stop") { model.stopSearch() }.disabled(model.searchCommandPending) }
                     }
-                    if model.searchIncomplete { Text("Results may be incomplete. A discovered candidate does not guarantee readable chapters.").font(.caption).foregroundStyle(.secondary) }
+                    if !isChoosingSource && model.searchIncomplete { incompleteSearchNote }
                 }
                 if model.searchIsEmpty { Text("No books found.").foregroundStyle(.secondary) }
                 ForEach(model.searchWorks, id: \.id) { work in
@@ -279,6 +290,11 @@ struct ReaderScreen: View {
                             Text("\(work.sourceCount) discovered sources · \(work.candidates.count) candidates").font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                }
+                if isChoosingSource {
+                    // Keep asynchronous search notices below the one-tap source choices.
+                    if model.searchIncomplete { incompleteSearchNote }
+                    if let message = model.searchMessage { messageRow(message).buttonStyle(.borderless) }
                 }
                 if model.hasNextPage { Button("More results") { model.loadMoreSearch() }.disabled(model.busy || model.searchCommandPending) }
                 if !model.searchSources.isEmpty {
