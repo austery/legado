@@ -32,7 +32,7 @@ struct ReaderScreen: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let message = model.message, !isChoosingSource {
+                if let message = model.message, !isChoosingSource || model.searchMessage == nil {
                     messageRow(message).padding().background(.regularMaterial)
                 }
                 if let notice = model.saveNotice ?? model.resumeNotice {
@@ -294,7 +294,7 @@ struct ReaderScreen: View {
                 if isChoosingSource {
                     // Keep asynchronous search notices below the one-tap source choices.
                     if model.searchIncomplete { incompleteSearchNote }
-                    if let message = model.message { messageRow(message).buttonStyle(.borderless) }
+                    if let message = model.searchMessage { messageRow(message).buttonStyle(.borderless) }
                 }
                 if model.hasNextPage { Button("More results") { model.loadMoreSearch() }.disabled(model.busy || model.searchCommandPending) }
                 if !model.searchSources.isEmpty {
